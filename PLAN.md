@@ -4,7 +4,7 @@
 
 提供标准 npm 包（暂名 `cpa-js`），在 JS 中启动官方 CLIProxyAPI，或通过带类型的手写 client 连接已有服务。TypeScript 开发，发布 JS、类型声明和 source map，支持 Node.js 与 Bun。
 
-`../eta` 仅作为参考。不包含 eta 的 `/api/llm/*`、账号抽象、Connector、额外登录协议、订阅额度查询、模型状态派生、scoped key、模型层或 UI 集成。不使用 Hey API，不维护代码生成链路，也不要求 OpenAPI 作为前置条件。
+仅封装 CLIProxyAPI 原生能力。不添加自定义账号体系、登录协议、订阅额度查询、模型状态派生或 UI 集成。不使用 Hey API，不维护代码生成链路，也不要求 OpenAPI 作为前置条件。
 
 ## 公共入口
 
@@ -44,7 +44,7 @@ const files = await client.authFiles.list();
 
 用户 `npm install` 后即可启动，无需 Go、手动安装 CPA、额外下载命令或指定路径。
 
-- CI 从固定版本官方 CPA 源码编译 executable，不维护 eta 派生 Go 服务或 FFI。
+- CI 从固定版本官方 CPA 源码编译 executable，直接运行官方服务。
 - 各平台独立 npm 包，通过主包的 `optionalDependencies` 及平台包的 `os`、`cpu`、`libc` 选择正确产物。
 - 二进制直接包含在平台包中，不使用 postinstall 联网下载。
 - 平台包与主包版本一致；另记录 CPA 版本、源码提交、构建参数、产物校验和与许可证。
@@ -166,6 +166,6 @@ tests/
 - 验证端口占用、启动超时、取消、进程异常退出、重复停止及清理。
 - 各平台编译成功，并明确区分原生运行测试与交叉编译验证。
 - 对 npm pack 产物在临时项目中真实安装，验证平台包自动选择及无需手动准备即可启动。
-- 类型检查、测试、打包内容及许可证通过；无 eta 代码或运行依赖。
+- 类型检查、测试、打包内容及许可证通过；仅依赖实现原生 CPA 封装所需的组件。
 
 完成标准：用户安装 npm 包即可启动对应平台的官方 CPA，或连接已有实例，通过带类型的手写 client 调用支持版本的原生管理 API，无需配置二进制安装步骤。
