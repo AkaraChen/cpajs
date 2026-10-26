@@ -246,3 +246,21 @@ export interface CpaConfig {
 
   "quota-exceeded"?: { "switch-project"?: boolean; "switch-preview-model"?: boolean };   // :403 (antigravity-credits moved)
 }
+
+// Slash-separated paths into CpaConfig, for config.set / patchPath / getPath.
+// Lists are not addressable (they are replaced whole), so paths stop at arrays.
+type ConfigObject<T> = T extends readonly unknown[] ? never : T extends object ? T : never;
+
+/** Every known path into {@link CpaConfig}, e.g. `'routing/retry'` or `'oauth/model-alias/claude'`. */
+export type CpaConfigPath<T = CpaConfig> = {
+  [K in keyof T & string]-?: K | (ConfigObject<NonNullable<T[K]>> extends never ? never : `${K}/${CpaConfigPath<ConfigObject<NonNullable<T[K]>>>}`);
+}[keyof T & string];
+
+/** The value stored at a {@link CpaConfigPath}, e.g. `CpaConfigValue<'api-keys'>`. */
+export type CpaConfigValue<P extends string, T = CpaConfig> = P extends `${infer K}/${infer Rest}`
+  ? K extends keyof T
+    ? CpaConfigValue<Rest, NonNullable<T[K]>>
+    : never
+  : P extends keyof T
+    ? Exclude<T[P], undefined>
+    : never;

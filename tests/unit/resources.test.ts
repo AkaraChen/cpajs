@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CpaHttpError } from '../../src/client/index.ts';
+import { CpaHttpError, type CpaConfig } from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -42,6 +42,32 @@ describe('config', () => {
     expect(calls[1]!.url.pathname).toBe('/v8/management/config');
     expect(calls[1]!.headers.get('if-match')).toBe('"abc"');
     expect(JSON.parse(calls[1]!.body)).toEqual({ routing: { strategy: 'fill-first' } });
+  });
+
+  it('types set and patchPath values by path', async () => {
+    const { client, calls } = mockClient(() => Response.json(ok));
+    // Values typed as CpaConfig sections must be accepted, although interfaces have no index signature.
+    const apiKeys: CpaConfig['api-keys'] = { claude: [{ keys: [{ 'api-key': 'k' }] }] };
+    const routing: NonNullable<CpaConfig['routing']> = { strategy: 'fill-first' };
+    await client.config.set('api-keys', apiKeys!);
+    await client.config.patchPath('routing', routing);
+    await client.config.set('oauth/model-alias/claude', [{ name: 'a', alias: 'b' }]);
+    await client.config.set('plugins/configs/my-plugin/option', 'anything');
+    const dynamic: string = 'routing/strategy';
+    await client.config.set(dynamic, 1);
+    // @ts-expect-error a known path takes its own value type
+    await client.config.set('routing/retry/request-retry', 'two');
+    // @ts-expect-error unknown keys inside a known section are rejected
+    await client.config.patchPath('routing', { retyr: {} });
+    expect(calls.map((c) => c.url.pathname.replace('/v8/management/config/', ''))).toEqual([
+      'api-keys',
+      'routing',
+      'oauth/model-alias/claude',
+      'plugins/configs/my-plugin/option',
+      'routing/strategy',
+      'routing/retry/request-retry',
+      'routing',
+    ]);
   });
 
   it('maps every route', async () => {

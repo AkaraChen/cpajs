@@ -103,7 +103,9 @@ await server.stop();
   writes only its bcrypt hash into the managed config (remote management off), keeps the plaintext in memory,
   and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
   because nobody types it, it can never be wrong and trigger CPA's 30-minute IP ban. `restart()` keeps the key,
-  so existing clients keep working; a new `startServer()` generates a new one. `management: false` turns the
+  so existing clients keep working; a new `startServer()` generates a new one. Since no one could log in to the
+  web control panel with that key, the panel defaults to off (`disable-control-panel: true`), and CPA doesn't
+  download it from GitHub; set it to `false` in `config.management` to keep it. `management: false` turns the
   management API off.
 
   Pass a key yourself only when something else needs it, for example a remote admin tool or another process:
@@ -182,7 +184,7 @@ const client = createClient({
 
 const { data: config, etag } = await client.config.get();
 await client.config.patch({ routing: { strategy: 'round-robin' } }, { ifMatch: etag });
-await client.config.set('routing/retry/request-retry', 2);
+await client.config.set('routing/retry/request-retry', 2); // value typed by path: number
 
 const { files } = await client.credentials.list();
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
