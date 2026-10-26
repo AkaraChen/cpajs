@@ -56,14 +56,14 @@ if (import.meta.main) {
     NODE_AUTH_TOKEN: undefined,
     npm_config__authToken: undefined,
   };
-  const npm = (argv: string[], capture = false) => run('npm', argv, { env, shell, capture });
+  const npm = (argv: string[], capture = false, quiet = false) => run('npm', argv, { env, shell, capture, quiet });
   let loggedIn = false;
 
   try {
     // npm can only trust packages that exist; check them all before changing anything.
     const missing: string[] = [];
     for (const name of packages) {
-      await npm(['view', name, 'name'], true).catch(() => missing.push(name));
+      await npm(['view', name, 'name'], true, true).catch(() => missing.push(name));
     }
     if (missing.length) throw new Error(`not published yet (wait for the release workflow to finish): ${missing.join(', ')}`);
 
@@ -76,7 +76,7 @@ if (import.meta.main) {
       log(`logged in as ${(await npm(['whoami'], true)).trim()}`);
 
       for (const [i, name] of packages.entries()) {
-        const existing = await npm(['trust', 'list', name, '--json'], true).catch(() => '');
+        const existing = await npm(['trust', 'list', name, '--json'], true, true).catch(() => '');
         if (hasTrust(existing)) {
           log(`(${i + 1}/${packages.length}) ${name} already has a trust relationship, skipping`);
           continue;
@@ -88,6 +88,9 @@ if (import.meta.main) {
       }
       log('done. Delete the NPM_TOKEN secret and revoke that token; later releases publish through OIDC.');
     }
+  } catch (error) {
+    console.error(`error: ${(error as Error).message}`);
+    process.exitCode = 1;
   } finally {
     if (loggedIn) await npm(['logout']).catch(() => log('warning: npm logout failed; revoke the session on npmjs.com if needed'));
     await rm(dir, { recursive: true, force: true });
