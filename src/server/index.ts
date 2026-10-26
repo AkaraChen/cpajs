@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { buildArgs } from './args.ts';
 import { resolveBinary } from './binary.ts';
 import { inspectConfigFile, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
@@ -34,6 +35,9 @@ function validate(options: StartServerOptions): void {
   if (options.configPath !== undefined && (options.host !== undefined || options.port !== undefined)) {
     throw new CpaStartError('invalid-options', 'host and port cannot be combined with configPath; set them in the file.');
   }
+  if (options.home !== undefined && !options.home.jwt) {
+    throw new CpaStartError('invalid-options', 'home.jwt must not be empty.');
+  }
   const { port } = options;
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65_535)) {
     throw new CpaStartError('invalid-options', `Invalid port ${String(port)}.`);
@@ -47,6 +51,7 @@ function buildEnv(options: StartServerOptions): NodeJS.ProcessEnv {
     else env[key] = value;
   }
   if (options.managementKey !== undefined) env.MANAGEMENT_PASSWORD = options.managementKey;
+  if (options.home !== undefined) env.HOME_JWT = options.home.jwt;
   return env;
 }
 
@@ -83,6 +88,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const deadline = Date.now() + startupTimeoutMs;
   const env = buildEnv(options);
+  const extraArgs = buildArgs(options);
 
   try {
     for (let attempt = 1; ; attempt++) {
@@ -100,7 +106,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       }
 
       const { host, port, tls } = prepared.listen;
-      const redact = createRedactor([options.managementKey, ...prepared.secrets, ...(options.redact ?? [])]);
+      const redact = createRedactor([options.managementKey, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
       if (!dynamicPort && !(await isPortFree(host, port))) {
         throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
       }
@@ -108,7 +114,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       const origin = formatOrigin(tls ? 'https' : 'http', connectHost(host), port);
       let proc: ManagedProcess;
       try {
-        proc = new ManagedProcess(binary.path, ['-config', prepared.configPath, ...(options.args ?? [])], {
+        proc = new ManagedProcess(binary.path, ['-config', prepared.configPath, ...extraArgs], {
           cwd: stateDir,
           env,
           redact,

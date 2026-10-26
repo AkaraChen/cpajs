@@ -51,7 +51,12 @@ await server.stop();
 - `managementKey` is passed through `MANAGEMENT_PASSWORD`, so it never touches disk. Upstream treats that
   variable as also allowing remote management. The key, config secrets and `redact` values are masked in logs and
   errors.
-- `binaryPath` overrides the bundled binary. `args` adds CLI flags, for example `['-local-model']`.
+- CLI flags are typed options:
+  - `localModel: true` → `-local-model`, which uses the embedded model catalogs.
+  - `home: { jwt, disableClusterDiscovery }` → Home mode. The JWT is passed through `HOME_JWT`, so it never appears in argv.
+
+  `args` is only for flags that plugins register. One-shot commands (`-*-login`, `-discover`, `-tui`, …) and flags that have a typed option are rejected.
+- `binaryPath` overrides the bundled binary.
 
 ## Manage a server
 

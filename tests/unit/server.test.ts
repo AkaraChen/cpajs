@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { candidateTargets, resolveBinary } from '../../src/server/binary.ts';
 import { configSecrets, inspectConfigFile, readListenSettings, writeManagedConfig } from '../../src/server/config.ts';
+import { buildArgs } from '../../src/server/args.ts';
 import { CpaBinaryError, CpaStartError, startServer } from '../../src/server/index.ts';
 import { connectHost, formatOrigin } from '../../src/server/readiness.ts';
 import { createRedactor } from '../../src/server/redact.ts';
@@ -124,6 +125,36 @@ describe('startServer option validation', () => {
     await expect(startServer({ configPath: 'x', port: 1 } as never)).rejects.toMatchObject({ code: 'invalid-options' });
     await expect(startServer({ port: 70_000 })).rejects.toMatchObject({ code: 'invalid-options' });
     await expect(startServer({ signal: AbortSignal.abort() })).rejects.toMatchObject({ code: 'aborted' });
+  });
+});
+
+describe('CLI arguments', () => {
+  it('maps typed options to flags and appends plugin args', () => {
+    expect(buildArgs({})).toEqual([]);
+    expect(buildArgs({ localModel: true, home: { jwt: 'j', disableClusterDiscovery: true }, args: ['-plugin-x', 'v'] })).toEqual([
+      '-local-model',
+      '-home-disable-cluster-discovery',
+      '-plugin-x',
+      'v',
+    ]);
+    // The JWT itself travels through HOME_JWT, never argv.
+    expect(buildArgs({ home: { jwt: 'secret' } })).toEqual([]);
+  });
+
+  it('rejects one-shot commands and flags that have typed options', () => {
+    for (const arg of ['-codex-login', '--tui', '-vertex-import=/k.json', '-discover']) {
+      expect(() => buildArgs({ args: [arg] })).toThrow(/one-shot command/);
+    }
+    expect(() => buildArgs({ args: ['-local-model'] })).toThrow(/localModel option/);
+    expect(() => buildArgs({ args: ['--config', 'x.yaml'] })).toThrow(/configPath/);
+    expect(() => buildArgs({ args: ['-home-jwt=x'] })).toThrow(/home\.jwt/);
+    expect(() => buildArgs({ args: ['-password', 'x'] })).toThrow(/managementKey/);
+    // Values are not mistaken for flags.
+    expect(buildArgs({ args: ['-plugin-path', 'codex-login'] })).toEqual(['-plugin-path', 'codex-login']);
+  });
+
+  it('rejects an empty Home JWT', async () => {
+    await expect(startServer({ home: { jwt: '' } })).rejects.toMatchObject({ code: 'invalid-options' });
   });
 });
 

@@ -128,7 +128,7 @@ async function smoke(target: Target, binary: string): Promise<void> {
   const server = await startServer({
     binaryPath: binary,
     managementKey,
-    args: ['-local-model'],
+    localModel: true,
     startupTimeoutMs: 120_000,
     config: { access: { 'api-keys': [modelKey] }, management: { 'disable-control-panel': true } },
   });

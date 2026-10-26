@@ -7,6 +7,17 @@ export interface LogLine {
   line: string;
 }
 
+export interface HomeOptions {
+  /**
+   * Home control plane JWT (`-home-jwt`). It is passed through the `HOME_JWT`
+   * environment variable so it never appears in the process list, and it is
+   * redacted from logs.
+   */
+  jwt: string;
+  /** Keep using the JWT's address instead of discovering cluster nodes (`-home-disable-cluster-discovery`). */
+  disableClusterDiscovery?: boolean;
+}
+
 interface CommonServerOptions {
   /** Use this executable instead of the bundled platform package. */
   binaryPath?: string;
@@ -21,7 +32,18 @@ interface CommonServerOptions {
    * as allowing remote management access regardless of `management.allow-remote`.
    */
   managementKey?: string;
-  /** Extra CLI arguments, e.g. `['-local-model']`. Passed as an argv array, never through a shell. */
+  /**
+   * Use the model catalogs embedded in the binary instead of fetching them
+   * (`-local-model`). Explicit `models.*` config sources still win.
+   */
+  localModel?: boolean;
+  /** Run as a node of a CPA Home control plane. Home mode disables the local management API. */
+  home?: HomeOptions;
+  /**
+   * Extra CLI arguments, for flags that plugins register at runtime. Passed as
+   * an argv array, never through a shell. One-shot commands (`-*-login`,
+   * `-discover`, `-vertex-import`, `-siwc-bind`, `-tui`) and `-config` are rejected.
+   */
   args?: readonly string[];
   /** Environment for the child process. Defaults to `process.env`; entries set to `undefined` are removed. */
   env?: Readonly<Record<string, string | undefined>>;
