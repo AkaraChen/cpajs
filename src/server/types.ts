@@ -73,7 +73,13 @@ export interface StartWithConfigOptions extends CommonServerOptions {
 }
 
 export interface StartWithConfigPathOptions extends CommonServerOptions {
-  /** Existing CPA config file, handed to CPA as-is. CPA may rewrite it (e.g. to hash `secret-key`). */
+  /**
+   * Existing CPA config file, handed to CPA as-is. CPA may rewrite it on
+   * startup: it hashes a plaintext `management.secret-key`, removes legacy
+   * keys that conflict with their v8 equivalents, and normalizes the layout.
+   * The file must set a fixed positive port; a missing or non-positive port
+   * makes CPA bind a random port it does not report.
+   */
   configPath: string;
   config?: never;
   host?: never;
