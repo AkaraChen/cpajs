@@ -310,7 +310,9 @@ describe.skipIf(!binary)('server with an existing config file', () => {
 describe.skipIf(!binary)('managed config ownership', () => {
   it('keeps management API changes across stop and start with the same stateDir', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cpajs-e2e-'));
-    const port = await findFreePort('127.0.0.1');
+    const reservation = await findFreePort('127.0.0.1');
+    const port = reservation.port;
+    await reservation.release();
     let first: CpaServer | undefined;
     let second: CpaServer | undefined;
     try {
