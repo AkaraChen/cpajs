@@ -10,7 +10,6 @@ export type CpaWarningCode =
   /** `management.allow-remote` is on and the server binds a non-loopback host. */
   | 'remoteManagementExposed'
   /** No cpa-launcher was found, so CPA can outlive this process. */
-  | 'launcherMissing'
   /** An existing managed config was kept; this start's `config`, `host` and `port` were not applied. */
   | 'configReused'
   /** The management key in a reused config was replaced with the hash of a new key. */

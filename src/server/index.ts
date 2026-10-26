@@ -240,9 +240,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   if (launcher?.mode === 'exec') env.CPAJS_PARENT_PID = String(process.pid);
   const extraArgs = buildArgs(options);
   const warn = createWarner(options);
-  if (launcher === undefined && options.launcher !== false && command === undefined && process.platform !== 'win32') {
-    warn('launcherMissing', `No cpa-launcher found for ${binary.path}; CPA will keep running if this process is killed.`);
-  }
   if (management.generated) {
     warn(
       'noManagementKey',

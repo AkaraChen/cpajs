@@ -20,8 +20,8 @@ describe('createWarner', () => {
     const warn = createWarner({ onWarning: (w) => seen.push(w) });
     warn('configReused', 'first');
     warn('configReused', 'second');
-    warn('launcherMissing', 'other');
-    expect(seen.map((w) => w.code)).toEqual(['configReused', 'launcherMissing']);
+    warn('remoteManagementExposed', 'other');
+    expect(seen.map((w) => w.code)).toEqual(['configReused', 'remoteManagementExposed']);
     expect(seen[0]!.message).toBe('first (suppress with suppressWarnings.configReused)');
   });
 

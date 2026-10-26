@@ -84,7 +84,7 @@ await server.stop();
   - Windows: no launcher is needed, because Node already kills child processes with their parent.
 
   Pass `launcher: false` to start CPA directly. With a custom `binaryPath`, the launcher is looked up next to
-  that binary and then in the installed platform package; if none is found, a `launcherMissing` warning is emitted. A graceful stop
+  that binary and then in the installed platform package; if none is found, CPA starts directly. A graceful stop
   is still nicer than a kill, and `stopAllServers()` stops every server this process started:
 
   ```ts
@@ -159,7 +159,6 @@ await server.stop();
   | `noManagementKey` | No `management` was given, so a key was generated for this start (use `server.client()`) |
   | `managementViaEnvironment` | `management.viaEnvironment` is used: plaintext comparison, remote management forced on |
   | `remoteManagementExposed` | `allowRemote` is on and the server binds a non-loopback host |
-  | `launcherMissing` | No `cpa-launcher` was found, so CPA can outlive your process |
   | `configReused` | An existing managed config was kept; this start's `config`, `host` and `port` were not applied |
   | `managementKeyUpdated` | A reused config's management key was replaced for a new `management.key` |
 

@@ -17,7 +17,7 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 ### Added
 
 - Warning governance: every cpajs warning has a code (`noManagementKey`, `managementViaEnvironment`,
-  `remoteManagementExposed`, `launcherMissing`, `configReused`, `managementKeyUpdated`), is emitted at most once
+  `remoteManagementExposed`, `configReused`, `managementKeyUpdated`), is emitted at most once
   per start, and can be silenced individually with `suppressWarnings: { <code>: true }`. A generated management
   key emits `noManagementKey` by default.
 - `server.client(options?)`: a management client bound to the server's origin and key, without exposing the
