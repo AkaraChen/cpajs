@@ -1,6 +1,6 @@
 {
   "name": "@cpajs/cpa",
-  "version": "0.0.1-alpha-2",
+  "version": "0.0.1-alpha-3",
   "description": "Run the official CLIProxyAPI from JavaScript and talk to its v8 management API with a typed client",
   "license": "MIT",
   "author": "akarachen",
