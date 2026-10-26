@@ -569,18 +569,18 @@ describe.skipIf(!binary)('managed config ownership', () => {
       await first.stop();
       first = undefined;
 
-      const logs: string[] = [];
+      const codes: string[] = [];
       second = await startServer({
         binaryPath: binary!,
         stateDir: dir,
         managementKey: MANAGEMENT_KEY,
         localModel: true,
-        onLog: (log) => logs.push(log.line),
+        onWarning: (w) => codes.push(w.code),
         config: { routing: { strategy: 'fill-first' } },
       });
       expect(second.configPath).toBe(configPath);
       expect(second.port).toBe(port);
-      expect(logs.join('\n')).toContain('Keeping existing config');
+      expect(codes).toContain('configReused');
       const restarted = createClient({ baseUrl: second.origin, managementKey: MANAGEMENT_KEY });
       expect((await restarted.config.getPath('routing/strategy')).data).toBe('round-robin');
     } finally {

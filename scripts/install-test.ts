@@ -25,7 +25,7 @@ const installed = TARGETS.map(packageName).filter((name) => {
 const binary = resolveBinary();
 const notices = [];
 const server = await startServer({
-  onLog: ({ line }) => { if (line.includes('no cpa-launcher found')) notices.push(line); },
+  onWarning: (warning) => { if (warning.code === 'launcherMissing') notices.push(warning.message); },
   management: { key: 'install-test-key' },
   localModel: true,
   config: { management: { 'disable-control-panel': true } },

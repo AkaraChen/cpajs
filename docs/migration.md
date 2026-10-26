@@ -62,3 +62,10 @@ Behaviour change: without `management`, the management API used to be disabled. 
 generated per start, loopback-only by default (`allow-remote: false`). Pass `management: false` to keep it
 disabled. Nothing changes with `configPath`, or when you set `config.management['secret-key']` yourself.
 
+## Warnings left `onLog`
+
+cpajs's own warnings used to arrive in `onLog` as lines starting with `cpajs:`. They are now `CpaWarning`s with a
+code, printed through `process.emitWarning` or passed to `onWarning`. If you filtered `onLog` for them, use
+`onWarning` instead. To silence one, pass `suppressWarnings: { <code>: true }`. A start without a management key
+now warns `noManagementKey`; silence it with `suppressWarnings: { noManagementKey: true }` if that is intended.
+

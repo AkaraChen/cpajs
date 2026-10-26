@@ -48,7 +48,7 @@ await server.stop();
   - `config` is written as YAML to `<stateDir>/config.yaml` only when that file does not exist yet. On later
     starts the existing file is reused, so changes made through the management API (or by CPA itself) survive
     `stop()` and `startServer()`. Pass `overwriteConfig: true` to replace it; when a file is kept, `config`, `host`
-    and `port` are not applied and a message is emitted through `onLog`. Credentials go to `<stateDir>/auths`
+    and `port` are not applied and a `configReused` warning is emitted. Credentials go to `<stateDir>/auths`
     unless `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
   - `configPath` hands an existing file to CPA unchanged. CPA may rewrite it on startup: it hashes a plaintext
     `management.secret-key`, removes legacy keys that conflict with their v8 equivalents, and normalizes the
@@ -84,7 +84,7 @@ await server.stop();
   - Windows: no launcher is needed, because Node already kills child processes with their parent.
 
   Pass `launcher: false` to start CPA directly. With a custom `binaryPath`, the launcher is looked up next to
-  that binary and then in the installed platform package; if none is found, a notice is logged. A graceful stop
+  that binary and then in the installed platform package; if none is found, a `launcherMissing` warning is emitted. A graceful stop
   is still nicer than a kill, and `stopAllServers()` stops every server this process started:
 
   ```ts
@@ -139,12 +139,30 @@ await server.stop();
   environment is always removed, and setting it in `env` is rejected. Otherwise it would quietly add a
   plaintext key and turn remote management on.
 
-  `viaEnvironment: true` always emits a warning through `onLog`, because the key is compared in plaintext and
-  remote management cannot be turned off. `allowRemote: true` emits one when the bind host is not loopback.
-  These are warnings, not errors, because both are explicit choices.
+  `viaEnvironment: true` always emits the `managementViaEnvironment` warning, because the key is compared in
+  plaintext and remote management cannot be turned off. `allowRemote: true` emits `remoteManagementExposed` when
+  the bind host is not loopback. These are warnings, not errors, because both are explicit choices.
 
   The server handle never exposes the key; `server.client()` exposes the capability instead. To connect from
   elsewhere, pass your own key to `createClient`.
+- Warnings: cpajs reports things worth knowing as coded warnings, separate from CPA's output (`onLog`). By
+  default they go through `process.emitWarning` as `CpaWarning`, so they appear on stderr and work with Node's
+  usual handling (`--no-warnings`, `process.on('warning')`). Pass `onWarning` to route them yourself. Pass
+  `suppressWarnings` to silence individual ones; every message names the field that silences it.
+
+  ```ts
+  await startServer({ config, suppressWarnings: { noManagementKey: true } });
+  ```
+
+  | Code | Emitted when |
+  | --- | --- |
+  | `noManagementKey` | No `management` was given, so a key was generated for this start (use `server.client()`) |
+  | `managementViaEnvironment` | `management.viaEnvironment` is used: plaintext comparison, remote management forced on |
+  | `remoteManagementExposed` | `allowRemote` is on and the server binds a non-loopback host |
+  | `launcherMissing` | No `cpa-launcher` was found, so CPA can outlive your process |
+  | `configReused` | An existing managed config was kept; this start's `config`, `host` and `port` were not applied |
+  | `managementKeyUpdated` | A reused config's management key was replaced for a new `management.key` |
+
 - CLI flags are typed options:
   - `localModel: true` → `-local-model`, which uses the embedded model catalogs.
   - `home: { jwt, disableClusterDiscovery }` → Home mode. The JWT is passed through `HOME_JWT`, so it never appears in argv.

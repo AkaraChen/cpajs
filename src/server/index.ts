@@ -11,6 +11,7 @@ import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
+import { createWarner } from './warnings.ts';
 import type { CpaServer, ExitResult, LogLine, RestartOptions, ServerClientOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
 import { createClient } from '../client/index.ts';
 
@@ -22,6 +23,7 @@ export { TARGETS, NPM_SCOPE, UNSUPPORTED_PLATFORMS, binaryName, packageName } fr
 export { CPA_RELEASE } from './cpa-version.ts';
 export type { Target, TargetBuild, TargetVerification } from './targets.ts';
 export type * from './types.ts';
+export type { CpaWarning, CpaWarningCode, SuppressWarnings } from './warnings.ts';
 export type { CpaConfig } from '../client/types/config.ts';
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
@@ -237,11 +239,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   // Exec mode checks this after PR_SET_PDEATHSIG to catch a parent that died first.
   if (launcher?.mode === 'exec') env.CPAJS_PARENT_PID = String(process.pid);
   const extraArgs = buildArgs(options);
+  const warn = createWarner(options);
   if (launcher === undefined && options.launcher !== false && command === undefined && process.platform !== 'win32') {
-    options.onLog?.({
-      stream: 'stderr',
-      line: `cpajs: notice: no cpa-launcher found for ${binary.path}; CPA will keep running if this process is killed. Pass launcher: false to silence this.`,
-    });
+    warn('launcherMissing', `No cpa-launcher found for ${binary.path}; CPA will keep running if this process is killed.`);
+  }
+  if (management.generated) {
+    warn(
+      'noManagementKey',
+      'No management key given: generated one for this start (only its bcrypt hash is stored). Use server.client() for the management API, management: { key } to choose the key, or management: false to disable it.',
+    );
   }
   const ownsStateDir = options.stateDir === undefined;
   const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
@@ -258,11 +264,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
     management.secretKeyHash === undefined
       ? undefined
       : { secretKeyHash: management.secretKeyHash, allowRemote: management.allowRemote };
-  let warnedRemote = false;
 
   let reservation: PortReservation | undefined;
   let wroteConfig = false;
-  let announcedReuse = false;
   try {
     for (let attempt = 1; ; attempt++) {
       let prepared: PreparedConfig;
@@ -291,18 +295,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
             await updateManagedSecret(existing.configPath, managedSecret);
             prepared = (await readManagedConfig(stateDir))!;
             // A generated key changes on every start; only a caller's key change is news.
-            if (!management.generated) options.onLog?.({
-              stream: 'stdout',
-              line: `Updated management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`,
-            });
+            if (!management.generated) {
+              warn('managementKeyUpdated', `Replaced management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`);
+            }
           }
-          if (!announcedReuse) {
-            announcedReuse = true;
-            options.onLog?.({
-              stream: 'stdout',
-              line: `Keeping existing config at ${existing.configPath}; pass overwriteConfig: true to replace it.`,
-            });
-          }
+          warn(
+            'configReused',
+            `Kept the existing config at ${existing.configPath}; this start's config, host and port were not applied. Pass overwriteConfig: true to replace it.`,
+          );
         } else {
           const listen = configListen(options);
           if (listen.port === 0) {
@@ -316,23 +316,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       }
 
       const { host, port, tls } = prepared.listen;
-      if (!warnedRemote) {
-        warnedRemote = true;
-        const target = host === '' ? 'all interfaces' : host;
-        const exposed = !isLoopbackHost(host);
-        if (management.viaEnvironment) {
-          options.onLog?.({
-            stream: 'stderr',
-            line:
-              'cpajs: warning: management.viaEnvironment passes the key through MANAGEMENT_PASSWORD, which upstream compares in plaintext and which always enables remote management' +
-              (exposed ? `; the server binds ${target}, so the management API is reachable from non-loopback clients.` : '.'),
-          });
-        } else if (prepared.management.allowRemote && exposed) {
-          options.onLog?.({
-            stream: 'stderr',
-            line: `cpajs: warning: management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
-          });
-        }
+      const target = host === '' ? 'all interfaces' : host;
+      const exposed = !isLoopbackHost(host);
+      if (management.viaEnvironment) {
+        warn(
+          'managementViaEnvironment',
+          'management.viaEnvironment passes the key through MANAGEMENT_PASSWORD, which upstream compares in plaintext and which always enables remote management' +
+            (exposed ? `; the server binds ${target}, so the management API is reachable from non-loopback clients.` : '.'),
+        );
+      } else if (prepared.management.allowRemote && exposed) {
+        warn(
+          'remoteManagementExposed',
+          `management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
+        );
       }
 
       const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);

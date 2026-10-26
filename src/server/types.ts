@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import type { CpaClient, ClientOptions } from '../client/index.ts';
 import type { CpaConfig } from '../client/types/config.ts';
+import type { CpaWarning, SuppressWarnings } from './warnings.ts';
 
 export interface LogLine {
   stream: 'stdout' | 'stderr';
@@ -101,7 +102,17 @@ interface CommonServerOptions {
   startupTimeoutMs?: number;
   /** Cancels startup. After startup it has no effect; call `stop()` instead. */
   signal?: AbortSignal;
-  /** Receives every output line, redacted. */
+  /**
+   * Silences individual cpajs warnings, e.g. `{ noManagementKey: true }`. Every
+   * warning message names the field that silences it.
+   */
+  suppressWarnings?: SuppressWarnings;
+  /**
+   * Receives cpajs warnings instead of `process.emitWarning` (which prints them
+   * to stderr as `CpaWarning`). CPA's own output goes to `onLog`.
+   */
+  onWarning?: (warning: CpaWarning) => void;
+  /** Receives every line CPA prints, redacted. */
   onLog?: (log: LogLine) => void;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];

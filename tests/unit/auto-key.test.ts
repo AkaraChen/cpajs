@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { startServer, type CpaServer, type LogLine, type StartServerOptions } from '../../src/server/index.ts';
+import { startServer, type CpaServer, type CpaWarning, type StartServerOptions } from '../../src/server/index.ts';
 import { internalCommand } from '../../src/server/internal.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
 
@@ -72,21 +72,21 @@ describe('generated management key', () => {
   });
 
   it('keeps the key across restart() and generates a new one on the next start', async () => {
-    const lines: LogLine[] = [];
-    const server = await startFake({ stateDir: dir, onLog: (l) => lines.push(l) });
+    const warnings: CpaWarning[] = [];
+    const server = await startFake({ stateDir: dir, onWarning: (w) => warnings.push(w) });
     const key = await sentKey(server);
     await server.restart();
     expect(await sentKey(server)).toBe(key);
     expect(compareSync(key, await storedHash(server))).toBe(true);
     await server.stop();
 
-    const next = await startFake({ stateDir: dir, onLog: (l) => lines.push(l) });
+    const next = await startFake({ stateDir: dir, onWarning: (w) => warnings.push(w) });
     try {
       const nextKey = await sentKey(next);
       expect(nextKey).not.toBe(key);
       expect(compareSync(nextKey, await storedHash(next))).toBe(true);
-      // Rotating a generated key on a reused config is routine, not worth a log line.
-      expect(lines.some((l) => l.line.startsWith('Updated management.secret-key'))).toBe(false);
+      // Rotating a generated key on a reused config is routine, not worth a warning.
+      expect(warnings.map((w) => w.code)).not.toContain('managementKeyUpdated');
     } finally {
       await next.stop();
     }
