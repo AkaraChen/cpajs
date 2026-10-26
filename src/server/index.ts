@@ -7,7 +7,7 @@ import { resolveBinary } from './binary.ts';
 import { inspectConfigFile, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
 import { ManagedProcess } from './process.ts';
-import { connectHost, findFreePort, formatOrigin, isPortFree, probeHealth } from './readiness.ts';
+import { connectHost, findFreePort, formatOrigin, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { createRedactor } from './redact.ts';
 import type { CpaServer, ExitResult, StartServerOptions, StartWithConfigOptions } from './types.ts';
 
@@ -26,7 +26,6 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const PROBE_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
-const ADDRESS_IN_USE = /address already in use|only one usage of each socket address/i;
 
 function validate(options: StartServerOptions): void {
   if (options.config !== undefined && options.configPath !== undefined) {
@@ -90,6 +89,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   const env = buildEnv(options);
   const extraArgs = buildArgs(options);
 
+  let reservation: PortReservation | undefined;
   try {
     for (let attempt = 1; ; attempt++) {
       let prepared: PreparedConfig;
@@ -99,7 +99,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       } else {
         const listen = configListen(options);
         if (listen.port === 0) {
-          listen.port = await findFreePort(listen.host);
+          reservation = await findFreePort(listen.host);
+          listen.port = reservation.port;
           dynamicPort = true;
         }
         prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen);
@@ -112,6 +113,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       }
 
       const origin = formatOrigin(tls ? 'https' : 'http', connectHost(host), port);
+      // Release the dynamic-port reservation as late as possible so the gap
+      // before CPA binds stays small.
+      const held = reservation;
+      reservation = undefined;
+      await held?.release();
       let proc: ManagedProcess;
       try {
         proc = new ManagedProcess(binary.path, ['-config', prepared.configPath, ...extraArgs], {
@@ -153,7 +159,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           cause: proc.spawnError,
         });
       }
-      if (ADDRESS_IN_USE.test(output)) {
+      // CPA exits with code 0 when its bind fails, so the output cannot tell a
+      // port conflict apart from any other early exit. Probe the port instead.
+      // This is best-effort: the port can be taken or freed between the child's
+      // bind attempt and this check.
+      if (!(await isPortFree(host, port))) {
         // A dynamically picked port can be taken between probing and binding; try another.
         if (dynamicPort && attempt < DYNAMIC_PORT_ATTEMPTS) continue;
         throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`, {
@@ -169,6 +179,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       );
     }
   } catch (error) {
+    await reservation?.release();
     await cleanup();
     throw error;
   }

@@ -3,13 +3,16 @@
 // Reads `-config <file>` (JSON), serves GET /healthz on server.host/port.
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
-//   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), print CPA's bind
-//                           error and exit 0, like the real binary
+//   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
+//                           port occupied from a separate process so the real bind fails
+//                           and the process exits 0, like the real binary
 //   FAKE_IGNORE_TERM=1      ignore SIGTERM
 //   FAKE_DELAY_MS=<ms>      wait before listening
 //   FAKE_ECHO=<text>        print <text> on stdout and stderr at startup
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
 const configPath = args[args.indexOf('-config') + 1];
@@ -28,13 +31,12 @@ if (process.env.FAKE_EXIT) process.exit(Number(process.env.FAKE_EXIT));
 const runs = process.env.FAKE_COUNTER && existsSync(process.env.FAKE_COUNTER) ? Number(readFileSync(process.env.FAKE_COUNTER, 'utf8')) + 1 : 1;
 if (process.env.FAKE_COUNTER) writeFileSync(process.env.FAKE_COUNTER, String(runs));
 if (process.env.FAKE_BIND_ERROR && runs <= Number(process.env.FAKE_BIND_ERROR)) {
-  console.log(`proxy service exited with error: failed to start HTTP server: listen tcp ${host}:${port}: bind: address already in use`);
-  process.exit(0);
+  await holdPort(host, port);
 }
 if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => console.log('ignoring SIGTERM'));
 
 setTimeout(() => {
-  createServer((req, res) => {
+  const server = createServer((req, res) => {
     if (req.url === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{"status":"ok"}');
@@ -42,5 +44,23 @@ setTimeout(() => {
     }
     res.writeHead(404);
     res.end();
-  }).listen(port, host, () => console.log(`API server started successfully on: ${host}:${port}`));
+  });
+  server.once('error', (error) => {
+    console.error(`fake cpa could not listen on ${host}:${port}: ${error.code}`);
+    process.exit(0);
+  });
+  server.listen(port, host, () => console.log(`API server started successfully on: ${host}:${port}`));
 }, Number(process.env.FAKE_DELAY_MS ?? 0));
+
+function holdPort(host, port) {
+  return new Promise((resolve, reject) => {
+    const holder = spawn(process.execPath, [fileURLToPath(new URL('./hold-port.mjs', import.meta.url))], {
+      env: { ...process.env, HOLD_HOST: host, HOLD_PORT: String(port) },
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    });
+    holder.once('error', reject);
+    holder.once('message', (message) => {
+      if (message === 'listening') resolve();
+    });
+  });
+}

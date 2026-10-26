@@ -32,8 +32,21 @@ export function probeHealth(origin: string, timeoutMs: number): Promise<boolean>
   });
 }
 
-/** Asks the OS for a currently free TCP port on `host`. */
-export function findFreePort(host: string): Promise<number> {
+/** A free port whose probing listener stays open until `release()` is called. */
+export interface PortReservation {
+  port: number;
+  /** Closes the probing listener so a child process can bind the port. */
+  release(): Promise<void>;
+}
+
+/**
+ * Reserves a currently free TCP port on `host`.
+ *
+ * The listening socket is left open until `release()` so another process cannot
+ * take the port while the caller finishes preparing the child. The window
+ * between `release()` and the child's own bind cannot be removed entirely.
+ */
+export function findFreePort(host: string): Promise<PortReservation> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.unref();
@@ -41,7 +54,20 @@ export function findFreePort(host: string): Promise<number> {
     server.listen({ host: connectHost(host), port: 0, exclusive: true }, () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 0;
-      server.close(() => (port ? resolve(port) : reject(new Error('Could not allocate a free port.'))));
+      if (!port) {
+        server.close(() => reject(new Error('Could not allocate a free port.')));
+        return;
+      }
+      let released: Promise<void> | undefined;
+      resolve({
+        port,
+        release() {
+          released ??= new Promise<void>((resolveClose) => {
+            server.close(() => resolveClose());
+          });
+          return released;
+        },
+      });
     });
   });
 }

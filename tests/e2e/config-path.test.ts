@@ -59,7 +59,10 @@ describe.skipIf(!binary)('configPath listener precedence against real CPA', () =
 
   describe.each(cases)('$name config', ({ name, build }) => {
     it('reaches /healthz on the port CPA really binds', async () => {
-      const port = await findFreePort('127.0.0.1');
+      const reservation = await findFreePort('127.0.0.1');
+      const port = reservation.port;
+      // CPA binds the port itself; only the number is needed here.
+      await reservation.release();
       const otherPort = port === 65_535 ? port - 1 : port + 1;
       const configPath = join(dir, `${name}.yaml`);
       await writeFile(configPath, build(port, otherPort, join(dir, `${name}-auths`)));

@@ -94,6 +94,13 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(error.output).toContain('fake cpa starting');
   });
 
+  it('reports exited when the process exits with code 0 but the port is free', async () => {
+    const error = await startError(startServer({ binaryPath: FAKE, stateDir: dir, env: { FAKE_EXIT: '0' } }));
+    expect(error.code).toBe('exited');
+    expect(error.exitCode).toBe(0);
+    expect(error.output).toContain('fake cpa starting');
+  });
+
   it('times out, kills the process and removes the temp dir', async () => {
     const before = new Set((await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpajs-') && !n.startsWith('cpajs-life-')));
     const error = await startError(startServer({ binaryPath: FAKE, startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
