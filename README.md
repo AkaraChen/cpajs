@@ -10,8 +10,11 @@ manage any CPA instance with a hand-written, typed client for its native **v8 ma
 - Prebuilt CPA binaries for 23 platforms come through `optionalDependencies`, so `npm install` is all that is
   needed.
 
-Bundled CLIProxyAPI: **v8.0.43**. See [docs/compatibility.md](docs/compatibility.md) for platforms and versions,
-and [docs/api-coverage.md](docs/api-coverage.md) for every route.
+Bundled CLIProxyAPI: **v8.0.43**.
+
+- Upgrading: [CHANGELOG.md](CHANGELOG.md) and [docs/migration.md](docs/migration.md).
+- Platforms, versions and the versioning policy: [docs/compatibility.md](docs/compatibility.md).
+- Every management API route: [docs/api-coverage.md](docs/api-coverage.md).
 
 ```sh
 npm install @cpajs/cpa
@@ -88,8 +91,16 @@ await server.stop();
   truncated, with a marker saying how much was dropped.
 - `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
   `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
-  (default `false`), so the plaintext never reaches disk and remote management stays off. The key, config
-  secrets and `redact` values are masked in logs and errors.
+  (default `false`), so the plaintext never reaches disk and remote management stays off.
+
+  Redaction: the key, secrets found in the config when the server starts, and `redact` values are replaced with
+  `[REDACTED]` in `onLog`, `recentLogs` and startup errors. This is best-effort, with known limits:
+  - Values shorter than 4 characters are not redacted.
+  - Credentials added while the server runs (management API, OAuth logins, `restart()`) are not added to
+    the redaction list.
+  - A line longer than 64 KiB is truncated before redaction, which can leave the start of a secret at the cut.
+
+  Do not treat CPA's output as safe to publish.
 
   | Mode | How CPA compares the key | Remote access |
   | --- | --- | --- |

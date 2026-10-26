@@ -25,7 +25,26 @@ Use `client.server.info()` to check which version a server runs.
 4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
 5. Bump the `@cpajs/cpa` version. Platform packages always share the main package version.
 
+## Versioning policy
+
+- `@cpajs/cpa` follows semver. Before 1.0, a minor version bump (0.x → 0.y) may break; patch and prerelease
+  bumps within an alpha series may also break, and every break is listed in [CHANGELOG.md](../CHANGELOG.md)
+  under **Breaking**, with steps in [migration.md](migration.md).
+- From 1.0 on, these count as breaking and need a major version:
+  - removing or renaming an export, option, method or property;
+  - changing the default security behaviour (for example how the management key reaches CPA);
+  - changing when cpajs writes or overwrites files;
+  - dropping a runtime version, or a platform package that was published before.
+- Updates to the bundled CLIProxyAPI ship as a minor version. They can change upstream behaviour or the
+  management API surface; those changes are summarised in the changelog. The client types follow the bundled
+  version.
+- Platform packages always share the main package version. Never mix versions.
+
 ## Runtimes
+
+The package is ESM-only (`"type": "module"`, `import` exports, no CommonJS build) and needs Node.js 22 or newer
+(`engines.node: ">=22"`) or a current Bun.
+
 
 | Runtime | Status |
 | --- | --- |
