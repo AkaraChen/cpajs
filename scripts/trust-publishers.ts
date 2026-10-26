@@ -52,7 +52,6 @@ if (import.meta.main) {
     npm_config_userconfig: userconfig,
     npm_config_globalconfig: join(dir, 'global-npmrc'),
     npm_config_registry: REGISTRY,
-    NPM_TOKEN: undefined,
     NODE_AUTH_TOKEN: undefined,
     npm_config__authToken: undefined,
   };
@@ -86,7 +85,7 @@ if (import.meta.main) {
         // npm recommends spacing out trust calls to avoid rate limiting.
         await delay(2_000);
       }
-      log('done. Delete the NPM_TOKEN secret and revoke that token; later releases publish through OIDC.');
+      log('done. Releases publish through trusted publishing (OIDC).');
     }
   } catch (error) {
     console.error(`error: ${(error as Error).message}`);
