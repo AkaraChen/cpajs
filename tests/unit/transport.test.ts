@@ -113,6 +113,57 @@ describe('transport', () => {
     expect((aborted as CpaAbortError).cause).toEqual(new Error('user cancelled'));
   });
 
+  it('does not follow redirects and reports 3xx as CpaHttpError', async () => {
+    let redirectMode: RequestRedirect | undefined;
+    const client = createClient({
+      baseUrl: 'http://cpa.test',
+      managementKey: 'k',
+      fetch: async (request) => {
+        redirectMode = request.redirect;
+        return new Response('moved', { status: 302, headers: { Location: '/config-elsewhere' } });
+      },
+    });
+    const error = (await client.config.get().catch((e: unknown) => e)) as CpaHttpError;
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect(error.status).toBe(302);
+    expect(error.body).toBe('moved');
+    expect(redirectMode).toBe('manual');
+  });
+
+  it('stops the timeout at the headers for responseType response but keeps the caller signal', async () => {
+    let upstreamSignal: AbortSignal | undefined;
+    const client = createClient({
+      baseUrl: 'http://cpa.test',
+      managementKey: 'k',
+      timeoutMs: 20,
+      fetch: async (request) => {
+        upstreamSignal = request.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            request.signal.addEventListener('abort', () => controller.error(request.signal.reason), { once: true });
+          },
+        });
+        return new Response(body, { status: 200, headers: { 'X-Test': 'headers-first' } });
+      },
+    });
+    const controller = new AbortController();
+    const res = await client.request<Response>({
+      method: 'GET',
+      path: '/stream',
+      responseType: 'response',
+      signal: controller.signal,
+    });
+    expect(res.headers.get('x-test')).toBe('headers-first');
+    expect(upstreamSignal!.aborted).toBe(false);
+    // Past the 20 ms timeout: it covered the response headers only.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(upstreamSignal!.aborted).toBe(false);
+    // The caller's signal still reaches the live response body.
+    controller.abort(new Error('caller done'));
+    await expect(res.data.text()).rejects.toThrow('caller done');
+    expect(upstreamSignal!.aborted).toBe(true);
+  });
+
   it('times out even when a custom fetch ignores its signal', async () => {
     const deaf = createClient({ baseUrl: 'http://cpa.test', managementKey: 'k', timeoutMs: 20, fetch: () => new Promise(() => {}) });
     await expect(deaf.plugins.list()).rejects.toBeInstanceOf(CpaTimeoutError);

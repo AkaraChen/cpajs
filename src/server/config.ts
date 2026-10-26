@@ -90,6 +90,11 @@ export function readManagementSettings(doc: unknown): ManagementSettings {
   };
 }
 
+// Only known secret keys are collected. Open-ended maps such as `headers`,
+// `payload` and `plugins.configs.*` can hold credentials under arbitrary names;
+// they are deliberately skipped so an ordinary config value is never mistaken
+// for a secret and redacted out of unrelated log lines. Pass `redact` to
+// startServer for those.
 const SECRET_FIELDS = new Set(['secret-key', 'api-key', 'github-token', 'credential', 'access_token', 'refresh_token']);
 const SECRET_LISTS = new Set(['api-keys']);
 

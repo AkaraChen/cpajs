@@ -1,9 +1,13 @@
 // Contract tests: the typed client against a real CLIProxyAPI with a fake upstream.
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash, generateKeyPairSync } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { crc32 } from 'node:zlib';
 import { compareSync } from 'bcryptjs';
-import { parse as parseYaml } from 'yaml';
+import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
@@ -13,6 +17,48 @@ import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './
 const binary = findBinary();
 const MANAGEMENT_KEY = 'e2e-management-key';
 const MODEL_KEY = 'e2e-model-key';
+
+/** A single-file, uncompressed ZIP archive, enough for a plugin store artifact. */
+function storedZip(name: string, data: Buffer): Buffer {
+  const nameData = Buffer.from(name);
+  const checksum = crc32(data) >>> 0;
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt16LE(0, 10);
+  local.writeUInt16LE(0x21, 12);
+  local.writeUInt32LE(checksum, 14);
+  local.writeUInt32LE(data.length, 18);
+  local.writeUInt32LE(data.length, 22);
+  local.writeUInt16LE(nameData.length, 26);
+  local.writeUInt16LE(0, 28);
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt16LE(0, 12);
+  central.writeUInt16LE(0x21, 14);
+  central.writeUInt32LE(checksum, 16);
+  central.writeUInt32LE(data.length, 20);
+  central.writeUInt32LE(data.length, 24);
+  central.writeUInt16LE(nameData.length, 28);
+  central.writeUInt32LE(0, 42);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(central.length, 12);
+  end.writeUInt32LE(local.length + nameData.length + data.length, 16);
+  return Buffer.concat([local, nameData, data, central, nameData, end]);
+}
+
+function sha256(data: Buffer): string {
+  return createHash('sha256').update(data).digest('hex');
+}
 
 describe.skipIf(!binary)('client contract against real CPA', () => {
   let upstream: FakeUpstream;
@@ -55,10 +101,12 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       const info = await client.server.info();
       expect(info.version).toBe(CPA_RELEASE.version);
       expect(info.commit).toBe(CPA_RELEASE.commit.slice(0, 7));
+      // The gnu matrix entry is the plugin-enabled build; the header value is still a boolean.
+      expect(info.supportPlugin).toBeTypeOf('boolean');
     });
 
     it('stores a bcrypt hash and leaves remote management disabled', async () => {
-      const written = parseYaml(await readFile(server.configPath, 'utf8')) as {
+      const written = parse(await readFile(server.configPath, 'utf8')) as {
         management: Record<string, unknown>;
       };
       expect(written.management['secret-key']).toMatch(/^\$2[aby]\$10\$/);
@@ -133,6 +181,25 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(await ok('hot-key')).toBe(false);
       await client.config.set('access/api-keys', [MODEL_KEY, 'hot-key']);
       await eventually(() => ok('hot-key'));
+    });
+
+    it('changes the ETag when the watcher hashes a plaintext secret', async () => {
+      const before = await client.config.getYaml();
+      const doc = parse(before.data) as { management?: Record<string, unknown> };
+      doc.management = { ...(doc.management ?? {}), 'secret-key': 'cpajs-e2e-plaintext' };
+      const written = await client.config.replaceYaml(stringify(doc));
+      expect(written.etag).toBeDefined();
+
+      const deadline = Date.now() + 15_000;
+      let current = await client.config.getYaml();
+      while (Date.now() < deadline && !/secret-key: \$2[aby]\$/.test(current.data)) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        current = await client.config.getYaml();
+      }
+      expect(current.data).not.toContain('cpajs-e2e-plaintext');
+      expect(current.data).toMatch(/secret-key: \$2[aby]\$/);
+      expect(current.etag).toBeDefined();
+      expect(current.etag).not.toBe(written.etag);
     });
   });
 
@@ -212,6 +279,20 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.status).toBe(404);
       expect(error.errorCode).toBe('file not found');
     });
+
+    it('refreshes an API-key credential and reports a missing file', async () => {
+      // A refresh token would call the real provider. An API key has nothing to rotate,
+      // so the executor returns the credential unchanged and 200 proves the response shape.
+      await expect(
+        client.credentials.upload({ name: 'e2e-refresh.json', content: { type: 'claude', email: 'refresh@example.com', api_key: 'sk-refresh' } }),
+      ).resolves.toEqual({ status: 'ok' });
+      const refreshed = await client.credentials.refresh({ name: 'e2e-refresh.json' });
+      expect(refreshed).toMatchObject({ ok: true, auth: { id: 'e2e-refresh.json', provider: 'claude', status: 'active' } });
+
+      const missing = (await client.credentials.refresh({ name: 'nope.json' }).catch((e: unknown) => e)) as CpaHttpError;
+      expect(missing.status).toBe(404);
+      expect(missing.errorCode).toBe('auth file not found');
+    });
   });
 
   describe('oauth', () => {
@@ -239,6 +320,34 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(state.status).toBe(404);
       expect(state.data).toEqual({ status: 'error', error: 'unknown or expired state' });
     });
+
+    it('imports a generated Vertex service account', async () => {
+      const { privateKey } = generateKeyPairSync('rsa', {
+        modulusLength: 2048,
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+        publicKeyEncoding: { type: 'spki', format: 'pem' },
+      });
+      const project = 'cpajs-e2e';
+      const email = 'cpajs-e2e@example.iam.gserviceaccount.com';
+      const serviceAccount = {
+        type: 'service_account',
+        project_id: project,
+        private_key_id: 'e2e-key-id',
+        private_key: privateKey,
+        client_email: email,
+        client_id: '1234567890',
+        auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+        token_uri: 'https://oauth2.googleapis.com/token',
+        auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+        client_x509_cert_url: `https://www.googleapis.com/robot/v1/metadata/x509/${encodeURIComponent(email)}`,
+      };
+      const result = await client.oauth.importVertex({ serviceAccount, location: 'europe-west4' });
+      expect(result).toMatchObject({ status: 'ok', project_id: project, email, location: 'europe-west4' });
+      expect(result['auth-file'].endsWith(`vertex-${project}.json`)).toBe(true);
+      const entry = await client.credentials.get(`vertex-${project}.json`);
+      expect(entry).toMatchObject({ provider: 'vertex', name: `vertex-${project}.json` });
+      await expect(client.credentials.delete(`vertex-${project}.json`)).resolves.toEqual({ status: 'ok' });
+    });
   });
 
   describe('observability, routing, requests, plugins', () => {
@@ -254,10 +363,43 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       await expect(client.logs.listErrorLogs()).resolves.toEqual({ files: [] });
     });
 
-    it('reads usage', async () => {
+    it('reads usage and pops the queue destructively', async () => {
       await expect(client.usage.apiKeys()).resolves.toBeTypeOf('object');
-      const records = await client.usage.popQueue(100);
-      expect(Array.isArray(records)).toBe(true);
+      const deadline = Date.now() + 10_000;
+      let records = await client.usage.popQueue(100);
+      while (records.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        records = await client.usage.popQueue(100);
+      }
+      expect(records.length).toBeGreaterThan(0);
+      expect(records[0]).toMatchObject({ model: 'fake-model', failed: false });
+      // The route removes what it returns.
+      await expect(client.usage.popQueue(100)).resolves.toEqual([]);
+    });
+
+    it('downloads request error logs and request logs as attachments', async () => {
+      const failed = await fetch(`${server.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${MODEL_KEY}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'missing-e2e-model', messages: [{ role: 'user', content: 'hi' }] }),
+      });
+      expect(failed.status).toBe(400);
+
+      await eventually(async () => (await client.logs.listErrorLogs()).files.length > 0);
+      const file = (await client.logs.listErrorLogs()).files[0]!;
+      expect(file.name).toMatch(/^error-.+\.log$/);
+
+      const errorLog = await client.logs.downloadErrorLog(file.name);
+      expect(errorLog.filename).toBe(file.name);
+      const text = await errorLog.blob.text();
+      expect(text).toContain('missing-e2e-model');
+
+      // The request-log route matches the last eight characters of the request ID,
+      // which CPA also uses as the file-name suffix.
+      const requestId = file.name.replace(/\.log$/, '').slice(-8);
+      const requestLog = await client.logs.downloadRequestLog(requestId);
+      expect(requestLog.filename).toBe(file.name);
+      expect(await requestLog.blob.text()).toBe(text);
     });
 
     it('serves model definitions and cooldown errors', async () => {
@@ -282,6 +424,31 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.status).toBe(404);
       expect(error.errorCode).toBe('plugin_not_found');
     });
+
+    it('reports plugin quota and reset error paths', async () => {
+      const missingQuota = (await client.plugins.quota('fake-plugin', '').catch((e: unknown) => e)) as CpaHttpError;
+      expect(missingQuota.status).toBe(400);
+      expect(missingQuota.errorCode).toBe('auth_index is required');
+      const missingReset = (await client.plugins.resetQuota('fake-plugin', '').catch((e: unknown) => e)) as CpaHttpError;
+      expect(missingReset.status).toBe(400);
+      expect(missingReset.errorCode).toBe('auth_index is required');
+
+      const unknownQuota = (await client.plugins.quota('fake-plugin', '0000000000000000').catch((e: unknown) => e)) as CpaHttpError;
+      expect(unknownQuota.status).toBe(404);
+      expect(unknownQuota.errorCode).toBe('auth not found');
+      const unknownReset = (await client.plugins.resetQuota('fake-plugin', '0000000000000000').catch((e: unknown) => e)) as CpaHttpError;
+      expect(unknownReset.status).toBe(404);
+      expect(unknownReset.errorCode).toBe('auth not found');
+
+      const credential = await client.credentials.get('e2e-refresh.json');
+      expect(credential).toBeDefined();
+      const noProvider = (await client.plugins.quota('fake-plugin', credential!.auth_index!).catch((e: unknown) => e)) as CpaHttpError;
+      expect(noProvider.status).toBe(404);
+      expect(noProvider.errorCode).toBe('quota provider not found for plugin');
+      const noProviderReset = (await client.plugins.resetQuota('fake-plugin', credential!.auth_index!).catch((e: unknown) => e)) as CpaHttpError;
+      expect(noProviderReset.status).toBe(404);
+      expect(noProviderReset.errorCode).toBe('quota provider not found for plugin');
+    });
   });
 });
 
@@ -295,7 +462,7 @@ describe.skipIf(!binary)('management key modes', () => {
     });
     try {
       expect(server.managementKey).toBe('via-env-key');
-      const written = parseYaml(await readFile(server.configPath, 'utf8')) as {
+      const written = parse(await readFile(server.configPath, 'utf8')) as {
         management: Record<string, unknown>;
       };
       expect(written.management['secret-key']).toBeUndefined();
@@ -403,6 +570,105 @@ describe.skipIf(!binary)('managed config ownership', () => {
     } finally {
       await second?.stop();
       await first?.stop();
+describe.skipIf(!binary)('plugin store against a local registry', () => {
+  it('lists and installs a direct plugin from plugins.store-sources without external network', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cpajs-store-'));
+    const pluginsDir = join(dir, 'plugins');
+    await mkdir(pluginsDir, { recursive: true });
+    const pluginData = Buffer.from('cpajs e2e plugin placeholder');
+    const archive = storedZip('local-test.so', pluginData);
+    let registryBody = '';
+    const registryServer = createServer((req, res) => {
+      if (req.url === '/registry.json') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(registryBody);
+        return;
+      }
+      if (req.url === '/local-test.zip') {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(archive);
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => registryServer.listen(0, '127.0.0.1', resolve));
+    const registryPort = (registryServer.address() as { port: number }).port;
+    const artifactUrl = `http://127.0.0.1:${registryPort}/local-test.zip`;
+    const registryUrl = `http://127.0.0.1:${registryPort}/registry.json`;
+    registryBody = JSON.stringify({
+      schema_version: 2,
+      plugins: [
+        {
+          id: 'local-test',
+          name: 'Local Test',
+          description: 'Fixture served from a local registry',
+          author: 'cpajs',
+          version: '1.0.0',
+          install: {
+            type: 'direct',
+            artifacts: [{ goos: 'linux', goarch: 'amd64', url: artifactUrl, sha256: sha256(archive), size: archive.length }],
+          },
+        },
+      ],
+    });
+
+    const managementKey = 'store-management-key';
+    // The built-in official source cannot be disabled. Point HTTPS at a closed port so its
+    // probe fails immediately instead of reaching the network; the local registry below
+    // stays on loopback.
+    const deadProxy = 'http://127.0.0.1:1';
+    const server = await startServer({
+      binaryPath: binary!,
+      managementKey,
+      stateDir: dir,
+      config: {
+        management: { 'disable-control-panel': true },
+        plugins: {
+          enabled: true,
+          dir: pluginsDir,
+          'store-sources': [registryUrl],
+          // Plain http is refused unless a matching allow-insecure rule exists.
+          'store-auth': [{ match: `http://127.0.0.1:${registryPort}`, 'allow-insecure': true }],
+        },
+      },
+      env: {
+        HTTPS_PROXY: deadProxy,
+        https_proxy: deadProxy,
+        HTTP_PROXY: '',
+        http_proxy: '',
+        ALL_PROXY: '',
+        all_proxy: '',
+        NO_PROXY: '127.0.0.1,localhost',
+        no_proxy: '127.0.0.1,localhost',
+      },
+    });
+    const client = createClient({ baseUrl: server.origin, managementKey, timeoutMs: 20_000 });
+    try {
+      const store = await client.plugins.store();
+      expect(store.plugins_enabled).toBe(true);
+      expect(store.sources.some((source) => source.url === registryUrl)).toBe(true);
+      const entry = store.plugins.find((plugin) => plugin.id === 'local-test');
+      expect(entry).toBeDefined();
+      expect(entry).toMatchObject({ install_type: 'direct', installed: false, version: '1.0.0' });
+
+      const installed = await client.plugins.install('local-test', { source: entry!.source_id });
+      expect(installed).toMatchObject({
+        status: 'installed',
+        id: 'local-test',
+        version: '1.0.0',
+        install_type: 'direct',
+        plugins_enabled: true,
+        restart_required: false,
+      });
+      expect(existsSync(installed.path)).toBe(true);
+      expect(readFileSync(installed.path).equals(pluginData)).toBe(true);
+
+      const list = await client.plugins.list();
+      expect(list.plugins.find((plugin) => plugin.id === 'local-test')).toMatchObject({ enabled: true });
+    } finally {
+      await server.stop();
+      await new Promise<void>((resolve) => registryServer.close(() => resolve()));
       await rm(dir, { recursive: true, force: true });
     }
   });
