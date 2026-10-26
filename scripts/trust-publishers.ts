@@ -12,7 +12,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { TARGETS, packageName } from '../src/server/targets.ts';
 import { args, log, run } from './lib.ts';
 
-const REPOSITORY = 'AkaraChen/cpa-js';
+const REPOSITORY = 'AkaraChen/cpajs';
 const WORKFLOW = 'release.yml';
 const ENVIRONMENT = 'npm';
 

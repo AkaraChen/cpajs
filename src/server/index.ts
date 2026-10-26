@@ -74,7 +74,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
 
   const binary = resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath });
   const ownsStateDir = options.stateDir === undefined;
-  const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpa-js-')) : resolve(options.stateDir!);
+  const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
   if (!ownsStateDir) await mkdir(stateDir, { recursive: true });
   const cleanup = async (): Promise<void> => {
     if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 3 });

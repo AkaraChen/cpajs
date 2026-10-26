@@ -11,7 +11,7 @@ import { TARGETS } from '../../src/server/targets.ts';
 
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'cpa-js-unit-'));
+  dir = await mkdtemp(join(tmpdir(), 'cpajs-unit-'));
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });

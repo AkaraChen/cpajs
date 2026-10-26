@@ -78,7 +78,7 @@ if (import.meta.main) {
   if (!mainManifest) fail('No @cpajs/cpa tarball found.');
   log(`local registry ${registry.url} serving ${registry.packages.length} packages`);
 
-  const dir = await mkdtemp(join(tmpdir(), 'cpa-js-install-'));
+  const dir = await mkdtemp(join(tmpdir(), 'cpajs-install-'));
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     npm_config_registry: registry.url,
@@ -89,7 +89,7 @@ if (import.meta.main) {
     CPA_BINARY: undefined,
   };
   try {
-    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'cpa-js-install-test', private: true, type: 'module' }, null, 2));
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'cpajs-install-test', private: true, type: 'module' }, null, 2));
     await writeFile(join(dir, '.npmrc'), `registry=${registry.url}\n`);
     const extra = values.typecheck ? ['typescript@^7', '@types/node@^24'] : [];
     const shell = process.platform === 'win32';

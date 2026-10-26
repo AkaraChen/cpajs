@@ -6,7 +6,7 @@
   "author": "akarachen",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AkaraChen/cpa-js.git"
+    "url": "git+https://github.com/AkaraChen/cpajs.git"
   },
   "type": "module",
   "engines": {
