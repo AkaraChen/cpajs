@@ -84,10 +84,17 @@ await server.stop();
 
   `management.key` is rejected together with `config.management['secret-key']`, or with a `secret-key`
   already present in `configPath`. In `configPath` mode it also requires `viaEnvironment: true`, because
-  cpajs must not edit your file. When the bind host is not loopback and remote management is enabled (by
-  `allowRemote`, `viaEnvironment` or `MANAGEMENT_PASSWORD`), `startServer` emits a warning through `onLog`.
-  A warning is used instead of an error because `allowRemote: true` is already an explicit opt-in and the
-  environment variable's remote behaviour cannot be disabled upstream.
+  cpajs must not edit your file.
+
+  `MANAGEMENT_PASSWORD` reaches CPA only through `viaEnvironment: true`. One inherited from the parent
+  environment is always removed, and setting it in `env` is rejected. Otherwise it would quietly add a
+  plaintext key and turn remote management on.
+
+  `viaEnvironment: true` always emits a warning through `onLog`, because the key is compared in plaintext and
+  remote management cannot be turned off. `allowRemote: true` emits one when the bind host is not loopback.
+  These are warnings, not errors, because both are explicit choices.
+
+  The server handle does not expose the key. Keep it in your own code and pass it to `createClient`.
 - CLI flags are typed options:
   - `localModel: true` → `-local-model`, which uses the embedded model catalogs.
   - `home: { jwt, disableClusterDiscovery }` → Home mode. The JWT is passed through `HOME_JWT`, so it never appears in argv.

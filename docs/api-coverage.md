@@ -17,7 +17,7 @@ plugin-enabled linux-x64-gnu build; plugin store tests use a local registry thro
 | Topic | Behaviour (verified against v8.0.43) | Client |
 | --- | --- | --- |
 | Auth | `Authorization: Bearer <key>`. CPA also accepts a bare `Authorization: <key>` or `X-Management-Key`. Wrong key → 401 `{"error":"invalid management key"}`. Five failures from one IP ban it for 30 minutes, localhost included (handler.go:358-457). | Always sends Bearer; `CpaHttpError.errorCode`. **U E** |
-| Remote access | Non-loopback clients need `management.allow-remote`. Setting `MANAGEMENT_PASSWORD` also allows them. | The default `startServer({ management: { key } })` writes a bcrypt hash and leaves `allow-remote` false; `management.viaEnvironment` uses `MANAGEMENT_PASSWORD`, which also allows them. |
+| Remote access | Non-loopback clients need `management.allow-remote`. Setting `MANAGEMENT_PASSWORD` also allows them; cpajs only sets it for `management.viaEnvironment`. | The default `startServer({ management: { key } })` writes a bcrypt hash and leaves `allow-remote` false; `management.viaEnvironment` uses `MANAGEMENT_PASSWORD`, which also allows them. |
 | Disabled management | 404 with an empty body and no `X-CPA-*` headers. | `CpaHttpError` with `status: 404`, `data: undefined`. **U** |
 | Version headers | `X-CPA-VERSION`, `X-CPA-COMMIT`, `X-CPA-BUILD-DATE`, `X-CPA-SUPPORT-PLUGIN` on every authenticated response, 401/403 included. | `client.server.info()`. **U E** |
 | Error bodies | `{"error": string, "message"?: string, ...}`. The oauth status, session and callback routes use `{"status":"error","error": string}`. | `CpaHttpError.status/body/data/errorCode/errorMessage`. **U E** |

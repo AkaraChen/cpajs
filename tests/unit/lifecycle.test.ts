@@ -227,7 +227,7 @@ describe('server lifecycle (fake binary)', () => {
     expect(echoed.map((l) => l.stream).sort()).toEqual(['stderr', 'stdout']);
     expect(echoed[0]!.line).toMatch(/: \[REDACTED\] \[REDACTED\] \[REDACTED\]$/);
     expect(server.recentLogs.some((l) => l.line.includes('secret-value'))).toBe(false);
-    expect(server.managementKey).toBe(key);
+    expect('managementKey' in server).toBe(false);
     expect(lines.some((l) => l.line.startsWith('MANAGEMENT_PASSWORD'))).toBe(false);
 
     const written = parseYaml(await readFile(server.configPath, 'utf8'));
@@ -280,6 +280,20 @@ describe('server lifecycle (fake binary)', () => {
     }
   });
 
+  it('never passes an inherited MANAGEMENT_PASSWORD when no management key is given', async () => {
+    const saved = process.env.MANAGEMENT_PASSWORD;
+    process.env.MANAGEMENT_PASSWORD = 'inherited-value';
+    try {
+      const lines: LogLine[] = [];
+      const server = await startFake({ stateDir: dir, onLog: (l) => lines.push(l) });
+      await server.stop();
+      expect(lines.some((l) => l.line.startsWith('MANAGEMENT_PASSWORD'))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.MANAGEMENT_PASSWORD;
+      else process.env.MANAGEMENT_PASSWORD = saved;
+    }
+  });
+
   it('can pass the key through MANAGEMENT_PASSWORD when explicitly requested', async () => {
     const lines: LogLine[] = [];
     const server = await startFake({ stateDir: dir,
@@ -288,7 +302,7 @@ describe('server lifecycle (fake binary)', () => {
     });
     await server.stop();
     expect(lines.some((l) => l.line === 'MANAGEMENT_PASSWORD length 17')).toBe(true);
-    expect(server.managementKey).toBe('mgmt-secret-value');
+    expect('managementKey' in server).toBe(false);
     const written = parseYaml(await readFile(server.configPath, 'utf8'));
     expect(written.management).toBeUndefined();
   });
@@ -303,6 +317,14 @@ describe('server lifecycle (fake binary)', () => {
 
     expect(await warn({ management: { key: 'k', allowRemote: true } })).toHaveLength(1);
     expect(await warn({ management: { key: 'k', viaEnvironment: true } })).toHaveLength(1);
+    // viaEnvironment is warned about even on loopback: plaintext comparison and forced remote access.
+    const lines: LogLine[] = [];
+    const local = await startFake({ host: '127.0.0.1', management: { key: 'k', viaEnvironment: true }, onLog: (l) => lines.push(l) });
+    await local.stop();
+    const viaEnv = lines.filter((l) => l.line.includes('management.viaEnvironment'));
+    expect(viaEnv).toHaveLength(1);
+    expect(viaEnv[0]!.stream).toBe('stderr');
+    expect(viaEnv[0]!.line).not.toContain('reachable from non-loopback');
     // The default mode stays local, so binding all interfaces is not a remote-management warning.
     expect(await warn({ management: { key: 'k' } })).toEqual([]);
     // Loopback with remote access enabled is still local.

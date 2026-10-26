@@ -113,7 +113,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(written.management['secret-key']).not.toContain(MANAGEMENT_KEY);
       expect(compareSync(MANAGEMENT_KEY, written.management['secret-key'] as string)).toBe(true);
       expect(written.management['allow-remote']).toBe(false);
-      expect(server.managementKey).toBe(MANAGEMENT_KEY);
+      expect('managementKey' in server).toBe(false);
     });
 
     it('rejects a wrong management key with 401', async () => {
@@ -463,7 +463,7 @@ describe.skipIf(!binary)('management key modes', () => {
       config: { management: { 'disable-control-panel': true } },
     });
     try {
-      expect(server.managementKey).toBe('via-env-key');
+      expect('managementKey' in server).toBe(false);
       const written = parse(await readFile(server.configPath, 'utf8')) as {
         management: Record<string, unknown>;
       };

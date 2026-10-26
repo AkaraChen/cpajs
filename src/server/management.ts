@@ -50,11 +50,13 @@ export async function resolveManagement(options: {
     throw new CpaStartError('invalid-options', 'management.key must not be empty.');
   }
   if (management.viaEnvironment === true) {
-    // Upstream trims MANAGEMENT_PASSWORD, so trim here too: the handle exposes
-    // the key that callers need for their client.
-    const envKey = key.trim();
+    // Upstream trims MANAGEMENT_PASSWORD, so a key with surrounding whitespace
+    // would not match what the caller sends from its own client.
+    if (key !== key.trim()) {
+      throw new CpaStartError('invalid-options', 'management.key must not start or end with whitespace when viaEnvironment is true.');
+    }
     return {
-      key: envKey,
+      key,
       viaEnvironment: true,
       allowRemote: management.allowRemote === true,
       secretKeyHash: undefined,
