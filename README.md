@@ -56,8 +56,10 @@ await server.stop();
 - `startServer` resolves only once `/healthz` answers. It rejects with `CpaStartError` on early exit, port
   conflict, timeout (`startupTimeoutMs`, default 30 s) or `signal` abort. In every failure case the process is
   stopped and the temporary directory removed.
-- `stop()` is idempotent: it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On Windows Node
-  can only terminate forcefully. `server.exited` settles on the final stop or an unexpected exit.
+- `stop()` is idempotent: on POSIX it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On
+  Windows Node cannot deliver a graceful shutdown signal, so `stop()` terminates the process forcefully (equivalent
+  to SIGKILL), `stopTimeoutMs` has no effect, and CPA gets no chance to flush state or update auth files. The same
+  applies to the stop half of `restart()`. `server.exited` settles on the final stop or an unexpected exit.
 - `restart({ timeoutMs, signal })` stops the old process with the same SIGTERM → SIGKILL sequence
   (`timeoutMs` defaults to `stopTimeoutMs`) and starts it again with the original options. The handle keeps
   `origin`, `baseUrl`, `host`, `port`, `stateDir` and `configPath`; `pid`, `process` and `recentLogs` point at the

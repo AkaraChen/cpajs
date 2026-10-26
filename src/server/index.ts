@@ -9,6 +9,7 @@ import { CpaStartError } from './errors.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
 import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
+import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import type { CpaServer, ExitResult, LogLine, RestartOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
 
@@ -203,12 +204,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   if (signal?.aborted) throw abortError(signal, '');
 
   const management = await resolveManagement(options);
-  const binary = resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath });
+  const command = (options as { [internalCommand]?: InternalCommand })[internalCommand];
+  const binary =
+    command === undefined
+      ? resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath })
+      : { path: command.path };
+  const prefixArgs = command?.args ?? [];
   const ownsStateDir = options.stateDir === undefined;
   const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
   if (!ownsStateDir) await mkdir(stateDir, { recursive: true });
   const cleanup = async (): Promise<void> => {
-    if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 3 });
+    // Windows releases file handles a little later than POSIX; keep retrying
+    // instead of leaving a temporary directory behind.
+    if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
 
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
@@ -304,7 +312,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       await held?.release();
       const result = await launchProcess({
         binaryPath: binary.path,
-        args: ['-config', prepared.configPath, ...extraArgs],
+        args: [...prefixArgs, '-config', prepared.configPath, ...extraArgs],
         stateDir,
         env,
         redact,
@@ -323,6 +331,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       if (result.kind === 'ready') {
         return createHandle(result.proc, {
           binaryPath: binary.path,
+          prefixArgs,
           configPath: prepared.configPath,
           listen: prepared.listen,
           origin,
@@ -376,6 +385,8 @@ async function waitUntilReady(
 
 interface HandleInfo {
   binaryPath: string;
+  /** Arguments before `-config` (only set by the internal test launcher). */
+  prefixArgs: readonly string[];
   configPath: string;
   listen: PreparedConfig['listen'];
   origin: string;
@@ -458,7 +469,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       // changes made through the management API during the previous run (#13).
       const result = await launchProcess({
         binaryPath: info.binaryPath,
-        args: ['-config', info.configPath, ...info.extraArgs],
+        args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
         stateDir: info.stateDir,
         env: info.env,
         redact: info.redact,
