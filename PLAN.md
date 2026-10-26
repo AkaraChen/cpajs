@@ -2,17 +2,17 @@
 
 ## 目标
 
-提供标准 npm 包（暂名 `cpa-js`），在 JS 中启动官方 CLIProxyAPI，或通过带类型的手写 client 连接已有服务。TypeScript 开发，发布 JS、类型声明和 source map，支持 Node.js 与 Bun。
+提供标准 npm 包（`@cpajs/cpa`），在 JS 中启动官方 CLIProxyAPI，或通过带类型的手写 client 连接已有服务。TypeScript 开发，发布 JS、类型声明和 source map，支持 Node.js 与 Bun。
 
 依据官方文档和固定版本源码，手写带类型的 CLIProxyAPI 原生管理 API client。
 
 ## 公共入口
 
-- `cpa-js/server`：二进制定位、配置、进程生命周期、就绪检测、日志。
-- `cpa-js/client`：基于标准 Fetch 的原生管理 API client，可独立连接本地或远程 CPA。
+- `@cpajs/cpa/server`：二进制定位、配置、进程生命周期、就绪检测、日志。
+- `@cpajs/cpa/client`：基于标准 Fetch 的原生管理 API client，可独立连接本地或远程 CPA。
 
 ```ts
-import { startServer } from 'cpa-js/server';
+import { startServer } from '@cpajs/cpa/server';
 
 const server = await startServer({
   stateDir: './.cpa',
@@ -27,7 +27,7 @@ await server.stop();
 ```
 
 ```ts
-import { createClient } from 'cpa-js/client';
+import { createClient } from '@cpajs/cpa/client';
 
 const client = createClient({
   baseUrl: 'http://127.0.0.1:8317',

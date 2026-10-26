@@ -36,7 +36,7 @@ export function fail(message: string): never {
 }
 
 export function log(message: string): void {
-  console.log(`[cpa-js] ${message}`);
+  console.log(`[cpajs] ${message}`);
 }
 
 /** Runs a command with inherited stdio; rejects on non-zero exit. */

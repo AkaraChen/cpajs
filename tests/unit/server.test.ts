@@ -11,7 +11,7 @@ import { TARGETS } from '../../src/server/targets.ts';
 
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'cpa-js-unit-'));
+  dir = await mkdtemp(join(tmpdir(), 'cpajs-unit-'));
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -58,7 +58,7 @@ describe('resolveBinary', () => {
       }
     })() as CpaBinaryError;
     expect(missing.code).toBe('package-not-installed');
-    expect(missing.message).toContain('@cpa-js/freebsd-arm64');
+    expect(missing.message).toContain('@cpajs/freebsd-arm64');
   });
 
   it('validates binaryPath', async () => {

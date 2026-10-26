@@ -2,11 +2,11 @@
 
 ## Versions
 
-The `cpa-js` version and the bundled CLIProxyAPI version are tracked separately.
+The `@cpajs/cpa` version and the bundled CLIProxyAPI version are tracked separately.
 
-| cpa-js | CLIProxyAPI | Commit | Go | Management API |
+| @cpajs/cpa | CLIProxyAPI | Commit | Go | Management API |
 | --- | --- | --- | --- | --- |
-| 0.1.x | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` |
+| 0.0.x | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` |
 
 The pinned release lives in [`src/server/cpa-version.ts`](../src/server/cpa-version.ts) and is exported at
 runtime as `CPA_RELEASE`. The client also works with other v8.x servers when the routes it calls exist there.
@@ -22,7 +22,7 @@ Use `client.server.info()` to check which version a server runs.
    `MANAGEMENT_PASSWORD` variable, `/healthz`, and the bind error text in the process output
    (`address already in use`).
 4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
-5. Bump the `cpa-js` version. Platform packages always share the main package version.
+5. Bump the `@cpajs/cpa` version. Platform packages always share the main package version.
 
 ## Runtimes
 
@@ -30,7 +30,7 @@ Use `client.server.info()` to check which version a server runs.
 | --- | --- |
 | Node.js 22, 24 | Supported. CI runs unit tests on Linux, macOS and Windows, plus install tests. |
 | Bun | Supported. CI runs unit tests under Bun and installs/runs the package with `bun add` + `bun`. |
-| Browsers / edge runtimes | `cpa-js/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `cpa-js/server` needs Node.js APIs. |
+| Browsers / edge runtimes | `@cpajs/cpa/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `@cpajs/cpa/server` needs Node.js APIs. |
 
 ## Platforms
 
@@ -42,29 +42,29 @@ upstream default. `portable` means CGO is off, the binary is static, and there a
 
 | Package | OS | CPU | libc | Build | Verification | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| `@cpa-js/darwin-x64` | macOS | x64 | – | plugin | native | |
-| `@cpa-js/darwin-arm64` | macOS | arm64 | – | plugin | native | |
-| `@cpa-js/win32-x64` | Windows | x64 | – | plugin | native | |
-| `@cpa-js/win32-arm64` | Windows | arm64 | – | plugin | native | |
-| `@cpa-js/win32-ia32` | Windows | ia32 | – | portable | native (WOW64) | not built upstream |
-| `@cpa-js/linux-x64-gnu` | Linux | x64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
-| `@cpa-js/linux-arm64-gnu` | Linux | arm64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
-| `@cpa-js/linux-x64-musl` | Linux | x64 | musl | portable | native | |
-| `@cpa-js/linux-arm64-musl` | Linux | arm64 | musl | portable | native | |
-| `@cpa-js/linux-arm` | Linux | arm (ARMv7+) | any | portable | emulated | `GOARM=7`; not built upstream |
-| `@cpa-js/linux-ia32` | Linux | ia32 | any | portable | native | not built upstream |
-| `@cpa-js/linux-riscv64` | Linux | riscv64 | any | portable | emulated | not built upstream |
-| `@cpa-js/linux-ppc64` | Linux | ppc64le | any | portable | emulated | little-endian only |
-| `@cpa-js/linux-s390x` | Linux | s390x | any | portable | emulated | not built upstream |
-| `@cpa-js/linux-loong64` | Linux | loong64 | any | portable | emulated | not built upstream |
-| `@cpa-js/linux-mips` | Linux | mips | any | portable | emulated | soft float |
-| `@cpa-js/linux-mipsel` | Linux | mipsel | any | portable | emulated | soft float |
-| `@cpa-js/freebsd-x64` | FreeBSD | x64 | – | plugin | cross-compiled | FreeBSD 14 sysroot, as upstream |
-| `@cpa-js/freebsd-arm64` | FreeBSD | arm64 | – | portable | cross-compiled | |
-| `@cpa-js/freebsd-ia32` | FreeBSD | ia32 | – | portable | cross-compiled | not built upstream |
-| `@cpa-js/openbsd-x64` | OpenBSD | x64 | – | portable | cross-compiled | not built upstream |
-| `@cpa-js/openbsd-arm64` | OpenBSD | arm64 | – | portable | cross-compiled | not built upstream |
-| `@cpa-js/netbsd-x64` | NetBSD | x64 | – | portable | cross-compiled | not built upstream |
+| `@cpajs/darwin-x64` | macOS | x64 | – | plugin | native | |
+| `@cpajs/darwin-arm64` | macOS | arm64 | – | plugin | native | |
+| `@cpajs/win32-x64` | Windows | x64 | – | plugin | native | |
+| `@cpajs/win32-arm64` | Windows | arm64 | – | plugin | native | |
+| `@cpajs/win32-ia32` | Windows | ia32 | – | portable | native (WOW64) | not built upstream |
+| `@cpajs/linux-x64-gnu` | Linux | x64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
+| `@cpajs/linux-arm64-gnu` | Linux | arm64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
+| `@cpajs/linux-x64-musl` | Linux | x64 | musl | portable | native | |
+| `@cpajs/linux-arm64-musl` | Linux | arm64 | musl | portable | native | |
+| `@cpajs/linux-arm` | Linux | arm (ARMv7+) | any | portable | emulated | `GOARM=7`; not built upstream |
+| `@cpajs/linux-ia32` | Linux | ia32 | any | portable | native | not built upstream |
+| `@cpajs/linux-riscv64` | Linux | riscv64 | any | portable | emulated | not built upstream |
+| `@cpajs/linux-ppc64` | Linux | ppc64le | any | portable | emulated | little-endian only |
+| `@cpajs/linux-s390x` | Linux | s390x | any | portable | emulated | not built upstream |
+| `@cpajs/linux-loong64` | Linux | loong64 | any | portable | emulated | not built upstream |
+| `@cpajs/linux-mips` | Linux | mips | any | portable | emulated | soft float |
+| `@cpajs/linux-mipsel` | Linux | mipsel | any | portable | emulated | soft float |
+| `@cpajs/freebsd-x64` | FreeBSD | x64 | – | plugin | cross-compiled | FreeBSD 14 sysroot, as upstream |
+| `@cpajs/freebsd-arm64` | FreeBSD | arm64 | – | portable | cross-compiled | |
+| `@cpajs/freebsd-ia32` | FreeBSD | ia32 | – | portable | cross-compiled | not built upstream |
+| `@cpajs/openbsd-x64` | OpenBSD | x64 | – | portable | cross-compiled | not built upstream |
+| `@cpajs/openbsd-arm64` | OpenBSD | arm64 | – | portable | cross-compiled | not built upstream |
+| `@cpajs/netbsd-x64` | NetBSD | x64 | – | portable | cross-compiled | not built upstream |
 
 ### Unsupported
 

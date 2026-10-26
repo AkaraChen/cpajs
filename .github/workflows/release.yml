@@ -172,18 +172,40 @@ jobs:
         with:
           name: tarballs
           path: tarballs
+      # Trusted publishing (OIDC) needs npm >= 11.5.1.
+      - run: npm install -g npm@^11.15.0
       - name: Publish platform packages, then the main package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Only for the very first release: trusted publishing can only be configured on
+          # packages that already exist. Leave the secret unset afterwards; OIDC is used.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for tgz in tarballs/cpa-js-*.tgz; do
-            case "$tgz" in tarballs/cpa-js-[0-9]*) continue ;; esac
-            npm publish "$tgz" --access public --provenance
+          if [ -n "$NPM_TOKEN" ]; then export NODE_AUTH_TOKEN="$NPM_TOKEN"; echo "Publishing with NPM_TOKEN"; else echo "Publishing with trusted publishing (OIDC)"; fi
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            *-*) prerelease="${version#*-}"; tag="${prerelease%%[^a-z]*}"; tag="${tag:-next}" ;;
+            *) tag=latest ;;
+          esac
+          echo "dist-tag: $tag"
+          main="tarballs/cpajs-cpa-$version.tgz"
+          publish() {
+            name="$(tar -xOzf "$1" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published, skipping"
+            else
+              npm publish "$1" --access public --tag "$tag"
+            fi
+          }
+          for tgz in tarballs/*.tgz; do
+            [ "$tgz" = "$main" ] || publish "$tgz"
           done
-          npm publish tarballs/cpa-js-[0-9]*.tgz --access public --provenance
+          publish "$main"
       - name: Attach tarballs to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" tarballs/*.tgz tarballs/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" tarballs/*.tgz tarballs/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes $prerelease

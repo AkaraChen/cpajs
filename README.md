@@ -1,11 +1,11 @@
-# cpa-js
+# @cpajs/cpa
 
 Run the official [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) (CPA) from Node.js or Bun, and
 manage any CPA instance with a hand-written, typed client for its native **v8 management API**.
 
-- `cpa-js/server` locates the bundled binary, writes the config, starts the process, waits until it is ready,
+- `@cpajs/cpa/server` locates the bundled binary, writes the config, starts the process, waits until it is ready,
   streams logs and stops it.
-- `cpa-js/client` is a `fetch`-based client for `/v8/management`, with types derived from the CPA source. It can
+- `@cpajs/cpa/client` is a `fetch`-based client for `/v8/management`, with types derived from the CPA source. It can
   connect to local or remote instances.
 - Prebuilt CPA binaries for 23 platforms come through `optionalDependencies`, so `npm install` is all that is
   needed.
@@ -14,13 +14,13 @@ Bundled CLIProxyAPI: **v8.0.43**. See [docs/compatibility.md](docs/compatibility
 and [docs/api-coverage.md](docs/api-coverage.md) for every route.
 
 ```sh
-npm install cpa-js
+npm install @cpajs/cpa
 ```
 
 ## Start a server
 
 ```ts
-import { startServer } from 'cpa-js/server';
+import { startServer } from '@cpajs/cpa/server';
 
 const server = await startServer({
   stateDir: './.cpa',                 // omit for a temporary directory that is removed on stop
@@ -56,7 +56,7 @@ await server.stop();
 ## Manage a server
 
 ```ts
-import { createClient, CpaHttpError } from 'cpa-js/client';
+import { createClient, CpaHttpError } from '@cpajs/cpa/client';
 
 const client = createClient({
   baseUrl: 'http://127.0.0.1:8317',     // a path prefix behind a reverse proxy is kept
@@ -131,11 +131,12 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | `fetch-source.ts` | Clone the pinned CPA tag and verify the commit. |
 | `build-binary.ts` | Build one or more targets, with the same CGO/plugin split as upstream. |
 | `verify-binary.ts` | Check format, CPU, static linking and the glibc baseline; `--smoke` starts the binary. |
-| `assemble-packages.ts` | Create the `@cpa-js/*` platform packages. |
+| `assemble-packages.ts` | Create the `@cpajs/*` platform packages. |
 | `pack.ts` | Produce the tarballs. |
 | `install-test.ts` | Install the tarballs through a local registry with npm, pnpm or bun, and run them. |
+| `trust-publishers.ts` | Configure npm trusted publishing for all packages (run locally after the first publish). |
 
-`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags.
+`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). `trust-publishers.ts` configures trusted publishing for every package; npm only allows this once a package exists, so the very first release needs a temporary `NPM_TOKEN` secret.
 
 ## License
 

@@ -13,7 +13,7 @@ const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url))
 
 let dir: string;
 beforeEach(async () => {
-  dir = await mkdtemp(join(tmpdir(), 'cpa-js-life-'));
+  dir = await mkdtemp(join(tmpdir(), 'cpajs-life-'));
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -95,10 +95,10 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   });
 
   it('times out, kills the process and removes the temp dir', async () => {
-    const before = new Set((await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpa-js-') && !n.startsWith('cpa-js-life-')));
+    const before = new Set((await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpajs-') && !n.startsWith('cpajs-life-')));
     const error = await startError(startServer({ binaryPath: FAKE, startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
     expect(error.code).toBe('timeout');
-    const after = (await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpa-js-') && !n.startsWith('cpa-js-life-'));
+    const after = (await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpajs-') && !n.startsWith('cpajs-life-'));
     expect(after.filter((n) => !before.has(n))).toEqual([]);
   });
 

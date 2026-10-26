@@ -106,9 +106,9 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
     it('round-trips YAML losslessly', async () => {
       const { data: yaml } = await client.config.getYaml();
       expect(yaml).toContain('config-version: 8');
-      const commented = `# kept by cpa-js e2e\n${yaml}`;
+      const commented = `# kept by cpajs e2e\n${yaml}`;
       await client.config.replaceYaml(commented);
-      expect((await client.config.getYaml()).data).toContain('# kept by cpa-js e2e');
+      expect((await client.config.getYaml()).data).toContain('# kept by cpajs e2e');
     });
 
     it('hot-reloads a new model API key', async () => {
@@ -275,7 +275,7 @@ describe.skipIf(!binary)('server with an existing config file', () => {
     const { tmpdir } = await import('node:os');
     const { join } = await import('node:path');
     const { findFreePort } = await import('../../src/server/readiness.ts');
-    const dir = await mkdtemp(join(tmpdir(), 'cpa-js-e2e-'));
+    const dir = await mkdtemp(join(tmpdir(), 'cpajs-e2e-'));
     try {
       const port = await findFreePort('127.0.0.1');
       const configPath = join(dir, 'config.yaml');
