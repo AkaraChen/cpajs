@@ -39,10 +39,13 @@ if (import.meta.main) {
     await run('npm', ['pack', '--pack-destination', out], { cwd: dir, shell });
   }
 
+  // Build before touching package.json: with the injected optionalDependencies, pnpm's
+  // pre-run dependency check would refuse to run the prepack script.
+  await run('npm', ['run', 'build'], { cwd: ROOT, shell });
   manifest.optionalDependencies = Object.fromEntries(present.map((t) => [packageName(t), manifest.version]));
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   try {
-    await run('npm', ['pack', '--pack-destination', out], { cwd: ROOT, shell });
+    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: ROOT, shell });
   } finally {
     await writeFile(manifestPath, original);
   }
