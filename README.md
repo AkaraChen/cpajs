@@ -27,7 +27,6 @@ import { startServer } from '@cpajs/cpa/server';
 
 const server = await startServer({
   stateDir: './.cpa',                 // omit for a temporary directory that is removed on stop
-  management: { key: process.env.CPA_MANAGEMENT_KEY! },
   config: {                           // native v8 config, typed as CpaConfig
     access: { 'api-keys': ['sk-my-model-key'] },
     routing: { strategy: 'fill-first' },
@@ -37,6 +36,10 @@ const server = await startServer({
 
 console.log(server.origin);  // http://127.0.0.1:40123  (a free port is picked by default)
 console.log(server.baseUrl); // http://127.0.0.1:40123/v1 for OpenAI-compatible SDKs
+
+// Management API client, already bound to this server and a key generated for this start.
+const client = server.client();
+await client.credentials.list();
 
 await server.stop();
 ```
@@ -96,9 +99,17 @@ await server.stop();
   ```
 
   Lines longer than 64 KiB in CPA's output are truncated, with a marker saying how much was dropped.
-- `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
-  `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
-  (default `false`), so the plaintext never reaches disk and remote management stays off.
+- Management key: you usually don't need one. Without `management`, cpajs generates a random key for each start,
+  writes only its bcrypt hash into the managed config (remote management off), keeps the plaintext in memory,
+  and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
+  because nobody types it, it can never be wrong and trigger CPA's 30-minute IP ban. `restart()` keeps the key,
+  so existing clients keep working; a new `startServer()` generates a new one. `management: false` turns the
+  management API off.
+
+  Pass a key yourself only when something else needs it, for example a remote admin tool or another process:
+  `management: { key }`. The default mode writes a bcrypt hash into `management.secret-key` of the managed config
+  and sets `management.allow-remote` from `allowRemote` (default `false`), so the plaintext never reaches disk
+  and remote management stays off. `server.client()` works there too.
 
   Redaction: the key, secrets found in the config when the server starts, and `redact` values are replaced with
   `[REDACTED]` in `onLog`, `recentLogs` and startup errors. This is best-effort, with known limits:
@@ -109,14 +120,16 @@ await server.stop();
 
   Do not treat CPA's output as safe to publish.
 
-  | Mode | How CPA compares the key | Remote access |
-  | --- | --- | --- |
-  | `management: { key }` (default) | bcrypt hash in `management.secret-key` | Written from `allowRemote`, default `false` |
-  | `management: { key, allowRemote: true }` | bcrypt hash in `management.secret-key` | Non-loopback clients allowed |
-  | `management: { key, viaEnvironment: true }` | Plaintext `MANAGEMENT_PASSWORD` | Always allowed: upstream treats the variable as `allow-remote: true` |
-  | `config.management['secret-key']` | What you write; CPA hashes plaintext on startup | `config.management['allow-remote']` |
-  | `configPath` | `secret-key` in the file | `allow-remote` in the file |
-  | `managementKey` (deprecated) | bcrypt hash, same as the default | Same as the default; it no longer opens remote access |
+  | Mode | How CPA compares the key | Remote access | `server.client()` |
+  | --- | --- | --- | --- |
+  | omitted (default) | bcrypt hash of a key generated per start | Off | Yes |
+  | `management: false` | — (management API disabled) | — | No |
+  | `management: { key }` | bcrypt hash in `management.secret-key` | Written from `allowRemote`, default `false` | Yes |
+  | `management: { key, allowRemote: true }` | bcrypt hash in `management.secret-key` | Non-loopback clients allowed | Yes |
+  | `management: { key, viaEnvironment: true }` | Plaintext `MANAGEMENT_PASSWORD` | Always allowed: upstream treats the variable as `allow-remote: true` | Yes |
+  | `config.management['secret-key']` | What you write; CPA hashes plaintext on startup | `config.management['allow-remote']` | No: the key is yours |
+  | `configPath` | `secret-key` in the file | `allow-remote` in the file | Only with `management: { key, viaEnvironment: true }` |
+  | `managementKey` (deprecated) | bcrypt hash, same as `management: { key }` | Off unless the file allows it | Yes |
 
   `management.key` is rejected together with `config.management['secret-key']`, or with a `secret-key`
   already present in `configPath`. In `configPath` mode it also requires `viaEnvironment: true`, because
@@ -130,7 +143,8 @@ await server.stop();
   remote management cannot be turned off. `allowRemote: true` emits one when the bind host is not loopback.
   These are warnings, not errors, because both are explicit choices.
 
-  The server handle does not expose the key. Keep it in your own code and pass it to `createClient`.
+  The server handle never exposes the key; `server.client()` exposes the capability instead. To connect from
+  elsewhere, pass your own key to `createClient`.
 - CLI flags are typed options:
   - `localModel: true` → `-local-model`, which uses the embedded model catalogs.
   - `home: { jwt, disableClusterDiscovery }` → Home mode. The JWT is passed through `HOME_JWT`, so it never appears in argv.

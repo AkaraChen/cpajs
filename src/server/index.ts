@@ -11,7 +11,8 @@ import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
-import type { CpaServer, ExitResult, LogLine, RestartOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
+import type { CpaServer, ExitResult, LogLine, RestartOptions, ServerClientOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
+import { createClient } from '../client/index.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
 export type { HostPlatform, Libc, ResolvedBinary } from './binary.ts';
@@ -49,8 +50,12 @@ function validate(options: StartServerOptions): void {
       'management and managementKey are mutually exclusive; managementKey is the deprecated alias for management.key.',
     );
   }
+  if (options.management === false && options.managementKey !== undefined) {
+    throw new CpaStartError('invalid-options', 'management: false disables the management API; do not also pass managementKey.');
+  }
   if (
     options.management !== undefined &&
+    options.management !== false &&
     (typeof options.management.key !== 'string' || options.management.key.trim() === '')
   ) {
     throw new CpaStartError('invalid-options', 'management.key must not be empty.');
@@ -58,16 +63,17 @@ function validate(options: StartServerOptions): void {
   if (typeof options.managementKey === 'string' && options.managementKey.trim() === '') {
     throw new CpaStartError('invalid-options', 'managementKey must not be empty.');
   }
-  if (options.management?.viaEnvironment !== true && options.env?.MANAGEMENT_PASSWORD !== undefined) {
+  const viaEnvironment = options.management !== false && options.management?.viaEnvironment === true;
+  if (!viaEnvironment && options.env?.MANAGEMENT_PASSWORD !== undefined) {
     throw new CpaStartError(
       'invalid-options',
       'Do not set MANAGEMENT_PASSWORD in env: cpajs only passes it to CPA for management: { key, viaEnvironment: true }, because upstream treats it as enabling remote management.',
     );
   }
-  const requestedKey = options.management?.key ?? options.managementKey;
+  const requestedKey = (options.management === false ? undefined : options.management?.key) ?? options.managementKey;
   if (requestedKey === undefined) return;
   if (options.configPath !== undefined) {
-    if (options.management?.viaEnvironment !== true) {
+    if (!viaEnvironment) {
       throw new CpaStartError(
         'invalid-options',
         'management.key cannot be combined with configPath because cpajs must not edit your config file. Put management.secret-key in the file, or use management.viaEnvironment: true to pass the key through MANAGEMENT_PASSWORD (which also enables remote management).',
@@ -284,7 +290,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           ) {
             await updateManagedSecret(existing.configPath, managedSecret);
             prepared = (await readManagedConfig(stateDir))!;
-            options.onLog?.({
+            // A generated key changes on every start; only a caller's key change is news.
+            if (!management.generated) options.onLog?.({
               stream: 'stdout',
               line: `Updated management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`,
             });
@@ -361,6 +368,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       if (result.kind === 'ready') {
         return createHandle(result.proc, {
           binaryPath: binary.path,
+          managementKey: management.key,
+          noClientReason:
+            options.management === false
+              ? 'the management API is disabled (management: false)'
+              : options.configPath !== undefined
+                ? 'with configPath, cpajs does not know the key; pass management: { key, viaEnvironment: true } or create a client with your own key'
+                : "config.management['secret-key'] is set, so the key is yours; create a client with it",
           spawnPath,
           supervised,
           prefixArgs,
@@ -417,6 +431,10 @@ async function waitUntilReady(
 interface HandleInfo {
   /** The CPA binary (exposed on the handle). */
   binaryPath: string;
+  /** Plaintext management key, kept private to back server.client(). */
+  managementKey: string | undefined;
+  /** Why server.client() is unavailable when there is no key. */
+  noClientReason: string;
   /** What is spawned: cpa-launcher or CPA itself. */
   spawnPath: string;
   supervised: boolean;
@@ -578,6 +596,10 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     exited,
     stop,
     restart,
+    client(clientOptions: ServerClientOptions = {}) {
+      if (info.managementKey === undefined) throw new Error(`server.client() is unavailable: ${info.noClientReason}.`);
+      return createClient({ ...clientOptions, baseUrl: info.origin, managementKey: info.managementKey });
+    },
   };
   liveServers.add(handle);
   return handle;

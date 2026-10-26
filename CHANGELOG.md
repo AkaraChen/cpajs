@@ -4,6 +4,20 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Breaking
+
+- **Without `management`, the management API is now enabled with a generated key** (it used to stay disabled).
+  The key is random per start; only its bcrypt hash is written, remote management stays off, and the plaintext
+  never leaves memory. Pass `management: false` to keep the old behaviour.
+
+### Added
+
+- `server.client(options?)`: a management client bound to the server's origin and key, without exposing the
+  key. Available when cpajs knows the key (generated, or `management.key`). It removes the need to invent, store
+  and deploy a key when only the host process talks to the management API.
+
 ## 0.1.0-rc.2
 
 ### Added

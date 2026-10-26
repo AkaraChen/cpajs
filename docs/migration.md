@@ -41,3 +41,24 @@ used to be assumed to listen on 8317, which was wrong: CPA binds a random port i
 
 Nothing breaks, but if your host process can be stopped by SIGTERM or SIGINT, add a handler that calls
 `stopAllServers()`. Otherwise the CPA process can outlive your host. See the README.
+
+# Migrating from 0.1.0-rc.2
+
+## Management key is optional
+
+You can drop the management key if only the process that calls `startServer` uses the management API:
+
+```ts
+// Before
+const server = await startServer({ management: { key: process.env.CPA_MANAGEMENT_KEY! }, config });
+const client = createClient({ baseUrl: server.origin, managementKey: process.env.CPA_MANAGEMENT_KEY! });
+
+// After
+const server = await startServer({ config });
+const client = server.client();
+```
+
+Behaviour change: without `management`, the management API used to be disabled. It is now enabled, with a key
+generated per start, loopback-only by default (`allow-remote: false`). Pass `management: false` to keep it
+disabled. Nothing changes with `configPath`, or when you set `config.management['secret-key']` yourself.
+
