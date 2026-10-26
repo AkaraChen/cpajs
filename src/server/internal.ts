@@ -1,3 +1,5 @@
+import type { ResolvedLauncher } from './binary.ts';
+
 /**
  * Test-only hooks. Nothing here is exported from the public entry points.
  *
@@ -13,4 +15,6 @@ export interface InternalCommand {
   path: string;
   /** Arguments placed before `-config <file>`. */
   args: readonly string[];
+  /** Launcher to wrap the command in; omitted means none (tests opt in explicitly). */
+  launcher?: ResolvedLauncher;
 }

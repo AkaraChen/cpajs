@@ -4,6 +4,16 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `cpa-launcher`: CPA no longer outlives the host process, even when the host is killed with SIGKILL, crashes, or
+  is restarted by `tsx watch` / `nodemon`. On Linux the launcher sets `PR_SET_PDEATHSIG` and execs CPA (no extra
+  process). On macOS / BSD it supervises CPA and stops it when the host's pipe closes; `server.pid` is then the
+  launcher's pid. Windows needs no launcher. It is shipped in every non-Windows platform package and can be
+  turned off with `launcher: false`.
+
 ## 0.1.0-rc.1
 
 Bundled CLIProxyAPI: v8.0.43.

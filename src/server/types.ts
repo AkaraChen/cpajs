@@ -59,6 +59,22 @@ interface CommonServerOptions {
    * (`-local-model`). Explicit `models.*` config sources still win.
    */
   localModel?: boolean;
+  /**
+   * Start CPA through `cpa-launcher` so it cannot outlive this process, even
+   * when this process is killed with SIGKILL or crashes. Default `true`.
+   *
+   * - Linux: the launcher sets PR_SET_PDEATHSIG and execs CPA (no extra process).
+   * - macOS / BSD: the launcher stays as CPA's parent and stops it when this
+   *   process dies; `pid` is then the launcher's pid, and signals sent to it are
+   *   forwarded to CPA.
+   * - Windows: not needed; Node already kills child processes with their parent.
+   *
+   * The launcher ships next to the CPA binary in every platform package. With a
+   * custom `binaryPath` it is looked up next to that binary and then in an
+   * installed platform package; if none is found CPA is started directly and a
+   * notice is logged through `onLog`.
+   */
+  launcher?: boolean;
   /** Run as a node of a CPA Home control plane. Home mode disables the local management API. */
   home?: HomeOptions;
   /**

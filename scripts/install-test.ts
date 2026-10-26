@@ -23,7 +23,9 @@ const installed = TARGETS.map(packageName).filter((name) => {
   try { require.resolve(name + '/package.json'); return true; } catch { return false; }
 });
 const binary = resolveBinary();
+const notices = [];
 const server = await startServer({
+  onLog: ({ line }) => { if (line.includes('no cpa-launcher found')) notices.push(line); },
   management: { key: 'install-test-key' },
   localModel: true,
   config: { management: { 'disable-control-panel': true } },
@@ -32,6 +34,8 @@ const server = await startServer({
 try {
   const client = createClient({ baseUrl: server.origin, managementKey: 'install-test-key' });
   const info = await client.server.info();
+  // Outside Windows the platform package must provide cpa-launcher, and startServer must use it.
+  if (process.platform !== 'win32' && notices.length) throw new Error('cpa-launcher was not used: ' + notices[0]);
   console.log(JSON.stringify({ installed, resolved: binary.packageName, version: info.version, supportPlugin: info.supportPlugin }));
 } finally {
   await server.stop();

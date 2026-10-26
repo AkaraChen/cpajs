@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { TARGETS, binaryName, packageName, type Target } from '../src/server/targets.ts';
+import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../src/server/targets.ts';
 import { fetchSource } from './fetch-source.ts';
 import { DEFAULT_BIN_DIR, DEFAULT_NPM_DIR, ROOT, args, fail, log, sha256File, type BuildInfo } from './lib.ts';
 
@@ -85,6 +85,14 @@ if (import.meta.main) {
     const dest = join(dir, 'bin', binaryName(target));
     await copyFile(binary, dest);
     await chmod(dest, 0o755);
+    if (hasLauncher(target)) {
+      const launcher = join(src, LAUNCHER_NAME);
+      if (!info.launcher || !existsSync(launcher)) fail(`${target.id}: ${LAUNCHER_NAME} is missing; rebuild the target`);
+      if ((await sha256File(launcher)) !== info.launcher.sha256) fail(`${target.id}: ${LAUNCHER_NAME} checksum does not match BUILD-INFO.json`);
+      const launcherDest = join(dir, 'bin', LAUNCHER_NAME);
+      await copyFile(launcher, launcherDest);
+      await chmod(launcherDest, 0o755);
+    }
     await copyFile(join(src, 'BUILD-INFO.json'), join(dir, 'BUILD-INFO.json'));
     await copyFile(license, join(dir, 'LICENSE'));
     await writeFile(join(dir, 'README.md'), readme(target, info));

@@ -2,7 +2,7 @@ import { accessSync, chmodSync, constants, existsSync, readdirSync, statSync } f
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { CpaBinaryError } from './errors.ts';
-import { TARGETS, UNSUPPORTED_PLATFORMS, binaryName, packageName, type Target } from './targets.ts';
+import { LAUNCHER_NAME, TARGETS, UNSUPPORTED_PLATFORMS, binaryName, packageName, type Target } from './targets.ts';
 
 const require = createRequire(import.meta.url);
 
@@ -125,4 +125,49 @@ export function resolveBinary(options: { binaryPath?: string; platform?: HostPla
       'It is an optional dependency of @cpajs/cpa; reinstall without --no-optional / --omit=optional, ' +
       'make sure your lockfile was not created on another platform without it, or pass binaryPath.',
   );
+}
+
+/** How the launcher keeps CPA from outliving this process. */
+export type LauncherMode = 'exec' | 'supervise';
+
+export interface ResolvedLauncher {
+  path: string;
+  /**
+   * `exec` (Linux): the launcher sets PR_SET_PDEATHSIG and becomes CPA.
+   * `supervise` (macOS, BSD): the launcher stays as CPA's parent and stops it
+   * when its stdin pipe from this process closes.
+   */
+  mode: LauncherMode;
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Finds `cpa-launcher` for a CPA binary: next to the binary first (platform
+ * packages and local builds keep both in one directory), then in an installed
+ * platform package. Returns undefined on Windows, where Node already places
+ * child processes in a job object that is closed (and its processes killed)
+ * when this process exits.
+ */
+export function resolveLauncher(cpaPath: string, platform: HostPlatform = currentPlatform()): ResolvedLauncher | undefined {
+  if (platform.os === 'win32') return undefined;
+  const mode: LauncherMode = platform.os === 'linux' ? 'exec' : 'supervise';
+  const candidates = [join(dirname(cpaPath), LAUNCHER_NAME)];
+  for (const target of candidateTargets(platform)) {
+    try {
+      candidates.push(join(dirname(require.resolve(`${packageName(target)}/package.json`)), 'bin', LAUNCHER_NAME));
+    } catch {
+      // Package not installed.
+    }
+  }
+  const path = candidates.find(isExecutable);
+  return path === undefined ? undefined : { path, mode };
 }

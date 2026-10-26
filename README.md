@@ -71,10 +71,18 @@ await server.stop();
   `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
   operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
   the handle stopped and cleans up a temporary state directory like `startServer` does.
-- Shutdown: CPA processes are killed when the host exits normally or calls `process.exit()`. A signal the host
-  does not handle (for example a default SIGTERM) ends Node without that cleanup, and cpajs does not install
-  signal handlers, because doing so would change how your process reacts to them. To leave nothing behind,
-  stop servers from your own handlers. `stopAllServers()` stops every server this process started:
+- Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
+  `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
+  relies only on operating-system facilities:
+  - Linux: it sets `PR_SET_PDEATHSIG` and execs CPA, so there is no extra process. The kernel sends CPA SIGTERM
+    when your process dies.
+  - macOS / BSD: it stays as CPA's parent and stops CPA when the pipe to your process closes. `server.pid` is
+    then the launcher's pid; signals sent to it reach CPA.
+  - Windows: no launcher is needed, because Node already kills child processes with their parent.
+
+  Pass `launcher: false` to start CPA directly. With a custom `binaryPath`, the launcher is looked up next to
+  that binary and then in the installed platform package; if none is found, a notice is logged. A graceful stop
+  is still nicer than a kill, and `stopAllServers()` stops every server this process started:
 
   ```ts
   import { stopAllServers } from '@cpajs/cpa/server';
@@ -87,8 +95,7 @@ await server.stop();
   }
   ```
 
-  SIGKILL cannot be handled, so nothing can clean up after it. Lines longer than 64 KiB in CPA's output are
-  truncated, with a marker saying how much was dropped.
+  Lines longer than 64 KiB in CPA's output are truncated, with a marker saying how much was dropped.
 - `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
   `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
   (default `false`), so the plaintext never reaches disk and remote management stays off.
