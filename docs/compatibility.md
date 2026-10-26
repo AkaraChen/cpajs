@@ -4,9 +4,10 @@
 
 The `@cpajs/cpa` version and the bundled CLIProxyAPI version are tracked separately.
 
-| @cpajs/cpa | CLIProxyAPI | Commit | Go | Management API |
-| --- | --- | --- | --- | --- |
-| 0.0.x | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` |
+| @cpajs/cpa | CLIProxyAPI | Commit | Go | Management API | Control panel |
+| --- | --- | --- | --- | --- | --- |
+| 0.0.x – 0.1.0-rc.3 | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` | not bundled (CPA downloads the latest) |
+| 0.1.0-rc.4 | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` | v1.26.7 |
 
 The pinned release lives in [`src/server/cpa-version.ts`](../src/server/cpa-version.ts) and is exported at
 runtime as `CPA_RELEASE`. The client also works with other v8.x servers when the routes it calls exist there.
@@ -14,7 +15,10 @@ Use `client.server.info()` to check which version a server runs.
 
 ### Upgrading the pinned CLIProxyAPI
 
-1. Update `CPA_RELEASE` (tag, commit, commit date, Go version from `go.mod`).
+1. Update `CPA_RELEASE` (tag, commit, commit date, Go version from `go.mod`), and `CPA_PANEL` to the
+   [control panel release](https://github.com/router-for-me/Cli-Proxy-API-Management-Center/releases) that was
+   current at that commit (version, URL, and the `sha256` digest GitHub lists for `management.html`). Re-check
+   `internal/managementasset/updater.go` for `MANAGEMENT_STATIC_PATH` and `disable-auto-update-panel`.
 2. Diff `internal/api/server_management_v8.go` and the handlers in `internal/api/handlers/management/`, as well as
    `internal/config/` for config schema changes, between the old and new tag. Update the types,
    the client methods and [`api-coverage.md`](api-coverage.md).
@@ -22,7 +26,8 @@ Use `client.server.info()` to check which version a server runs.
    `MANAGEMENT_PASSWORD` variable, bcrypt acceptance of `management.secret-key`, `/healthz`, and the exit code
    when the bind fails. cpajs detects a port conflict by re-probing the port after an early exit, not by matching
    the error text.
-4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
+4. Run `node scripts/build-binary.ts --all-portable`, `pnpm panel:fetch`, the unit tests, and `pnpm test:e2e`
+   against a fresh build.
 5. Bump the `@cpajs/cpa` version. Platform packages always share the main package version.
 
 ## Versioning policy

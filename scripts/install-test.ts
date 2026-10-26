@@ -14,10 +14,11 @@ import { DEFAULT_NPM_DIR, args, fail, log, run } from './lib.ts';
 import { startLocalRegistry } from './local-registry.ts';
 
 const CHECK_SCRIPT = `
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import { TARGETS, packageName, resolveBinary, startServer } from '@cpajs/cpa/server';
+import { CPA_PANEL, TARGETS, packageName, resolveBinary, startServer } from '@cpajs/cpa/server';
 import { createClient } from '@cpajs/cpa/client';
 
 const require = createRequire(import.meta.resolve('@cpajs/cpa/server'));
@@ -28,12 +29,16 @@ const binary = resolveBinary();
 const server = await startServer({
   management: { key: 'install-test-key' },
   localModel: true,
-  config: { management: { 'disable-control-panel': true } },
   startupTimeoutMs: 60000,
 });
 try {
   const client = createClient({ baseUrl: server.origin, managementKey: 'install-test-key' });
   const info = await client.server.info();
+  // The main package ships the pinned control panel, and CPA serves it without fetching one.
+  const panel = await fetch(new URL('/management.html', server.origin));
+  if (panel.status !== 200) throw new Error('control panel: GET /management.html returned ' + panel.status);
+  const digest = createHash('sha256').update(new Uint8Array(await panel.arrayBuffer())).digest('hex');
+  if (digest !== CPA_PANEL.sha256) throw new Error('control panel: served ' + digest + ', expected ' + CPA_PANEL.sha256);
   // Outside Windows the platform package must ship cpa-launcher next to CPA.
   if (process.platform !== 'win32' && !existsSync(join(dirname(binary.path), 'cpa-launcher'))) throw new Error('cpa-launcher missing next to ' + binary.path);
   console.log(JSON.stringify({ installed, resolved: binary.packageName, version: info.version, supportPlugin: info.supportPlugin }));

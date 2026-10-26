@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,6 +7,7 @@ import { resolveBinary, resolveLauncher } from './binary.ts';
 import { inspectConfigFile, readManagedConfig, updateManagedSecret, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
+import { bundledPanel } from './panel.ts';
 import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { internalCommand, type InternalCommand } from './internal.ts';
@@ -20,7 +21,7 @@ export type { HostPlatform, Libc, ResolvedBinary } from './binary.ts';
 export { CpaBinaryError, CpaStartError } from './errors.ts';
 export type { CpaBinaryErrorCode, CpaStartErrorCode } from './errors.ts';
 export { TARGETS, NPM_SCOPE, UNSUPPORTED_PLATFORMS, binaryName, packageName } from './targets.ts';
-export { CPA_RELEASE } from './cpa-version.ts';
+export { CPA_PANEL, CPA_RELEASE } from './cpa-version.ts';
 export type { Target, TargetBuild, TargetVerification } from './targets.ts';
 export type * from './types.ts';
 export type { CpaWarning, CpaWarningCode, SuppressWarnings } from './warnings.ts';
@@ -239,11 +240,20 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   // Exec mode checks this after PR_SET_PDEATHSIG to catch a parent that died first.
   if (launcher?.mode === 'exec') env.CPAJS_PARENT_PID = String(process.pid);
   const extraArgs = buildArgs(options);
+  // The pinned control panel (see panel.ts) is used only in a config cpajs manages,
+  // when the caller has not chosen another panel source.
+  const panelFile = command !== undefined ? command.panel : bundledPanel();
+  const pinnedPanel =
+    panelFile !== undefined &&
+    options.management !== false &&
+    options.configPath === undefined &&
+    env.MANAGEMENT_STATIC_PATH === undefined &&
+    options.config?.management?.['panel-github-repository'] === undefined;
   const warn = createWarner(options);
   if (management.generated) {
     warn(
       'noManagementKey',
-      'No management key given: generated one for this start (only its bcrypt hash is stored). Use server.client() for the management API, management: { key } to choose the key, or management: false to disable it.',
+      'No management key given: generated one for this start (only its bcrypt hash is stored). Use server.client() for the management API, management: { key } to choose the key (which also enables the web control panel), or management: false to disable it.',
     );
   }
   const ownsStateDir = options.stateDir === undefined;
@@ -312,7 +322,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
             listen.port = reservation.port;
             dynamicPort = true;
           }
-          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen, managedSecret);
+          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
           wroteConfig = true;
         }
       }
@@ -331,6 +341,15 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           'remoteManagementExposed',
           `management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
         );
+      }
+
+      if (pinnedPanel && prepared.management.servesPinnedPanel) {
+        // A copy in stateDir, so a later opt-in to auto-update (through the management
+        // API) makes CPA write there instead of into the installed package.
+        const staticDir = join(stateDir, 'static');
+        await mkdir(staticDir, { recursive: true });
+        await copyFile(panelFile!, join(staticDir, 'management.html'));
+        env.MANAGEMENT_STATIC_PATH = join(staticDir, 'management.html');
       }
 
       const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);

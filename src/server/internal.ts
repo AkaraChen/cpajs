@@ -17,4 +17,6 @@ export interface InternalCommand {
   args: readonly string[];
   /** Launcher to wrap the command in; omitted means none (tests opt in explicitly). */
   launcher?: ResolvedLauncher;
+  /** Control panel file to use instead of the bundled one; omitted means none. */
+  panel?: string;
 }

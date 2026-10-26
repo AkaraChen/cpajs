@@ -15,6 +15,7 @@
   "files": [
     "dist",
     "src",
+    "assets/management.html",
     "!src/**/*.test.ts"
   ],
   "exports": {
@@ -44,6 +45,7 @@
     "cpa:source": "node scripts/fetch-source.ts",
     "cpa:build": "node scripts/build-binary.ts",
     "cpa:verify": "node scripts/verify-binary.ts",
+    "panel:fetch": "node scripts/fetch-panel.ts",
     "packages:assemble": "node scripts/assemble-packages.ts",
     "prepack": "pnpm run build",
     "packages:pack": "node scripts/pack.ts",
