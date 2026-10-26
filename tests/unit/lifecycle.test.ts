@@ -124,7 +124,9 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     const error = await startError(startServer({ binaryPath: FAKE, env: { FAKE_BIND_ERROR: '5', FAKE_COUNTER: counter } }));
     expect(error.code).toBe('port-in-use');
     expect(await readFile(counter, 'utf8')).toBe('3');
-  });
+    // Six fixture runs, each spawning a port-holder process: about 1.3 s locally,
+    // but slow CI runners exceeded vitest's default 5 s.
+  }, 30_000);
 
   it('reports an early exit with code and output', async () => {
     const error = await startError(startServer({ binaryPath: FAKE, stateDir: dir, env: { FAKE_EXIT: '3' } }));
