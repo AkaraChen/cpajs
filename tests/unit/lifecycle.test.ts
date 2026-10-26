@@ -15,6 +15,7 @@ import {
   startServer,
   type CpaServer,
   type LogLine,
+  type CpaWarning,
   type StartServerOptions,
   type StartWithConfigOptions,
 } from '../../src/server/index.ts';
@@ -93,13 +94,13 @@ describe('server lifecycle (fake binary)', () => {
     const port = first.port;
     await first.stop();
 
-    const lines: LogLine[] = [];
+    const warnings: CpaWarning[] = [];
     const second = await startFake({ stateDir: dir,
       config: { routing: { strategy: 'round-robin' } },
-      onLog: (l) => lines.push(l),
+      onWarning: (w) => warnings.push(w),
     });
     expect(second.port).toBe(port);
-    expect(lines.some((l) => l.line.includes('Keeping existing config'))).toBe(true);
+    expect(warnings.map((w) => w.code)).toContain('configReused');
     expect(parseYaml(await readFile(second.configPath, 'utf8')).routing).toEqual({ strategy: 'fill-first' });
     await second.stop();
 
@@ -238,8 +239,8 @@ describe('server lifecycle (fake binary)', () => {
   });
 
   it('keeps a reused config untouched for the same key and updates only the hash for a new one', async () => {
-    const start = async (key: string, lines: LogLine[]) =>
-      (await startFake({ stateDir: dir, management: { key }, onLog: (l) => lines.push(l) })).stop();
+    const start = async (key: string, warnings: CpaWarning[]) =>
+      (await startFake({ stateDir: dir, management: { key }, onWarning: (w) => warnings.push(w) })).stop();
 
     await start('first-key-value', []);
     const configPath = join(dir, 'config.yaml');
@@ -247,15 +248,15 @@ describe('server lifecycle (fake binary)', () => {
     await writeFile(configPath, `${await readFile(configPath, 'utf8')}routing:\n  strategy: fill-first\n`);
     const before = await readFile(configPath, 'utf8');
 
-    const same: LogLine[] = [];
+    const same: CpaWarning[] = [];
     await start('first-key-value', same);
     expect(await readFile(configPath, 'utf8')).toBe(before);
-    expect(same.some((l) => l.line.startsWith('Updated management.secret-key'))).toBe(false);
+    expect(same.map((w) => w.code)).not.toContain('managementKeyUpdated');
 
-    const changed: LogLine[] = [];
+    const changed: CpaWarning[] = [];
     await start('second-key-value', changed);
     const after = parseYaml(await readFile(configPath, 'utf8'));
-    expect(changed.some((l) => l.line.startsWith('Updated management.secret-key'))).toBe(true);
+    expect(changed.map((w) => w.code)).toContain('managementKeyUpdated');
     expect(compareSync('second-key-value', after.management['secret-key'])).toBe(true);
     expect(compareSync('first-key-value', after.management['secret-key'])).toBe(false);
     expect(after.routing).toEqual({ strategy: 'fill-first' });
@@ -309,22 +310,21 @@ describe('server lifecycle (fake binary)', () => {
 
   it('warns when remote management is exposed on a non-loopback host', async () => {
     const warn = async (options: Pick<StartWithConfigOptions, 'management' | 'host'>): Promise<string[]> => {
-      const lines: LogLine[] = [];
-      const server = await startFake({ host: '0.0.0.0', onLog: (l) => lines.push(l), ...options });
+      const warnings: CpaWarning[] = [];
+      const server = await startFake({ host: '0.0.0.0', onWarning: (w) => warnings.push(w), ...options });
       await server.stop();
-      return lines.filter((l) => l.line.includes('reachable from non-loopback')).map((l) => l.line);
+      return warnings.filter((w) => w.message.includes('reachable from non-loopback')).map((w) => w.code);
     };
 
-    expect(await warn({ management: { key: 'k', allowRemote: true } })).toHaveLength(1);
-    expect(await warn({ management: { key: 'k', viaEnvironment: true } })).toHaveLength(1);
+    expect(await warn({ management: { key: 'k', allowRemote: true } })).toEqual(['remoteManagementExposed']);
+    expect(await warn({ management: { key: 'k', viaEnvironment: true } })).toEqual(['managementViaEnvironment']);
     // viaEnvironment is warned about even on loopback: plaintext comparison and forced remote access.
-    const lines: LogLine[] = [];
-    const local = await startFake({ host: '127.0.0.1', management: { key: 'k', viaEnvironment: true }, onLog: (l) => lines.push(l) });
+    const warnings: CpaWarning[] = [];
+    const local = await startFake({ host: '127.0.0.1', management: { key: 'k', viaEnvironment: true }, onWarning: (w) => warnings.push(w) });
     await local.stop();
-    const viaEnv = lines.filter((l) => l.line.includes('management.viaEnvironment'));
+    const viaEnv = warnings.filter((w) => w.code === 'managementViaEnvironment');
     expect(viaEnv).toHaveLength(1);
-    expect(viaEnv[0]!.stream).toBe('stderr');
-    expect(viaEnv[0]!.line).not.toContain('reachable from non-loopback');
+    expect(viaEnv[0]!.message).not.toContain('reachable from non-loopback');
     // The default mode stays local, so binding all interfaces is not a remote-management warning.
     expect(await warn({ management: { key: 'k' } })).toEqual([]);
     // Loopback with remote access enabled is still local.

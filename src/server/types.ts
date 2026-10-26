@@ -1,11 +1,16 @@
 import type { ChildProcess } from 'node:child_process';
+import type { CpaClient, ClientOptions } from '../client/index.ts';
 import type { CpaConfig } from '../client/types/config.ts';
+import type { CpaWarning, SuppressWarnings } from './warnings.ts';
 
 export interface LogLine {
   stream: 'stdout' | 'stderr';
   /** One line of output with secrets redacted and the trailing newline removed. */
   line: string;
 }
+
+/** Options for `server.client()`: everything except the origin and the key. */
+export type ServerClientOptions = Omit<ClientOptions, 'baseUrl' | 'managementKey'>;
 
 export interface HomeOptions {
   /**
@@ -43,8 +48,16 @@ interface CommonServerOptions {
    * directory. When omitted, a temporary directory is created and removed on stop.
    */
   stateDir?: string;
-  /** Management API key and how it reaches CPA. */
-  management?: ManagementOptions;
+  /**
+   * Management API key and how it reaches CPA.
+   *
+   * Omitted: cpajs generates a random key for this start, writes only its bcrypt
+   * hash into the managed config (remote management off) and keeps the plaintext
+   * in memory; use `server.client()` to talk to the management API. Not done in
+   * `configPath` mode or when `config.management['secret-key']` is set, because
+   * then the secret is yours. `false`: the management API stays disabled.
+   */
+  management?: ManagementOptions | false;
   /**
    * Deprecated alias for `management: { key }`. It uses the safe default
    * (bcrypt hash in the config, remote management disabled) and will be removed
@@ -89,7 +102,17 @@ interface CommonServerOptions {
   startupTimeoutMs?: number;
   /** Cancels startup. After startup it has no effect; call `stop()` instead. */
   signal?: AbortSignal;
-  /** Receives every output line, redacted. */
+  /**
+   * Silences individual cpajs warnings, e.g. `{ noManagementKey: true }`. Every
+   * warning message names the field that silences it.
+   */
+  suppressWarnings?: SuppressWarnings;
+  /**
+   * Receives cpajs warnings instead of `process.emitWarning` (which prints them
+   * to stderr as `CpaWarning`). CPA's own output goes to `onLog`.
+   */
+  onWarning?: (warning: CpaWarning) => void;
+  /** Receives every line CPA prints, redacted. */
   onLog?: (log: LogLine) => void;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
@@ -181,6 +204,13 @@ export interface CpaServer {
    * terminated forcefully (there is no grace period and CPA is not asked to
    * flush state or update auth files). Idempotent.
    */
+  /**
+   * A management API client already bound to this server's origin and key. The
+   * key itself is not exposed. Works when cpajs knows the plaintext key (generated,
+   * or passed as `management.key`); throws otherwise, e.g. with `configPath` or a
+   * `secret-key` you put in `config` yourself.
+   */
+  client(options?: ServerClientOptions): CpaClient;
   stop(options?: StopOptions): Promise<ExitResult>;
   /**
    * Restarts CPA with the original options, reusing `origin`, `baseUrl`, `host`,

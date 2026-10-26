@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { compare, hash } from 'bcryptjs';
 import { CpaStartError } from './errors.ts';
 import type { ManagementOptions } from './types.ts';
@@ -10,8 +11,10 @@ export const BCRYPT_COST = 10;
 const MAX_BCRYPT_BYTES = 72;
 
 export interface ResolvedManagement {
-  /** The plaintext key, when the caller supplied one. */
+  /** The plaintext key: supplied by the caller or generated for this start. */
   key: string | undefined;
+  /** True when cpajs generated the key because none was given. */
+  generated: boolean;
   /** True when the key travels through `MANAGEMENT_PASSWORD`. */
   viaEnvironment: boolean;
   /** Value for `management.allow-remote` in a managed config. */
@@ -26,9 +29,13 @@ export interface ResolvedManagement {
  * the old `MANAGEMENT_PASSWORD` behaviour.
  */
 export async function resolveManagement(options: {
-  management?: ManagementOptions;
+  management?: ManagementOptions | false;
   managementKey?: string;
+  configPath?: string;
+  config?: { management?: { 'secret-key'?: unknown } };
 }): Promise<ResolvedManagement> {
+  const none: ResolvedManagement = { key: undefined, generated: false, viaEnvironment: false, allowRemote: false, secretKeyHash: undefined };
+  if (options.management === false) return none;
   if (options.management !== undefined && options.managementKey !== undefined) {
     throw new CpaStartError(
       'invalid-options',
@@ -38,12 +45,13 @@ export async function resolveManagement(options: {
   const management =
     options.management ?? (options.managementKey === undefined ? undefined : { key: options.managementKey });
   if (management === undefined) {
-    return {
-      key: undefined,
-      viaEnvironment: false,
-      allowRemote: false,
-      secretKeyHash: undefined,
-    };
+    // No key given: generate one for this start so server.client() works, unless the
+    // caller manages the secret itself (configPath, or secret-key in config), where
+    // cpajs cannot know or must not write the key.
+    const ownSecret = options.config?.management?.['secret-key'];
+    if (options.configPath !== undefined || (typeof ownSecret === 'string' && ownSecret.trim() !== '')) return none;
+    const key = randomBytes(32).toString('base64url');
+    return { key, generated: true, viaEnvironment: false, allowRemote: false, secretKeyHash: await hash(key, BCRYPT_COST) };
   }
   const key = management.key;
   if (typeof key !== 'string' || key.trim() === '') {
@@ -57,6 +65,7 @@ export async function resolveManagement(options: {
     }
     return {
       key,
+      generated: false,
       viaEnvironment: true,
       allowRemote: management.allowRemote === true,
       secretKeyHash: undefined,
@@ -70,6 +79,7 @@ export async function resolveManagement(options: {
   }
   return {
     key,
+    generated: false,
     viaEnvironment: false,
     allowRemote: management.allowRemote === true,
     secretKeyHash: await hash(key, BCRYPT_COST),
