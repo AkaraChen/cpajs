@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import type { CpaConfig } from '../../src/client/index.ts';
 import { startServer, type CpaServer, type CpaWarning, type StartServerOptions } from '../../src/server/index.ts';
 import { internalCommand } from '../../src/server/internal.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
@@ -90,6 +91,21 @@ describe('generated management key', () => {
     } finally {
       await next.stop();
     }
+  });
+
+  it('disables the control panel by default, unless the config chooses', async () => {
+    const panel = async (options: { config?: CpaConfig; management?: { key: string } }) => {
+      const server = await startFake({ stateDir: dir, overwriteConfig: true, ...options });
+      try {
+        return parseYaml(await readFile(server.configPath, 'utf8')).management['disable-control-panel'];
+      } finally {
+        await server.stop();
+      }
+    };
+    expect(await panel({})).toBe(true);
+    expect(await panel({ config: { management: { 'disable-control-panel': false } } })).toBe(false);
+    // An explicit key can log in to the panel, so it is left to CPA's default.
+    expect(await panel({ management: { key: 'explicit-key-value' } })).toBeUndefined();
   });
 
   it('uses an explicit key when given', async () => {

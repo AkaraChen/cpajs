@@ -141,7 +141,7 @@ export async function writeManagedConfig(
   config: CpaConfig,
   stateDir: string,
   listen: { host: string; port: number },
-  management?: { secretKeyHash: string; allowRemote: boolean },
+  management?: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean },
 ): Promise<PreparedConfig> {
   const doc = structuredClone(config) as Json;
   const server = isRecord(doc.server) ? doc.server : {};
@@ -150,6 +150,7 @@ export async function writeManagedConfig(
   if (management !== undefined) {
     const section = isRecord(doc.management) ? doc.management : {};
     doc.management = {
+      ...(management.disableControlPanel === true ? { 'disable-control-panel': true } : {}),
       ...section,
       'secret-key': management.secretKeyHash,
       'allow-remote': management.allowRemote,

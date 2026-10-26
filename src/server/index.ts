@@ -260,7 +260,12 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   const managedSecret =
     management.secretKeyHash === undefined
       ? undefined
-      : { secretKeyHash: management.secretKeyHash, allowRemote: management.allowRemote };
+      : {
+          secretKeyHash: management.secretKeyHash,
+          allowRemote: management.allowRemote,
+          // Nobody knows a generated key, so the web panel could never log in; skip its download.
+          ...(management.generated ? { disableControlPanel: true } : {}),
+        };
 
   let reservation: PortReservation | undefined;
   let wroteConfig = false;

@@ -1,5 +1,5 @@
 import type { JsonValue } from '../types/common.ts';
-import type { CpaConfig } from '../types/config.ts';
+import type { CpaConfig, CpaConfigPath, CpaConfigValue } from '../types/config.ts';
 import { encodePath, type RequestOptions, type Transport } from '../transport.ts';
 
 /** A value together with the ETag of the config file it was read from or written to. */
@@ -31,6 +31,15 @@ export interface ConfigWriteResult {
  * dash-case YAML keys; list indices are not addressable (lists are replaced whole).
  */
 export type ConfigPath = string | readonly string[];
+
+/**
+ * The value accepted at `P`: the {@link CpaConfig} type for a known string path,
+ * any JSON-serialisable value otherwise (array paths, plugin options, computed strings).
+ */
+export type ConfigPathValue<P extends ConfigPath> = P extends CpaConfigPath ? CpaConfigValue<P> : JsonInput;
+
+/** JSON-serialisable input. Unlike {@link JsonValue} it accepts interfaces such as `CpaConfig['routing']`. */
+export type JsonInput = string | number | boolean | null | object;
 
 function withIfMatch(options: ConfigWriteOptions): RequestOptions {
   const { ifMatch, ...rest } = options;
@@ -108,12 +117,12 @@ export class ConfigResource {
   }
 
   /** Replaces or creates one node. Missing parent objects are created. */
-  set(path: ConfigPath, value: JsonValue, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
+  set<P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
     return this.#write('PUT', nodePath(path), { json: value }, options);
   }
 
   /** Deep-merges into one node (see {@link patch}). */
-  patchPath(path: ConfigPath, value: JsonValue, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
+  patchPath<P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
     return this.#write('PATCH', nodePath(path), { json: value }, options);
   }
 

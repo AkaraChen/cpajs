@@ -4,6 +4,18 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Changed
+
+- With a generated management key, the managed config defaults `management.disable-control-panel` to `true`.
+  Nobody knows the key, so the web panel could never log in, and CPA no longer downloads it from GitHub on
+  start. Set `config.management['disable-control-panel']: false` to keep it. An explicit key is unaffected.
+- `config.set(path, value)` and `config.patchPath(path, value)` type `value` by `path`: a known path such as
+  `'api-keys'` takes `CpaConfigValue<'api-keys'>`, so `CpaConfig` sections pass (they used to fail because
+  interfaces have no index signature). Array paths and unknown string paths take any JSON-serialisable value.
+  New types: `CpaConfigPath`, `CpaConfigValue`, `ConfigPathValue`, `JsonInput`.
+
 ## 0.1.0-rc.3
 
 ### Breaking

@@ -55,7 +55,10 @@ interface CommonServerOptions {
    * hash into the managed config (remote management off) and keeps the plaintext
    * in memory; use `server.client()` to talk to the management API. Not done in
    * `configPath` mode or when `config.management['secret-key']` is set, because
-   * then the secret is yours. `false`: the management API stays disabled.
+   * then the secret is yours. With a generated key nobody can log in to the web
+   * control panel, so it also defaults `management.disable-control-panel` to
+   * true (CPA then skips downloading the panel from GitHub); set it to false in
+   * `config` to keep the panel. `false`: the management API stays disabled.
    */
   management?: ManagementOptions | false;
   /**
