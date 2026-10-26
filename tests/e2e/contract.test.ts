@@ -583,7 +583,12 @@ describe.skipIf(!binary)('plugin store against a local registry', () => {
     const pluginsDir = join(dir, 'plugins');
     await mkdir(pluginsDir, { recursive: true });
     const pluginData = Buffer.from('cpajs e2e plugin placeholder');
-    const archive = storedZip('local-test.so', pluginData);
+    // CPA picks the artifact for its own GOOS/GOARCH and the library extension for
+    // its GOOS (internal/pluginstore/install.go), so describe the host platform.
+    const goos = process.platform === 'win32' ? 'windows' : process.platform;
+    const goarch = ({ x64: 'amd64', arm64: 'arm64', ia32: '386' } as Record<string, string>)[process.arch] ?? process.arch;
+    const extension = goos === 'darwin' ? '.dylib' : goos === 'windows' ? '.dll' : '.so';
+    const archive = storedZip(`local-test${extension}`, pluginData);
     let registryBody = '';
     const registryServer = createServer((req, res) => {
       if (req.url === '/registry.json') {
@@ -614,7 +619,7 @@ describe.skipIf(!binary)('plugin store against a local registry', () => {
           version: '1.0.0',
           install: {
             type: 'direct',
-            artifacts: [{ goos: 'linux', goarch: 'amd64', url: artifactUrl, sha256: sha256(archive), size: archive.length }],
+            artifacts: [{ goos, goarch, url: artifactUrl, sha256: sha256(archive), size: archive.length }],
           },
         },
       ],
