@@ -43,13 +43,13 @@ export function log(message: string): void {
 export function run(
   command: string,
   argv: readonly string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv; capture?: boolean; shell?: boolean } = {},
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; capture?: boolean; shell?: boolean; quiet?: boolean } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...argv], {
       cwd: options.cwd,
       env: options.env ?? process.env,
-      stdio: options.capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
+      stdio: options.capture ? ['ignore', 'pipe', options.quiet ? 'ignore' : 'inherit'] : 'inherit',
       // Needed to run .cmd shims (npm, pnpm) on Windows.
       shell: options.shell ?? false,
     });

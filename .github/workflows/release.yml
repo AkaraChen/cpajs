@@ -188,7 +188,8 @@ jobs:
             *) tag=latest ;;
           esac
           echo "dist-tag: $tag"
-          main="tarballs/cpajs-cpa-$version.tgz"
+          # The ./ prefix matters: npm reads "tarballs/x.tgz" as a GitHub "user/repo" shorthand.
+          main="./tarballs/cpajs-cpa-$version.tgz"
           publish() {
             name="$(tar -xOzf "$1" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')"
             if npm view "$name@$version" version >/dev/null 2>&1; then
@@ -197,7 +198,7 @@ jobs:
               npm publish "$1" --access public --tag "$tag"
             fi
           }
-          for tgz in tarballs/*.tgz; do
+          for tgz in ./tarballs/*.tgz; do
             [ "$tgz" = "$main" ] || publish "$tgz"
           done
           publish "$main"
