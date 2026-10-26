@@ -19,8 +19,9 @@ Use `client.server.info()` to check which version a server runs.
    `internal/config/` for config schema changes, between the old and new tag. Update the types,
    the client methods and [`api-coverage.md`](api-coverage.md).
 3. Re-check the CLI flags in `cmd/server/main.go` that `startServer` relies on (`-config`), the
-   `MANAGEMENT_PASSWORD` variable, `/healthz`, and the exit code when the bind fails. cpajs detects a
-   port conflict by re-probing the port after an early exit, not by matching the error text.
+   `MANAGEMENT_PASSWORD` variable, bcrypt acceptance of `management.secret-key`, `/healthz`, and the exit code
+   when the bind fails. cpajs detects a port conflict by re-probing the port after an early exit, not by matching
+   the error text.
 4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
 5. Bump the `@cpajs/cpa` version. Platform packages always share the main package version.
 

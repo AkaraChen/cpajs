@@ -2,6 +2,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { compareSync } from 'bcryptjs';
+import { parse as parseYaml } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
@@ -21,7 +23,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
     upstream = await startFakeUpstream();
     server = await startServer({
       binaryPath: binary!,
-      managementKey: MANAGEMENT_KEY,
+      management: { key: MANAGEMENT_KEY },
       localModel: true,
       config: {
         management: { 'disable-control-panel': true },
@@ -53,6 +55,17 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       const info = await client.server.info();
       expect(info.version).toBe(CPA_RELEASE.version);
       expect(info.commit).toBe(CPA_RELEASE.commit.slice(0, 7));
+    });
+
+    it('stores a bcrypt hash and leaves remote management disabled', async () => {
+      const written = parseYaml(await readFile(server.configPath, 'utf8')) as {
+        management: Record<string, unknown>;
+      };
+      expect(written.management['secret-key']).toMatch(/^\$2[aby]\$10\$/);
+      expect(written.management['secret-key']).not.toContain(MANAGEMENT_KEY);
+      expect(compareSync(MANAGEMENT_KEY, written.management['secret-key'] as string)).toBe(true);
+      expect(written.management['allow-remote']).toBe(false);
+      expect(server.managementKey).toBe(MANAGEMENT_KEY);
     });
 
     it('rejects a wrong management key with 401', async () => {
@@ -269,6 +282,42 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.status).toBe(404);
       expect(error.errorCode).toBe('plugin_not_found');
     });
+  });
+});
+
+describe.skipIf(!binary)('management key modes', () => {
+  it('passes the key through MANAGEMENT_PASSWORD only with viaEnvironment', async () => {
+    const server = await startServer({
+      binaryPath: binary!,
+      management: { key: 'via-env-key', viaEnvironment: true },
+      localModel: true,
+      config: { management: { 'disable-control-panel': true } },
+    });
+    try {
+      expect(server.managementKey).toBe('via-env-key');
+      const written = parseYaml(await readFile(server.configPath, 'utf8')) as {
+        management: Record<string, unknown>;
+      };
+      expect(written.management['secret-key']).toBeUndefined();
+      expect(written.management['allow-remote']).toBeUndefined();
+      const client = createClient({ baseUrl: server.origin, managementKey: 'via-env-key' });
+      await expect(client.server.info()).resolves.toMatchObject({ version: CPA_RELEASE.version });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('rejects conflicting management key sources', async () => {
+    await expect(
+      startServer({
+        binaryPath: binary!,
+        management: { key: 'a' },
+        config: { management: { 'secret-key': 'b' } },
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-options' });
+    await expect(
+      startServer({ binaryPath: binary!, configPath: '/tmp/cpajs-not-read.yaml', management: { key: 'a' } }),
+    ).rejects.toMatchObject({ code: 'invalid-options' });
   });
 });
 

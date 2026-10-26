@@ -9,6 +9,15 @@ export function connectHost(bindHost: string): string {
   return bindHost;
 }
 
+/** True when a bind host only accepts loopback connections. */
+export function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (normalized === '' || normalized === '0.0.0.0' || normalized === '::') return false;
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  if (normalized.startsWith('::ffff:127.')) return true;
+  return /^127(?:\.\d{1,3}){3}$/.test(normalized);
+}
+
 export function formatOrigin(protocol: 'http' | 'https', host: string, port: number): string {
   const h = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return `${protocol}://${h}:${port}`;

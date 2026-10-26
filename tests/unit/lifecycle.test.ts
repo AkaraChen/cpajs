@@ -6,9 +6,10 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { CpaStartError, startServer, type LogLine } from '../../src/server/index.ts';
+import { CpaStartError, startServer, type LogLine, type StartWithConfigOptions } from '../../src/server/index.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url));
 
@@ -170,11 +171,13 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(existsSync(server.stateDir)).toBe(false);
   });
 
-  it('redacts secrets from logs and passes the management key through the environment', async () => {
+  it('hashes the management key into the managed config and keeps it out of the environment', async () => {
     const lines: LogLine[] = [];
+    const key = 'mgmt-secret-value';
     const server = await startServer({
       binaryPath: FAKE,
-      managementKey: 'mgmt-secret-value',
+      stateDir: dir,
+      management: { key },
       config: { access: { 'api-keys': ['model-secret-value'] } },
       redact: ['extra-secret-value'],
       env: { FAKE_ECHO: 'mgmt-secret-value model-secret-value extra-secret-value' },
@@ -185,8 +188,102 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(echoed.map((l) => l.stream).sort()).toEqual(['stderr', 'stdout']);
     expect(echoed[0]!.line).toMatch(/: \[REDACTED\] \[REDACTED\] \[REDACTED\]$/);
     expect(server.recentLogs.some((l) => l.line.includes('secret-value'))).toBe(false);
-    expect(server.managementKey).toBe('mgmt-secret-value');
+    expect(server.managementKey).toBe(key);
+    expect(lines.some((l) => l.line.startsWith('MANAGEMENT_PASSWORD'))).toBe(false);
+
+    const written = parseYaml(await readFile(server.configPath, 'utf8'));
+    expect(written.management['secret-key']).toMatch(/^\$2[aby]\$10\$/);
+    expect(written.management['secret-key']).not.toContain(key);
+    expect(compareSync(key, written.management['secret-key'])).toBe(true);
+    expect(written.management['allow-remote']).toBe(false);
+  });
+
+  it('keeps a reused config untouched for the same key and updates only the hash for a new one', async () => {
+    const start = async (key: string, lines: LogLine[]) =>
+      (await startServer({ binaryPath: FAKE, stateDir: dir, management: { key }, onLog: (l) => lines.push(l) })).stop();
+
+    await start('first-key-value', []);
+    const configPath = join(dir, 'config.yaml');
+    // Simulate a change CPA persisted through the management API.
+    await writeFile(configPath, `${await readFile(configPath, 'utf8')}routing:\n  strategy: fill-first\n`);
+    const before = await readFile(configPath, 'utf8');
+
+    const same: LogLine[] = [];
+    await start('first-key-value', same);
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+    expect(same.some((l) => l.line.startsWith('Updated management.secret-key'))).toBe(false);
+
+    const changed: LogLine[] = [];
+    await start('second-key-value', changed);
+    const after = parseYaml(await readFile(configPath, 'utf8'));
+    expect(changed.some((l) => l.line.startsWith('Updated management.secret-key'))).toBe(true);
+    expect(compareSync('second-key-value', after.management['secret-key'])).toBe(true);
+    expect(compareSync('first-key-value', after.management['secret-key'])).toBe(false);
+    expect(after.routing).toEqual({ strategy: 'fill-first' });
+  });
+
+  it('drops an inherited MANAGEMENT_PASSWORD in the default mode', async () => {
+    const saved = process.env.MANAGEMENT_PASSWORD;
+    process.env.MANAGEMENT_PASSWORD = 'inherited-value';
+    try {
+      const lines: LogLine[] = [];
+      const server = await startServer({
+        binaryPath: FAKE,
+        stateDir: dir,
+        management: { key: 'chosen-key' },
+        onLog: (l) => lines.push(l),
+      });
+      await server.stop();
+      expect(lines.some((l) => l.line.startsWith('MANAGEMENT_PASSWORD'))).toBe(false);
+      const written = parseYaml(await readFile(server.configPath, 'utf8'));
+      expect(compareSync('chosen-key', written.management['secret-key'])).toBe(true);
+    } finally {
+      if (saved === undefined) delete process.env.MANAGEMENT_PASSWORD;
+      else process.env.MANAGEMENT_PASSWORD = saved;
+    }
+  });
+
+  it('can pass the key through MANAGEMENT_PASSWORD when explicitly requested', async () => {
+    const lines: LogLine[] = [];
+    const server = await startServer({
+      binaryPath: FAKE,
+      stateDir: dir,
+      management: { key: 'mgmt-secret-value', viaEnvironment: true },
+      onLog: (l) => lines.push(l),
+    });
+    await server.stop();
     expect(lines.some((l) => l.line === 'MANAGEMENT_PASSWORD length 17')).toBe(true);
+    expect(server.managementKey).toBe('mgmt-secret-value');
+    const written = parseYaml(await readFile(server.configPath, 'utf8'));
+    expect(written.management).toBeUndefined();
+  });
+
+  it('warns when remote management is exposed on a non-loopback host', async () => {
+    const warn = async (options: Pick<StartWithConfigOptions, 'management' | 'host'>): Promise<string[]> => {
+      const lines: LogLine[] = [];
+      const server = await startServer({ binaryPath: FAKE, host: '0.0.0.0', onLog: (l) => lines.push(l), ...options });
+      await server.stop();
+      return lines.filter((l) => l.line.includes('reachable from non-loopback')).map((l) => l.line);
+    };
+
+    expect(await warn({ management: { key: 'k', allowRemote: true } })).toHaveLength(1);
+    expect(await warn({ management: { key: 'k', viaEnvironment: true } })).toHaveLength(1);
+    // The default mode stays local, so binding all interfaces is not a remote-management warning.
+    expect(await warn({ management: { key: 'k' } })).toEqual([]);
+    // Loopback with remote access enabled is still local.
+    expect(
+      await warn({ host: '127.0.0.1', management: { key: 'k', allowRemote: true } }),
+    ).toEqual([]);
+  });
+
+  it('rejects a configPath secret together with management viaEnvironment', async () => {
+    const configPath = join(dir, 'config.yaml');
+    await writeFile(configPath, 'config-version: 8\nserver:\n  host: 127.0.0.1\n  port: 12345\nmanagement:\n  secret-key: file-secret\n');
+    const error = await startError(
+      startServer({ binaryPath: FAKE, configPath, management: { key: 'env-key', viaEnvironment: true } }),
+    );
+    expect(error.code).toBe('invalid-options');
+    expect(error.message).toMatch(/configPath/);
   });
 
   it('passes Home options as a flag plus HOME_JWT, keeping the JWT out of argv and logs', async () => {

@@ -24,7 +24,7 @@ const installed = TARGETS.map(packageName).filter((name) => {
 });
 const binary = resolveBinary();
 const server = await startServer({
-  managementKey: 'install-test-key',
+  management: { key: 'install-test-key' },
   localModel: true,
   config: { management: { 'disable-control-panel': true } },
   startupTimeoutMs: 60000,
@@ -45,7 +45,7 @@ import * as root from '@cpajs/cpa';
 
 const config: CpaConfig = { routing: { strategy: 'fill-first' }, access: { 'api-keys': ['k'] } };
 export async function main(): Promise<AuthFileEntry[]> {
-  const server: CpaServer = await startServer({ config });
+  const server: CpaServer = await startServer({ config, management: { key: 'k' } });
   const client = createClient({ baseUrl: server.origin, managementKey: 'k' });
   try {
     return (await client.credentials.list()).files;

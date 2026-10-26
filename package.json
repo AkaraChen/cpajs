@@ -46,6 +46,7 @@
     "test:install": "node scripts/install-test.ts"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "yaml": "^2.9.1"
   },
   "devDependencies": {

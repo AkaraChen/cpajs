@@ -127,7 +127,7 @@ async function smoke(target: Target, binary: string): Promise<void> {
   const modelKey = 'smoke-model-key';
   const server = await startServer({
     binaryPath: binary,
-    managementKey,
+    management: { key: managementKey },
     localModel: true,
     startupTimeoutMs: 120_000,
     config: { access: { 'api-keys': [modelKey] }, management: { 'disable-control-panel': true } },

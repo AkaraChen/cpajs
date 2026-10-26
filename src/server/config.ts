@@ -1,10 +1,19 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from 'yaml';
 import type { CpaConfig } from '../client/types/config.ts';
 import { CpaStartError } from './errors.ts';
 
 export const MANAGED_CONFIG_FILE = 'config.yaml';
+
+export interface ManagementSettings {
+  /** `management.allow-remote`, falling back to the legacy `remote-management` key. */
+  allowRemote: boolean;
+  /** True when the document already has a non-empty `secret-key`. */
+  hasSecret: boolean;
+  /** The stored `secret-key` (plaintext or a bcrypt hash), if any. */
+  secretKey: string | undefined;
+}
 
 export interface ListenSettings {
   /** The `server.host` value as configured; empty means all interfaces. */
@@ -62,6 +71,25 @@ export function readListenSettings(doc: unknown): ListenSettings {
   };
 }
 
+/**
+ * Reads management settings from a parsed config document. The v8 `management`
+ * section wins over the legacy `remote-management` alias, mirroring CPA.
+ */
+export function readManagementSettings(doc: unknown): ManagementSettings {
+  const root = isRecord(doc) ? doc : {};
+  const section = isRecord(root.management)
+    ? root.management
+    : isRecord(root['remote-management'])
+      ? root['remote-management']
+      : {};
+  const secret = section['secret-key'];
+  return {
+    allowRemote: section['allow-remote'] === true,
+    hasSecret: typeof secret === 'string' && secret.trim() !== '',
+    secretKey: typeof secret === 'string' && secret.trim() !== '' ? secret : undefined,
+  };
+}
+
 const SECRET_FIELDS = new Set(['secret-key', 'api-key', 'github-token', 'credential', 'access_token', 'refresh_token']);
 const SECRET_LISTS = new Set(['api-keys']);
 
@@ -89,6 +117,7 @@ export function configSecrets(doc: unknown): string[] {
 export interface PreparedConfig {
   configPath: string;
   listen: ListenSettings;
+  management: ManagementSettings;
   secrets: string[];
   /** True when the file belongs to the managed state directory. */
   managed: boolean;
@@ -107,11 +136,20 @@ export async function writeManagedConfig(
   config: CpaConfig,
   stateDir: string,
   listen: { host: string; port: number },
+  management?: { secretKeyHash: string; allowRemote: boolean },
 ): Promise<PreparedConfig> {
   const doc = structuredClone(config) as Json;
   const server = isRecord(doc.server) ? doc.server : {};
   doc.server = { ...server, host: listen.host, port: listen.port };
   if (doc['config-version'] === undefined) doc['config-version'] = 8;
+  if (management !== undefined) {
+    const section = isRecord(doc.management) ? doc.management : {};
+    doc.management = {
+      ...section,
+      'secret-key': management.secretKeyHash,
+      'allow-remote': management.allowRemote,
+    };
+  }
   const oauth = isRecord(doc.oauth) ? doc.oauth : {};
   // Keep credentials inside stateDir unless the config chooses a location (v8 or legacy key).
   if (oauth['auth-dir'] === undefined && doc['auth-dir'] === undefined) {
@@ -122,7 +160,14 @@ export async function writeManagedConfig(
 
   const configPath = join(stateDir, MANAGED_CONFIG_FILE);
   await writeFile(configPath, stringifyYaml(doc), { mode: 0o600 });
-  return { configPath, listen: readListenSettings(doc), secrets: configSecrets(doc), managed: true, reused: false };
+  return {
+    configPath,
+    listen: readListenSettings(doc),
+    management: readManagementSettings(doc),
+    secrets: configSecrets(doc),
+    managed: true,
+    reused: false,
+  };
 }
 
 function isFixedPort(port: number): boolean {
@@ -158,7 +203,30 @@ export async function readManagedConfig(stateDir: string): Promise<PreparedConfi
       `${configPath} does not set a fixed server.port. CLIProxyAPI does not report the port it picks; set server.port, delete the file, or pass overwriteConfig: true.`,
     );
   }
-  return { configPath, listen, secrets: configSecrets(doc), managed: true, reused: true };
+  return {
+    configPath,
+    listen,
+    management: readManagementSettings(doc),
+    secrets: configSecrets(doc),
+    managed: true,
+    reused: true,
+  };
+}
+
+/**
+ * Sets `management.secret-key` and `management.allow-remote` in a reused
+ * managed config, leaving every other key and comment as CPA left them.
+ * The legacy `remote-management` section is dropped so it cannot shadow them.
+ */
+export async function updateManagedSecret(
+  configPath: string,
+  management: { secretKeyHash: string; allowRemote: boolean },
+): Promise<void> {
+  const document = parseDocument(await readFile(configPath, 'utf8'), { merge: true });
+  document.delete('remote-management');
+  document.setIn(['management', 'secret-key'], management.secretKeyHash);
+  document.setIn(['management', 'allow-remote'], management.allowRemote);
+  await writeFile(configPath, document.toString(), { mode: 0o600 });
 }
 
 /** Reads an existing config file without modifying it. */
@@ -191,5 +259,12 @@ export async function inspectConfigFile(configPath: string): Promise<PreparedCon
       `configPath ${absolute} does not set a fixed port between 1 and 65535 (got ${shown}). CLIProxyAPI does not default the port: a missing or non-positive port becomes 0 and binds a random port it does not report. Set a fixed port or pass a config object instead.`,
     );
   }
-  return { configPath: absolute, listen, secrets: configSecrets(doc), managed: false, reused: false };
+  return {
+    configPath: absolute,
+    listen,
+    management: readManagementSettings(doc),
+    secrets: configSecrets(doc),
+    managed: false,
+    reused: false,
+  };
 }

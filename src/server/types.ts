@@ -18,6 +18,23 @@ export interface HomeOptions {
   disableClusterDiscovery?: boolean;
 }
 
+export interface ManagementOptions {
+  /** Management API key. Empty keys are rejected. */
+  key: string;
+  /**
+   * Write `management.allow-remote`, which lets non-loopback clients use the
+   * management API. Default `false`; ignored by `viaEnvironment`, which always
+   * enables remote access upstream.
+   */
+  allowRemote?: boolean;
+  /**
+   * Pass the key to CPA through `MANAGEMENT_PASSWORD` instead of writing a
+   * bcrypt hash into the managed config. Upstream treats that variable as
+   * enabling remote management and compares the key in plaintext.
+   */
+  viaEnvironment?: boolean;
+}
+
 interface CommonServerOptions {
   /** Use this executable instead of the bundled platform package. */
   binaryPath?: string;
@@ -26,10 +43,15 @@ interface CommonServerOptions {
    * directory. When omitted, a temporary directory is created and removed on stop.
    */
   stateDir?: string;
+  /** Management API key and how it reaches CPA. */
+  management?: ManagementOptions;
   /**
-   * Management key passed to CPA through the `MANAGEMENT_PASSWORD` environment
-   * variable, so it never touches disk. Note that upstream treats this variable
-   * as allowing remote management access regardless of `management.allow-remote`.
+   * Deprecated alias for `management: { key }`. It uses the safe default
+   * (bcrypt hash in the config, remote management disabled) and will be removed
+   * in a future release. Use `management.viaEnvironment` for the old
+   * `MANAGEMENT_PASSWORD` behaviour.
+   *
+   * @deprecated Use `management` instead.
    */
   managementKey?: string;
   /**
@@ -119,7 +141,7 @@ export interface CpaServer {
   readonly binaryPath: string;
   readonly configPath: string;
   readonly stateDir: string;
-  /** The management key given in the options, if any. */
+  /** The resolved management key (`management.key` or the deprecated alias), if any. */
   readonly managementKey: string | undefined;
   readonly process: ChildProcess;
   /** Recent output lines (redacted), oldest first. */
