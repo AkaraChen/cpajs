@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
-import { run } from './lib.ts';
+import { gunzipSync } from 'node:zlib';
 
 const UPSTREAM = 'https://registry.npmjs.org';
 
@@ -18,9 +18,21 @@ interface LocalVersion {
   file: string;
 }
 
-async function readManifest(tgz: string): Promise<LocalVersion['manifest']> {
-  const text = await run('tar', ['-xOzf', tgz, 'package/package.json'], { capture: true });
-  return JSON.parse(text) as LocalVersion['manifest'];
+/** Reads package/package.json from an npm tarball without an external tar binary. */
+function readManifest(tarball: Buffer): LocalVersion['manifest'] {
+  const tar = gunzipSync(tarball);
+  for (let offset = 0; offset + 512 <= tar.length; ) {
+    const header = tar.subarray(offset, offset + 512);
+    const name = header.subarray(0, 100).toString('utf8').replace(/\0.*$/s, '');
+    if (name === '') break;
+    const size = Number.parseInt(header.subarray(124, 136).toString('utf8').replace(/\0.*$/s, '').trim() || '0', 8);
+    const body = offset + 512;
+    if (name === 'package/package.json') {
+      return JSON.parse(tar.subarray(body, body + size).toString('utf8')) as LocalVersion['manifest'];
+    }
+    offset = body + Math.ceil(size / 512) * 512;
+  }
+  throw new Error('package/package.json not found in tarball');
 }
 
 export interface LocalRegistry {
@@ -33,8 +45,9 @@ export async function startLocalRegistry(tarballDir: string): Promise<LocalRegis
   const local = new Map<string, LocalVersion>();
   for (const file of (await readdir(tarballDir)).filter((f) => f.endsWith('.tgz'))) {
     const path = join(tarballDir, file);
-    const manifest = await readManifest(path);
-    local.set(manifest.name, { manifest, tarball: await readFile(path), file });
+    const tarball = await readFile(path);
+    const manifest = readManifest(tarball);
+    local.set(manifest.name, { manifest, tarball, file });
   }
 
   let origin = '';
