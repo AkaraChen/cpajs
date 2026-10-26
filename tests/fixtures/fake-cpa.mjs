@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Minimal stand-in for cli-proxy-api used by lifecycle tests.
-// Reads `-config <file>` (JSON), serves GET /healthz on server.host/port.
+// Reads `-config <file>` (YAML), serves GET /healthz on server.host/port.
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
 //   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
@@ -13,10 +13,11 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { parse as parseYaml } from 'yaml';
 
 const args = process.argv.slice(2);
 const configPath = args[args.indexOf('-config') + 1];
-const config = JSON.parse(readFileSync(configPath, 'utf8'));
+const config = parseYaml(readFileSync(configPath, 'utf8'));
 const host = config.server?.host || '127.0.0.1';
 const port = config.server?.port;
 

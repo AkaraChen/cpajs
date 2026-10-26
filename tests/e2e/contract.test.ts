@@ -1,8 +1,11 @@
 // Contract tests: the typed client against a real CLIProxyAPI with a fake upstream.
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
+import { findFreePort } from '../../src/server/readiness.ts';
 import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './helpers.ts';
 
 const binary = findBinary();
@@ -299,6 +302,56 @@ describe.skipIf(!binary)('server with an existing config file', () => {
       }
       expect((await import('node:fs')).existsSync(dir)).toBe(true);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe.skipIf(!binary)('managed config ownership', () => {
+  it('keeps management API changes across stop and start with the same stateDir', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cpajs-e2e-'));
+    const port = await findFreePort('127.0.0.1');
+    let first: CpaServer | undefined;
+    let second: CpaServer | undefined;
+    try {
+      first = await startServer({
+        binaryPath: binary!,
+        stateDir: dir,
+        port,
+        managementKey: MANAGEMENT_KEY,
+        localModel: true,
+        config: { routing: { strategy: 'fill-first' } },
+      });
+      expect(first.port).toBe(port);
+      const configPath = first.configPath;
+      const text = await readFile(configPath, 'utf8');
+      expect(text).toContain('config-version: 8');
+      expect(text).not.toMatch(/^\{/);
+
+      const client = createClient({ baseUrl: first.origin, managementKey: MANAGEMENT_KEY });
+      await client.config.set('routing/strategy', 'round-robin');
+      expect((await client.config.getPath('routing/strategy')).data).toBe('round-robin');
+
+      await first.stop();
+      first = undefined;
+
+      const logs: string[] = [];
+      second = await startServer({
+        binaryPath: binary!,
+        stateDir: dir,
+        managementKey: MANAGEMENT_KEY,
+        localModel: true,
+        onLog: (log) => logs.push(log.line),
+        config: { routing: { strategy: 'fill-first' } },
+      });
+      expect(second.configPath).toBe(configPath);
+      expect(second.port).toBe(port);
+      expect(logs.join('\n')).toContain('Keeping existing config');
+      const restarted = createClient({ baseUrl: second.origin, managementKey: MANAGEMENT_KEY });
+      expect((await restarted.config.getPath('routing/strategy')).data).toBe('round-robin');
+    } finally {
+      await second?.stop();
+      await first?.stop();
       await rm(dir, { recursive: true, force: true });
     }
   });

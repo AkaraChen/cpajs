@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import type { CpaConfig } from '../client/types/config.ts';
 import { CpaStartError } from './errors.ts';
 
@@ -90,16 +90,18 @@ export interface PreparedConfig {
   configPath: string;
   listen: ListenSettings;
   secrets: string[];
-  /** True when the file was written by this package. */
+  /** True when the file belongs to the managed state directory. */
   managed: boolean;
+  /** True when an existing file was reused instead of written. */
+  reused: boolean;
 }
 
 /**
  * Writes a `config` object to the managed config file in `stateDir`.
  *
- * The object is serialised as JSON, which is valid YAML and is read by CPA's
- * YAML loader unchanged. Listener and auth directory defaults are filled in so
- * the process stays inside `stateDir` and binds to loopback unless told otherwise.
+ * The object is serialised as YAML so CPA and humans see the same stable shape.
+ * Listener and auth directory defaults are filled in so the process stays inside
+ * `stateDir` and binds to loopback unless told otherwise.
  */
 export async function writeManagedConfig(
   config: CpaConfig,
@@ -119,8 +121,44 @@ export async function writeManagedConfig(
   }
 
   const configPath = join(stateDir, MANAGED_CONFIG_FILE);
-  await writeFile(configPath, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
-  return { configPath, listen: readListenSettings(doc), secrets: configSecrets(doc), managed: true };
+  await writeFile(configPath, stringifyYaml(doc), { mode: 0o600 });
+  return { configPath, listen: readListenSettings(doc), secrets: configSecrets(doc), managed: true, reused: false };
+}
+
+function isFixedPort(port: number): boolean {
+  return Number.isInteger(port) && port > 0 && port <= 65_535;
+}
+
+/**
+ * Reads the managed config file in `stateDir` without modifying it.
+ *
+ * Returns `undefined` when the file does not exist yet. An existing file must
+ * set a fixed `server.port`, because CPA does not report the port it picks and
+ * a later start cannot discover it.
+ */
+export async function readManagedConfig(stateDir: string): Promise<PreparedConfig | undefined> {
+  const configPath = join(stateDir, MANAGED_CONFIG_FILE);
+  let text: string;
+  try {
+    text = await readFile(configPath, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new CpaStartError('invalid-options', `Cannot read ${configPath}.`, { cause });
+  }
+  let doc: unknown;
+  try {
+    doc = parseYaml(text, { merge: true });
+  } catch (cause) {
+    throw new CpaStartError('invalid-options', `${configPath} is not valid YAML.`, { cause });
+  }
+  const listen = readListenSettings(doc);
+  if (!isFixedPort(listen.port)) {
+    throw new CpaStartError(
+      'invalid-options',
+      `${configPath} does not set a fixed server.port. CLIProxyAPI does not report the port it picks; set server.port, delete the file, or pass overwriteConfig: true.`,
+    );
+  }
+  return { configPath, listen, secrets: configSecrets(doc), managed: true, reused: true };
 }
 
 /** Reads an existing config file without modifying it. */
@@ -146,12 +184,12 @@ export async function inspectConfigFile(configPath: string): Promise<PreparedCon
     throw new CpaStartError('invalid-options', `configPath ${absolute} has a "server.tls" section that is not a mapping.`);
   }
   const listen = readListenSettings(doc);
-  if (!Number.isInteger(listen.port) || listen.port <= 0 || listen.port > 65_535) {
+  if (!isFixedPort(listen.port)) {
     const shown = Number.isNaN(listen.port) ? 'a non-numeric value' : String(listen.port);
     throw new CpaStartError(
       'invalid-options',
       `configPath ${absolute} does not set a fixed port between 1 and 65535 (got ${shown}). CLIProxyAPI does not default the port: a missing or non-positive port becomes 0 and binds a random port it does not report. Set a fixed port or pass a config object instead.`,
     );
   }
-  return { configPath: absolute, listen, secrets: configSecrets(doc), managed: false };
+  return { configPath: absolute, listen, secrets: configSecrets(doc), managed: false, reused: false };
 }

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildArgs } from './args.ts';
 import { resolveBinary } from './binary.ts';
-import { inspectConfigFile, writeManagedConfig, type PreparedConfig } from './config.ts';
+import { inspectConfigFile, readManagedConfig, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
 import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
@@ -90,6 +90,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   const extraArgs = buildArgs(options);
 
   let reservation: PortReservation | undefined;
+  let wroteConfig = false;
+  let announcedReuse = false;
   try {
     for (let attempt = 1; ; attempt++) {
       let prepared: PreparedConfig;
@@ -97,13 +99,28 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       if (options.configPath !== undefined) {
         prepared = await inspectConfigFile(options.configPath);
       } else {
-        const listen = configListen(options);
-        if (listen.port === 0) {
-          reservation = await findFreePort(listen.host);
-          listen.port = reservation.port;
-          dynamicPort = true;
+        // The file belongs to CPA after the first start: management API writes and
+        // CPA's own normalisation must survive later starts.
+        const existing = options.overwriteConfig || wroteConfig ? undefined : await readManagedConfig(stateDir);
+        if (existing) {
+          prepared = existing;
+          if (!announcedReuse) {
+            announcedReuse = true;
+            options.onLog?.({
+              stream: 'stdout',
+              line: `Keeping existing config at ${existing.configPath}; pass overwriteConfig: true to replace it.`,
+            });
+          }
+        } else {
+          const listen = configListen(options);
+          if (listen.port === 0) {
+            reservation = await findFreePort(listen.host);
+            listen.port = reservation.port;
+            dynamicPort = true;
+          }
+          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen);
+          wroteConfig = true;
         }
-        prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen);
       }
 
       const { host, port, tls } = prepared.listen;

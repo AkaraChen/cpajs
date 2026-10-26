@@ -1,12 +1,13 @@
 // Process lifecycle tests against tests/fixtures/fake-cpa.mjs (POSIX only:
 // the fixture is started through its shebang).
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { CpaStartError, startServer, type LogLine } from '../../src/server/index.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url));
@@ -55,9 +56,37 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     const server = await startServer({ binaryPath: FAKE, stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
     await server.stop();
     expect(server.configPath).toBe(join(dir, 'config.yaml'));
-    const written = JSON.parse(await readFile(server.configPath, 'utf8'));
-    expect(written.routing).toEqual({ strategy: 'fill-first' });
+    const text = await readFile(server.configPath, 'utf8');
+    expect(text).not.toMatch(/^\{/);
+    expect(parseYaml(text).routing).toEqual({ strategy: 'fill-first' });
     expect(existsSync(dir)).toBe(true);
+  });
+
+  it('reuses an existing managed config, logs it, and overwrites on request', async () => {
+    const first = await startServer({ binaryPath: FAKE, stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
+    const port = first.port;
+    await first.stop();
+
+    const lines: LogLine[] = [];
+    const second = await startServer({
+      binaryPath: FAKE,
+      stateDir: dir,
+      config: { routing: { strategy: 'round-robin' } },
+      onLog: (l) => lines.push(l),
+    });
+    expect(second.port).toBe(port);
+    expect(lines.some((l) => l.line.includes('Keeping existing config'))).toBe(true);
+    expect(parseYaml(await readFile(second.configPath, 'utf8')).routing).toEqual({ strategy: 'fill-first' });
+    await second.stop();
+
+    const third = await startServer({
+      binaryPath: FAKE,
+      stateDir: dir,
+      overwriteConfig: true,
+      config: { routing: { strategy: 'round-robin' } },
+    });
+    expect(parseYaml(await readFile(third.configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+    await third.stop();
   });
 
   it('honours an explicit port and refuses one that is taken', async () => {
@@ -102,11 +131,19 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   });
 
   it('times out, kills the process and removes the temp dir', async () => {
-    const before = new Set((await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpajs-') && !n.startsWith('cpajs-life-')));
-    const error = await startError(startServer({ binaryPath: FAKE, startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
-    expect(error.code).toBe('timeout');
-    const after = (await import('node:fs')).readdirSync(tmpdir()).filter((n) => n.startsWith('cpajs-') && !n.startsWith('cpajs-life-'));
-    expect(after.filter((n) => !before.has(n))).toEqual([]);
+    // Isolate the scan: other test files (and other agents) share tmpdir().
+    const root = await mkdtemp(join(tmpdir(), 'cpajs-isolated-'));
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = root;
+    try {
+      const error = await startError(startServer({ binaryPath: FAKE, startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
+      expect(error.code).toBe('timeout');
+      expect(readdirSync(root)).toEqual([]);
+    } finally {
+      if (previousTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = previousTmpdir;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('can be cancelled with an AbortSignal', async () => {
