@@ -29,7 +29,7 @@ function isRecord(value: unknown): value is Json {
 }
 
 function hasOwn(value: Json, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key);
+  return Object.hasOwn(value, key);
 }
 
 /**

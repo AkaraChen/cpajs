@@ -5,9 +5,10 @@ export default defineConfig({
     include: ['tests/unit/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      // Show line coverage for the hand-written API resources and the server runtime.
+      // Show line coverage for the client (transport and resources) and the server runtime.
       // Thresholds are deliberately not enforced yet.
-      include: ['src/client/resources/**/*.ts', 'src/server/**/*.ts'],
+      include: ['src/client/**/*.ts', 'src/server/**/*.ts'],
+      exclude: ['src/client/types/**'],
       reporter: ['text', 'html', 'lcov'],
       reportsDirectory: 'coverage',
     },

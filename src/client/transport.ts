@@ -163,6 +163,8 @@ export class Transport {
     if (body !== undefined) init.body = body;
 
     const responseType = req.responseType ?? 'json';
+    // Set once a Response is handed to the caller, who then owns reading its body.
+    let handedOff = false;
     try {
       let response: Response;
       try {
@@ -175,6 +177,7 @@ export class Transport {
         throw new CpaHttpError(target, response, await guard(response.text()));
       }
       if (responseType === 'response') {
+        handedOff = true;
         return { data: response as T, status: response.status, headers: response.headers };
       }
       if (responseType === 'blob') {
@@ -194,9 +197,10 @@ export class Transport {
       }
       throw classify(error);
     } finally {
-      // For `response`, the caller reads the body; the timeout covers the headers only,
-      // while the caller's own signal keeps working through the request's signal.
-      if (responseType === 'response') clearTimeout(timer);
+      // A handed-off Response is read by the caller: the timeout covered the headers
+      // only, and the caller's signal must keep cancelling the body, so its listener
+      // stays until that signal aborts. Every other outcome releases everything.
+      if (handedOff) clearTimeout(timer);
       else release();
     }
   }

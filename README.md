@@ -68,6 +68,24 @@ await server.stop();
   `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
   operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
   the handle stopped and cleans up a temporary state directory like `startServer` does.
+- Shutdown: CPA processes are killed when the host exits normally or calls `process.exit()`. A signal the host
+  does not handle (for example a default SIGTERM) ends Node without that cleanup, and cpajs does not install
+  signal handlers, because doing so would change how your process reacts to them. To leave nothing behind,
+  stop servers from your own handlers. `stopAllServers()` stops every server this process started:
+
+  ```ts
+  import { stopAllServers } from '@cpajs/cpa/server';
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, async () => {
+      await stopAllServers();
+      process.exit(0);
+    });
+  }
+  ```
+
+  SIGKILL cannot be handled, so nothing can clean up after it. Lines longer than 64 KiB in CPA's output are
+  truncated, with a marker saying how much was dropped.
 - `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
   `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
   (default `false`), so the plaintext never reaches disk and remote management stays off. The key, config

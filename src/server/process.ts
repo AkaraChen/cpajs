@@ -3,8 +3,15 @@ import type { Readable } from 'node:stream';
 import type { ExitResult, LogLine } from './types.ts';
 
 const MAX_RECENT_LINES = 200;
+/** Longest line kept, in UTF-16 code units; longer output is truncated with a marker. */
+export const MAX_LINE_LENGTH = 64 * 1024;
 
-// Children still running when the parent exits are killed so they never outlive it.
+// Children still running when this process exits normally (or calls
+// process.exit()) are killed. This does not cover a fatal signal with no
+// listener, e.g. a default SIGTERM: Node then terminates without emitting
+// 'exit'. Hosts that want cleanup on signals call stopAllServers() from their
+// own handlers; this library does not install signal handlers, because doing
+// so would change how the host process reacts to them.
 const live = new Set<ChildProcess>();
 let exitHookInstalled = false;
 function trackChild(child: ChildProcess): void {
@@ -72,8 +79,14 @@ export class ManagedProcess {
     if (!stream) return;
     stream.setEncoding('utf8');
     let pending = '';
+    // Characters dropped from the line currently being received; bounds memory
+    // when the child writes very long or never-terminated lines.
+    let dropped = 0;
     const emit = (raw: string): void => {
-      const log: LogLine = { stream: name, line: this.#redact(raw.replace(/\r$/, '')) };
+      const text = raw.replace(/\r$/, '');
+      const line = dropped > 0 ? `${text} …[truncated ${dropped} chars]` : text;
+      dropped = 0;
+      const log: LogLine = { stream: name, line: this.#redact(line) };
       this.recentLogs.push(log);
       if (this.recentLogs.length > MAX_RECENT_LINES) this.recentLogs.shift();
       for (const listener of this.#lineListeners) listener(log);
@@ -83,8 +96,13 @@ export class ManagedProcess {
       pending += chunk;
       let index: number;
       while ((index = pending.indexOf('\n')) !== -1) {
-        emit(pending.slice(0, index));
+        if (index > MAX_LINE_LENGTH) dropped += index - MAX_LINE_LENGTH;
+        emit(pending.slice(0, Math.min(index, MAX_LINE_LENGTH)));
         pending = pending.slice(index + 1);
+      }
+      if (pending.length > MAX_LINE_LENGTH) {
+        dropped += pending.length - MAX_LINE_LENGTH;
+        pending = pending.slice(0, MAX_LINE_LENGTH);
       }
     });
     stream.on('end', () => {
