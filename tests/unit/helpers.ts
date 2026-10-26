@@ -37,3 +37,26 @@ export function mockClient(
   });
   return { client, calls };
 }
+
+/** An AbortController whose signal counts live 'abort' listeners. */
+export function countingController(): { controller: AbortController; listeners: () => number } {
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const live = new Set<unknown>();
+  const add = signal.addEventListener.bind(signal);
+  const remove = signal.removeEventListener.bind(signal);
+  signal.addEventListener = ((type: string, listener: unknown, options?: unknown) => {
+    if (type !== 'abort') return add(type, listener as EventListener, options as AddEventListenerOptions);
+    live.add(listener);
+    // A `once` listener is dropped by the event system when it fires, without a
+    // removeEventListener call; mirror that so the count stays truthful.
+    const once = typeof options === 'object' && options !== null && (options as AddEventListenerOptions).once === true;
+    if (once) add('abort', () => live.delete(listener), { once: true });
+    add(type, listener as EventListener, options as AddEventListenerOptions);
+  }) as typeof signal.addEventListener;
+  signal.removeEventListener = ((type: string, listener: unknown, options?: unknown) => {
+    if (type === 'abort') live.delete(listener);
+    remove(type, listener as EventListener, options as EventListenerOptions);
+  }) as typeof signal.removeEventListener;
+  return { controller, listeners: () => live.size };
+}

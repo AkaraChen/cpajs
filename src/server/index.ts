@@ -211,6 +211,10 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       ? resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath })
       : { path: command.path };
   const prefixArgs = command?.args ?? [];
+  // Validate everything that can be validated before creating any resource, so a
+  // rejected option never leaves a temporary state directory behind.
+  const env = buildEnv(options, management);
+  const extraArgs = buildArgs(options);
   const ownsStateDir = options.stateDir === undefined;
   const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
   if (!ownsStateDir) await mkdir(stateDir, { recursive: true });
@@ -222,8 +226,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
 
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const deadline = Date.now() + startupTimeoutMs;
-  const env = buildEnv(options, management);
-  const extraArgs = buildArgs(options);
   const managedSecret =
     management.secretKeyHash === undefined
       ? undefined
@@ -419,6 +421,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
   const settle = (result: ExitResult): Promise<void> => {
     if (finalizePromise) return finalizePromise;
     state = 'stopped';
+    liveServers.delete(handle);
     finalizePromise = (async () => {
       try {
         await info.cleanup();
@@ -525,7 +528,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     return stopTask;
   };
 
-  return {
+  const handle: CpaServer = {
     origin: info.origin,
     baseUrl: `${info.origin}/v1`,
     host: info.listen.host,
@@ -546,4 +549,29 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     stop,
     restart,
   };
+  liveServers.add(handle);
+  return handle;
+}
+
+// Handles that have started and not settled yet, for stopAllServers().
+const liveServers = new Set<CpaServer>();
+
+/**
+ * Stops every server started by this process and still running, using each
+ * handle's `stop()` (so temporary state directories are removed too).
+ *
+ * The library does not install signal handlers. A host that should not leave
+ * CPA processes behind on SIGTERM/SIGINT calls this from its own handler:
+ *
+ * ```ts
+ * for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+ *   process.once(signal, async () => {
+ *     await stopAllServers();
+ *     process.exit(0);
+ *   });
+ * }
+ * ```
+ */
+export async function stopAllServers(options: StopOptions = {}): Promise<ExitResult[]> {
+  return Promise.all([...liveServers].map((server) => server.stop(options)));
 }

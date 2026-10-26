@@ -12,6 +12,7 @@
 //   FAKE_DELAY_AFTER=<n>    only apply FAKE_DELAY_MS from run <n>+1 on
 //   FAKE_ECHO=<text>        print <text> on stdout and stderr at startup
 //   FAKE_CRLF=1             print a CRLF-terminated line on stdout and stderr
+//   FAKE_LONG_LINE=<n>      print one stdout line of <n> 'x' characters, then a short marker line
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -30,6 +31,9 @@ if (process.env.MANAGEMENT_PASSWORD) console.log(`MANAGEMENT_PASSWORD length ${p
 if (process.env.FAKE_ECHO) {
   console.log(`stdout: ${process.env.FAKE_ECHO}`);
   console.error(`stderr: ${process.env.FAKE_ECHO}`);
+}
+if (process.env.FAKE_LONG_LINE) {
+  process.stdout.write(`${'x'.repeat(Number(process.env.FAKE_LONG_LINE))}\nafter long line\n`);
 }
 if (process.env.FAKE_CRLF) {
   process.stdout.write('crlf stdout line\r\n');

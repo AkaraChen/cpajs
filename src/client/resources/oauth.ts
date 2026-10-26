@@ -9,7 +9,8 @@ import type {
   VertexImportResponse,
 } from '../types/oauth.ts';
 import type { SIWCStatusResponse } from '../types/credentials.ts';
-import type { RequestOptions, Transport } from '../transport.ts';
+import { CpaAbortError } from '../errors.ts';
+import { managementUrl, type RequestOptions, type Transport } from '../transport.ts';
 import type { CredentialContent, CredentialSelector } from './credentials.ts';
 
 export interface WaitForOAuthOptions extends RequestOptions {
@@ -38,23 +39,20 @@ export class OAuthResource {
     return (await this.#t.request<OAuthStatusResponse>({ ...options, method: 'GET', path: '/oauth/status', query: { state } })).data;
   }
 
-  /** Polls {@link status} until the session leaves `wait`. Abort with `signal`. */
+  /**
+   * Polls {@link status} until the session leaves `wait`. Abort with `signal`
+   * (for an overall limit use `AbortSignal.timeout()`); cancellation always
+   * rejects with `CpaAbortError`, whether it happens during a request or between polls.
+   */
   async waitForCompletion(state: string, options: WaitForOAuthOptions = {}): Promise<Exclude<OAuthStatusResponse, { status: 'wait' }>> {
     const { intervalMs = 2_000, ...requestOptions } = options;
+    const url = managementUrl(this.#t.baseUrl, '/oauth/status');
+    url.searchParams.set('state', state);
+    const target = { method: 'GET', url: url.toString() };
     while (true) {
       const result = await this.status(state, requestOptions);
       if (result.status !== 'wait') return result;
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(resolve, intervalMs);
-        requestOptions.signal?.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(timer);
-            reject(requestOptions.signal!.reason);
-          },
-          { once: true },
-        );
-      });
+      await abortableDelay(intervalMs, requestOptions.signal, target);
     }
   }
 
@@ -102,4 +100,21 @@ export class OAuthResource {
   async siwcStatus(selector: CredentialSelector, options: RequestOptions = {}): Promise<SIWCStatusResponse> {
     return (await this.#t.request<SIWCStatusResponse>({ ...options, method: 'GET', path: '/oauth/siwc/status', query: { ...selector } })).data;
   }
+}
+
+/** Waits `ms`, rejecting with `CpaAbortError` if `signal` aborts; never leaves a listener behind. */
+function abortableDelay(ms: number, signal: AbortSignal | undefined, target: { method: string; url: string }): Promise<void> {
+  const aborted = () => new CpaAbortError(`${target.method} ${target.url} was aborted`, target, { cause: signal!.reason });
+  if (signal?.aborted) return Promise.reject(aborted());
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(aborted());
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
