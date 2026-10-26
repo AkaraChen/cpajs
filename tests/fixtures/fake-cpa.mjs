@@ -29,6 +29,7 @@ console.log(`fake cpa starting with ${args.join(' ')}`);
 console.log(`fake cpa pid ${process.pid}`);
 if (process.env.HOME_JWT) console.log(`HOME_JWT length ${process.env.HOME_JWT.length}`);
 if (process.env.MANAGEMENT_PASSWORD) console.log(`MANAGEMENT_PASSWORD length ${process.env.MANAGEMENT_PASSWORD.length}`);
+if (process.env.MANAGEMENT_STATIC_PATH) console.log(`MANAGEMENT_STATIC_PATH ${process.env.MANAGEMENT_STATIC_PATH}`);
 if (process.env.FAKE_ECHO) {
   console.log(`stdout: ${process.env.FAKE_ECHO}`);
   console.error(`stderr: ${process.env.FAKE_ECHO}`);

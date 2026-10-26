@@ -92,6 +92,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/build-binary.ts --target ${{ matrix.target }}
       - run: node scripts/verify-binary.ts --target ${{ matrix.target }} --smoke
+      - run: pnpm panel:fetch
       - run: pnpm test:e2e
         env:
           CPA_BINARY: ${{ github.workspace }}/dist-bin/${{ matrix.target }}/cli-proxy-api
@@ -118,6 +119,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/build-binary.ts --target win32-x64
       - run: node scripts/verify-binary.ts --target win32-x64 --smoke
+      - run: pnpm panel:fetch
       - run: pnpm test:e2e
         env:
           CPA_BINARY: ${{ github.workspace }}/dist-bin/win32-x64/cli-proxy-api.exe

@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TARGETS, packageName } from '../src/server/targets.ts';
+import { fetchPanel } from './fetch-panel.ts';
 import { DEFAULT_NPM_DIR, ROOT, args, fail, log, run } from './lib.ts';
 
 if (import.meta.main) {
@@ -39,6 +40,8 @@ if (import.meta.main) {
     await run('npm', ['pack', '--pack-destination', out], { cwd: dir, shell });
   }
 
+  // The main package ships the pinned control panel; fetchPanel fails on a digest mismatch.
+  await fetchPanel();
   // Build before touching package.json: with the injected optionalDependencies, pnpm's
   // pre-run dependency check would refuse to run the prepack script.
   await run('npm', ['run', 'build'], { cwd: ROOT, shell });

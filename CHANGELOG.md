@@ -6,6 +6,15 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ## Unreleased
 
+### Added
+
+- The web control panel ships with the package: `management.html` from Cli-Proxy-API-Management-Center v1.26.7,
+  checked against its sha256 at build time (`CPA_PANEL`). In a config cpajs manages, CPA serves this copy and
+  never downloads a panel (`MANAGEMENT_STATIC_PATH` points at a copy in `<stateDir>/static/`, and
+  `disable-auto-update-panel` defaults to `true`). This works offline and avoids upstream's unverified fallback
+  mirror. Setting `disable-auto-update-panel: false`, `panel-github-repository` or `MANAGEMENT_STATIC_PATH`
+  restores upstream's behaviour. The main package grows by about 1 MB (gzip).
+
 ### Changed
 
 - With a generated management key, the managed config defaults `management.disable-control-panel` to `true`.

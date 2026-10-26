@@ -256,7 +256,7 @@ describe('config handling', () => {
       managed: true,
       reused: true,
     });
-    expect(prepared.management).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined });
+    expect(prepared.management).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined, servesPinnedPanel: false });
 
     const custom = await writeManagedConfig({ oauth: { 'auth-dir': '/elsewhere' } }, dir, { host: '', port: 1 });
     expect(parseYaml(await readFile(custom.configPath, 'utf8')).oauth).toEqual({ 'auth-dir': '/elsewhere' });
@@ -283,7 +283,7 @@ describe('config handling', () => {
       'secret-key': '$2b$10$hash',
       'allow-remote': true,
     });
-    expect(prepared.management).toEqual({ allowRemote: true, hasSecret: true, secretKey: '$2b$10$hash' });
+    expect(prepared.management).toEqual({ allowRemote: true, hasSecret: true, secretKey: '$2b$10$hash', servesPinnedPanel: false });
   });
 
   it('updates only the management fields of a reused config, keeping comments', async () => {
@@ -308,16 +308,26 @@ describe('config handling', () => {
       allowRemote: true,
       hasSecret: true,
       secretKey: 's',
+      servesPinnedPanel: false,
     });
     expect(readManagementSettings({ 'remote-management': { 'allow-remote': true, 'secret-key': ' ' } })).toEqual({
       allowRemote: true,
       hasSecret: false,
       secretKey: undefined,
+      servesPinnedPanel: false,
     });
     // The v8 section wins even when it is empty.
     expect(
       readManagementSettings({ management: {}, 'remote-management': { 'allow-remote': true, 'secret-key': 's' } }),
-    ).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined });
+    ).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined, servesPinnedPanel: false });
+  });
+
+  it('reports when CPA would serve a pinned panel without fetching one', () => {
+    const pinned = (management: Record<string, unknown>) => readManagementSettings({ management }).servesPinnedPanel;
+    expect(pinned({ 'disable-auto-update-panel': true })).toBe(true);
+    expect(pinned({})).toBe(false);
+    expect(pinned({ 'disable-auto-update-panel': true, 'disable-control-panel': true })).toBe(false);
+    expect(pinned({ 'disable-auto-update-panel': true, 'panel-github-repository': 'https://github.com/me/p' })).toBe(false);
   });
 
   it('inspects an existing YAML file and rejects missing or invalid ports', async () => {

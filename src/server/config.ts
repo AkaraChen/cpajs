@@ -13,6 +13,11 @@ export interface ManagementSettings {
   hasSecret: boolean;
   /** The stored `secret-key` (plaintext or a bcrypt hash), if any. */
   secretKey: string | undefined;
+  /**
+   * True when CPA would serve a pinned panel file without fetching one: the panel
+   * is on, `disable-auto-update-panel` is true and no custom panel repository is set.
+   */
+  servesPinnedPanel: boolean;
 }
 
 export interface ListenSettings {
@@ -87,6 +92,10 @@ export function readManagementSettings(doc: unknown): ManagementSettings {
     allowRemote: section['allow-remote'] === true,
     hasSecret: typeof secret === 'string' && secret.trim() !== '',
     secretKey: typeof secret === 'string' && secret.trim() !== '' ? secret : undefined,
+    servesPinnedPanel:
+      section['disable-control-panel'] !== true &&
+      section['disable-auto-update-panel'] === true &&
+      (typeof section['panel-github-repository'] !== 'string' || section['panel-github-repository'].trim() === ''),
   };
 }
 
@@ -142,6 +151,7 @@ export async function writeManagedConfig(
   stateDir: string,
   listen: { host: string; port: number },
   management?: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean },
+  options: { pinnedPanel?: boolean } = {},
 ): Promise<PreparedConfig> {
   const doc = structuredClone(config) as Json;
   const server = isRecord(doc.server) ? doc.server : {};
@@ -155,6 +165,11 @@ export async function writeManagedConfig(
       'secret-key': management.secretKeyHash,
       'allow-remote': management.allowRemote,
     };
+  }
+  if (options.pinnedPanel === true) {
+    // The panel ships with the package; keep CPA from replacing it with GitHub's latest.
+    const section = isRecord(doc.management) ? doc.management : {};
+    if (section['disable-auto-update-panel'] === undefined) doc.management = { ...section, 'disable-auto-update-panel': true };
   }
   const oauth = isRecord(doc.oauth) ? doc.oauth : {};
   // Keep credentials inside stateDir unless the config chooses a location (v8 or legacy key).

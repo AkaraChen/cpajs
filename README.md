@@ -104,14 +104,27 @@ await server.stop();
   and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
   because nobody types it, it can never be wrong and trigger CPA's 30-minute IP ban. `restart()` keeps the key,
   so existing clients keep working; a new `startServer()` generates a new one. Since no one could log in to the
-  web control panel with that key, the panel defaults to off (`disable-control-panel: true`), and CPA doesn't
-  download it from GitHub; set it to `false` in `config.management` to keep it. `management: false` turns the
-  management API off.
+  web control panel with that key, the panel defaults to off (`disable-control-panel: true`). `management: false`
+  turns the management API off.
 
-  Pass a key yourself only when something else needs it, for example a remote admin tool or another process:
-  `management: { key }`. The default mode writes a bcrypt hash into `management.secret-key` of the managed config
-  and sets `management.allow-remote` from `allowRemote` (default `false`), so the plaintext never reaches disk
-  and remote management stays off. `server.client()` works there too.
+  Pass a key yourself when a person or something else needs it, for example the web control panel, a remote
+  admin tool or another process: `management: { key }`. The default mode writes a bcrypt hash into
+  `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote` (default
+  `false`), so the plaintext never reaches disk and remote management stays off. `server.client()` works there
+  too.
+
+  The three steps build on each other: no key (only this process), `management: { key }` (people on this
+  machine, with the control panel), `allowRemote: true` (people elsewhere too). The rest of the table below is
+  for setups that need more control.
+
+  Control panel: `@cpajs/cpa` ships a pinned copy of the web control panel (`management.html`, see
+  [compatibility](docs/compatibility.md)), checked against its sha256 when the package is built. In a config
+  cpajs manages, CPA serves that copy at `/management.html` and never downloads one: cpajs copies it to
+  `<stateDir>/static/`, points `MANAGEMENT_STATIC_PATH` at it and defaults `disable-auto-update-panel` to `true`.
+  Upstream would otherwise fetch the latest panel from GitHub on start and every 3 hours, falling back to an
+  unverified mirror. To get that behaviour back, set `disable-auto-update-panel: false` or
+  `panel-github-repository` in `config.management`, or set `MANAGEMENT_STATIC_PATH` in `env`. With `configPath`,
+  cpajs leaves the panel to your file.
 
   Redaction: the key, secrets found in the config when the server starts, and `redact` values are replaced with
   `[REDACTED]` in `onLog`, `recentLogs` and startup errors. This is best-effort, with known limits:
@@ -122,16 +135,16 @@ await server.stop();
 
   Do not treat CPA's output as safe to publish.
 
-  | Mode | How CPA compares the key | Remote access | `server.client()` |
-  | --- | --- | --- | --- |
-  | omitted (default) | bcrypt hash of a key generated per start | Off | Yes |
-  | `management: false` | — (management API disabled) | — | No |
-  | `management: { key }` | bcrypt hash in `management.secret-key` | Written from `allowRemote`, default `false` | Yes |
-  | `management: { key, allowRemote: true }` | bcrypt hash in `management.secret-key` | Non-loopback clients allowed | Yes |
-  | `management: { key, viaEnvironment: true }` | Plaintext `MANAGEMENT_PASSWORD` | Always allowed: upstream treats the variable as `allow-remote: true` | Yes |
-  | `config.management['secret-key']` | What you write; CPA hashes plaintext on startup | `config.management['allow-remote']` | No: the key is yours |
-  | `configPath` | `secret-key` in the file | `allow-remote` in the file | Only with `management: { key, viaEnvironment: true }` |
-  | `managementKey` (deprecated) | bcrypt hash, same as `management: { key }` | Off unless the file allows it | Yes |
+  | Mode | How CPA compares the key | Remote access | `server.client()` | Control panel |
+  | --- | --- | --- | --- | --- |
+  | omitted (default) | bcrypt hash of a key generated per start | Off | Yes | Off (nobody knows the key) |
+  | `management: false` | — (management API disabled) | — | No | — |
+  | `management: { key }` | bcrypt hash in `management.secret-key` | Written from `allowRemote`, default `false` | Yes | Pinned copy |
+  | `management: { key, allowRemote: true }` | bcrypt hash in `management.secret-key` | Non-loopback clients allowed | Yes | Pinned copy |
+  | `management: { key, viaEnvironment: true }` | Plaintext `MANAGEMENT_PASSWORD` | Always allowed: upstream treats the variable as `allow-remote: true` | Yes | Pinned copy |
+  | `config.management['secret-key']` | What you write; CPA hashes plaintext on startup | `config.management['allow-remote']` | No: the key is yours | Pinned copy |
+  | `configPath` | `secret-key` in the file | `allow-remote` in the file | Only with `management: { key, viaEnvironment: true }` | Your file decides |
+  | `managementKey` (deprecated) | bcrypt hash, same as `management: { key }` | Off unless the file allows it | Yes | Pinned copy |
 
   `management.key` is rejected together with `config.management['secret-key']`, or with a `secret-key`
   already present in `configPath`. In `configPath` mode it also requires `viaEnvironment: true`, because
