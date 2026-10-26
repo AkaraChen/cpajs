@@ -25,7 +25,7 @@ const installed = TARGETS.map(packageName).filter((name) => {
 const binary = resolveBinary();
 const server = await startServer({
   managementKey: 'install-test-key',
-  args: ['-local-model'],
+  localModel: true,
   config: { management: { 'disable-control-panel': true } },
   startupTimeoutMs: 60000,
 });

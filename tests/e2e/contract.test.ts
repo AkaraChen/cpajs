@@ -19,7 +19,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
     server = await startServer({
       binaryPath: binary!,
       managementKey: MANAGEMENT_KEY,
-      args: ['-local-model'],
+      localModel: true,
       config: {
         management: { 'disable-control-panel': true },
         access: { 'api-keys': [MODEL_KEY] },
@@ -284,7 +284,7 @@ describe.skipIf(!binary)('server with an existing config file', () => {
         `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\nmanagement:\n  secret-key: file-secret\n  disable-control-panel: true\noauth:\n  auth-dir: ${join(dir, 'auths')}\n`,
       );
       const lines: string[] = [];
-      const server = await startServer({ binaryPath: binary!, configPath, args: ['-local-model'], onLog: (l) => lines.push(l.line) });
+      const server = await startServer({ binaryPath: binary!, configPath, localModel: true, onLog: (l) => lines.push(l.line) });
       try {
         expect(server.port).toBe(port);
         expect(server.configPath).toBe(configPath);

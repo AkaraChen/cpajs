@@ -6,7 +6,7 @@ import { startServer } from '@cpajs/cpa/server';
 const managementKey = 'example-management-key';
 const server = await startServer({
   managementKey,
-  args: ['-local-model'],
+  localModel: true,
   config: { access: { 'api-keys': ['example-model-key'] } },
 });
 

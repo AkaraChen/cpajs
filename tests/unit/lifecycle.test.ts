@@ -33,7 +33,7 @@ async function startError(promise: Promise<unknown>): Promise<CpaStartError> {
 describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', () => {
   it('starts on a dynamic loopback port, reports addresses, and cleans its temp dir on stop', async () => {
     const lines: LogLine[] = [];
-    const server = await startServer({ binaryPath: FAKE, args: ['-local-model'], onLog: (l) => lines.push(l) });
+    const server = await startServer({ binaryPath: FAKE, localModel: true, args: ['-plugin-flag=1'], onLog: (l) => lines.push(l) });
     expect(server.host).toBe('127.0.0.1');
     expect(server.port).toBeGreaterThan(0);
     expect(server.origin).toBe(`http://127.0.0.1:${server.port}`);
@@ -42,7 +42,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(existsSync(server.stateDir)).toBe(true);
     const health = await fetch(`${server.origin}/healthz`);
     expect(health.status).toBe(200);
-    expect(lines.some((l) => l.line.includes(`-config ${server.configPath} -local-model`))).toBe(true);
+    expect(lines.some((l) => l.line.includes(`-config ${server.configPath} -local-model -plugin-flag=1`))).toBe(true);
 
     const [a, b] = await Promise.all([server.stop(), server.stop()]);
     expect(a).toEqual(b);
@@ -143,6 +143,22 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(server.recentLogs.some((l) => l.line.includes('secret-value'))).toBe(false);
     expect(server.managementKey).toBe('mgmt-secret-value');
     expect(lines.some((l) => l.line === 'MANAGEMENT_PASSWORD length 17')).toBe(true);
+  });
+
+  it('passes Home options as a flag plus HOME_JWT, keeping the JWT out of argv and logs', async () => {
+    const lines: LogLine[] = [];
+    const server = await startServer({
+      binaryPath: FAKE,
+      home: { jwt: 'home-jwt-secret-value', disableClusterDiscovery: true },
+      env: { FAKE_ECHO: 'home-jwt-secret-value' },
+      onLog: (l) => lines.push(l),
+    });
+    await server.stop();
+    const argv = lines.find((l) => l.line.startsWith('fake cpa starting'))!.line;
+    expect(argv).toContain('-home-disable-cluster-discovery');
+    expect(argv).not.toContain('home-jwt-secret-value');
+    expect(lines.some((l) => l.line === 'HOME_JWT length 21')).toBe(true);
+    expect(lines.some((l) => l.line.includes('home-jwt-secret-value'))).toBe(false);
   });
 
   it('reports a binary that cannot be executed', async () => {
