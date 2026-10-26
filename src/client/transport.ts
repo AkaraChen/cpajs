@@ -120,43 +120,67 @@ export class Transport {
     if (!headers.has('Accept')) headers.set('Accept', req.responseType === 'json' || !req.responseType ? 'application/json' : '*/*');
 
     const timeoutMs = req.timeoutMs ?? this.#timeoutMs;
-    const timeoutSignal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
-    const signals = [req.signal, timeoutSignal].filter((s): s is AbortSignal => s !== undefined);
-    const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-
+    const userSignal = req.signal;
+    let timedOut = false;
     const classify = (error: unknown): Error => {
-      if (req.signal?.aborted) return new CpaAbortError(`${target.method} ${target.url} was aborted`, target, { cause: req.signal.reason });
-      if (timeoutSignal?.aborted) return new CpaTimeoutError(target, timeoutMs, { cause: error });
+      if (userSignal?.aborted) return new CpaAbortError(`${target.method} ${target.url} was aborted`, target, { cause: userSignal.reason });
+      if (timedOut) return new CpaTimeoutError(target, timeoutMs, { cause: error });
       return new CpaNetworkError(`${target.method} ${target.url} failed: ${(error as Error)?.message ?? String(error)}`, target, {
         cause: error,
       });
     };
+    if (userSignal?.aborted) throw classify(userSignal.reason);
 
-    if (req.signal?.aborted) throw classify(req.signal.reason);
-
-    const init: RequestInit = { method: req.method, headers, redirect: 'manual' };
-    if (body !== undefined) init.body = body;
-    if (signal) init.signal = signal;
-
-    let response: Response;
-    try {
-      response = await this.#fetch(new Request(url, init));
-    } catch (error) {
-      throw classify(error);
+    // One controller owned by this call, rather than AbortSignal.any/timeout: on some Node
+    // versions signals derived that way can be garbage-collected before they fire.
+    const controller = new AbortController();
+    let rejectAborted: (error: Error) => void = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAborted = reject;
+    });
+    aborted.catch(() => {});
+    const abort = (reason: unknown): void => {
+      controller.abort(reason);
+      rejectAborted(classify(reason));
+    };
+    const onUserAbort = (): void => abort(userSignal!.reason);
+    userSignal?.addEventListener('abort', onUserAbort, { once: true });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        abort(new DOMException(`Timed out after ${timeoutMs} ms`, 'TimeoutError'));
+      }, timeoutMs);
     }
+    const release = (): void => {
+      clearTimeout(timer);
+      userSignal?.removeEventListener('abort', onUserAbort);
+    };
+    // Every await below races the abort, so a fetch that ignores its signal still settles.
+    const guard = <V>(promise: Promise<V>): Promise<V> => Promise.race([promise, aborted]);
+
+    const init: RequestInit = { method: req.method, headers, redirect: 'manual', signal: controller.signal };
+    if (body !== undefined) init.body = body;
 
     const responseType = req.responseType ?? 'json';
     try {
+      let response: Response;
+      try {
+        response = await guard(this.#fetch(new Request(url, init)));
+      } catch (error) {
+        throw error instanceof CpaAbortError || error instanceof CpaTimeoutError ? error : classify(error);
+      }
+
       if (!response.ok) {
-        throw new CpaHttpError(target, response, await response.text());
+        throw new CpaHttpError(target, response, await guard(response.text()));
       }
       if (responseType === 'response') {
         return { data: response as T, status: response.status, headers: response.headers };
       }
       if (responseType === 'blob') {
-        return { data: (await response.blob()) as T, status: response.status, headers: response.headers };
+        return { data: (await guard(response.blob())) as T, status: response.status, headers: response.headers };
       }
-      const text = await response.text();
+      const text = await guard(response.text());
       if (responseType === 'text') return { data: text as T, status: response.status, headers: response.headers };
       if (text === '') return { data: undefined as T, status: response.status, headers: response.headers };
       try {
@@ -165,8 +189,15 @@ export class Transport {
         throw new CpaResponseError(`${target.method} ${target.url} returned invalid JSON`, target, response.status, text, { cause });
       }
     } catch (error) {
-      if (error instanceof CpaHttpError || error instanceof CpaResponseError) throw error;
+      if (error instanceof CpaHttpError || error instanceof CpaResponseError || error instanceof CpaAbortError || error instanceof CpaTimeoutError) {
+        throw error;
+      }
       throw classify(error);
+    } finally {
+      // For `response`, the caller reads the body; the timeout covers the headers only,
+      // while the caller's own signal keeps working through the request's signal.
+      if (responseType === 'response') clearTimeout(timer);
+      else release();
     }
   }
 }

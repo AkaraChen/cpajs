@@ -113,6 +113,15 @@ describe('transport', () => {
     expect((aborted as CpaAbortError).cause).toEqual(new Error('user cancelled'));
   });
 
+  it('times out even when a custom fetch ignores its signal', async () => {
+    const deaf = createClient({ baseUrl: 'http://cpa.test', managementKey: 'k', timeoutMs: 20, fetch: () => new Promise(() => {}) });
+    await expect(deaf.plugins.list()).rejects.toBeInstanceOf(CpaTimeoutError);
+    const controller = new AbortController();
+    const pending = deaf.plugins.list({ signal: controller.signal, timeoutMs: 0 });
+    controller.abort();
+    await expect(pending).rejects.toBeInstanceOf(CpaAbortError);
+  });
+
   it('fails fast on an already-aborted signal', async () => {
     const { client, calls } = mockClient();
     await expect(client.plugins.list({ signal: AbortSignal.abort() })).rejects.toBeInstanceOf(CpaAbortError);
