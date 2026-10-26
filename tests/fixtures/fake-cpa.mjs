@@ -71,6 +71,7 @@ function holdPort(host, port) {
     });
     holder.once('error', reject);
     holder.once('message', (message) => {
+      if (message === 'listening') console.log(`fake cpa: port holder ${holder.pid} listening on ${host}:${port}`);
       if (message === 'listening') resolve();
     });
   });

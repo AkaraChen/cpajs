@@ -128,7 +128,10 @@ describe('server lifecycle (fake binary)', () => {
 
   it('retries another dynamic port when the bind races', async () => {
     const counter = join(dir, 'runs');
-    const server = await startFake({ env: { FAKE_BIND_ERROR: '2', FAKE_COUNTER: counter } });
+    const server = await startFake({ env: { FAKE_BIND_ERROR: '2', FAKE_COUNTER: counter } }).catch((error: CpaStartError) => {
+      // TEMP diagnostics for the Windows failure: show what the fixture printed.
+      throw new Error(`${error.message}\n--- output ---\n${error.output}`);
+    });
     expect(await readFile(counter, 'utf8')).toBe('3');
     await server.stop();
 
