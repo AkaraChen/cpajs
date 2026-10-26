@@ -131,11 +131,12 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | `fetch-source.ts` | Clone the pinned CPA tag and verify the commit. |
 | `build-binary.ts` | Build one or more targets, with the same CGO/plugin split as upstream. |
 | `verify-binary.ts` | Check format, CPU, static linking and the glibc baseline; `--smoke` starts the binary. |
-| `assemble-packages.ts` | Create the `@cpa-js/*` platform packages. |
+| `assemble-packages.ts` | Create the `@cpajs/*` platform packages. |
 | `pack.ts` | Produce the tarballs. |
 | `install-test.ts` | Install the tarballs through a local registry with npm, pnpm or bun, and run them. |
+| `trust-publishers.ts` | Configure npm trusted publishing for all packages (run locally after the first publish). |
 
-`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags.
+`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). `trust-publishers.ts` configures trusted publishing for every package; npm only allows this once a package exists, so the very first release needs a temporary `NPM_TOKEN` secret.
 
 ## License
 

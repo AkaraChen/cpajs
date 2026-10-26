@@ -22,7 +22,7 @@ export type TargetVerification =
   | 'cross-compiled';
 
 export interface Target {
-  /** Package suffix, e.g. `linux-x64-gnu` → `@cpa-js/linux-x64-gnu`. */
+  /** Package suffix, e.g. `linux-x64-gnu` → `@cpajs/linux-x64-gnu`. */
   readonly id: string;
   /** `process.platform` value. */
   readonly os: NodeJS.Platform;
@@ -40,7 +40,7 @@ export interface Target {
   readonly notes?: string;
 }
 
-export const NPM_SCOPE = '@cpa-js';
+export const NPM_SCOPE = '@cpajs';
 
 export const TARGETS: readonly Target[] = [
   { id: 'darwin-x64', os: 'darwin', cpu: 'x64', goos: 'darwin', goarch: 'amd64', build: 'plugin', verification: 'native' },

@@ -58,7 +58,7 @@ describe('resolveBinary', () => {
       }
     })() as CpaBinaryError;
     expect(missing.code).toBe('package-not-installed');
-    expect(missing.message).toContain('@cpa-js/freebsd-arm64');
+    expect(missing.message).toContain('@cpajs/freebsd-arm64');
   });
 
   it('validates binaryPath', async () => {
