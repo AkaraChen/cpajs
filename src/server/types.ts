@@ -61,14 +61,24 @@ interface CommonServerOptions {
 
 export interface StartWithConfigOptions extends CommonServerOptions {
   /**
-   * Native CPA configuration. It is written to `<stateDir>/config.yaml` on
-   * every start, replacing whatever CPA persisted there during the last run.
+   * Native CPA configuration.
+   *
+   * Written as YAML to `<stateDir>/config.yaml` only when that file does not
+   * exist. On later starts the existing file is reused, so changes made through
+   * the management API (or by CPA itself) survive a `stop()` / `startServer()`
+   * cycle. Set `overwriteConfig: true` to replace it with this object.
    */
   config?: CpaConfig;
   configPath?: never;
-  /** Bind host. Overrides `config.server.host`. Default `127.0.0.1`. */
+  /**
+   * Replace `<stateDir>/config.yaml` even when it already exists. Default
+   * `false`. When the existing file is kept, `config`, `host` and `port` are not
+   * applied and a message is emitted through `onLog`.
+   */
+  overwriteConfig?: boolean;
+  /** Bind host, when cpajs writes the managed file. Default `config.server.host`, else `127.0.0.1`. */
   host?: string;
-  /** Bind port. Overrides `config.server.port`. Default `0`, meaning a free port is picked. */
+  /** Bind port, when cpajs writes the managed file. Default `config.server.port`, else `0` (a free port is picked). */
   port?: number;
 }
 

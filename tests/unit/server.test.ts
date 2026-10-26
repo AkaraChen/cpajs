@@ -2,8 +2,9 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parse as parseYaml } from 'yaml';
 import { candidateTargets, resolveBinary } from '../../src/server/binary.ts';
-import { configSecrets, inspectConfigFile, readListenSettings, writeManagedConfig } from '../../src/server/config.ts';
+import { configSecrets, inspectConfigFile, readListenSettings, readManagedConfig, writeManagedConfig } from '../../src/server/config.ts';
 import { buildArgs } from '../../src/server/args.ts';
 import { CpaBinaryError, CpaStartError, startServer } from '../../src/server/index.ts';
 import { connectHost, formatOrigin } from '../../src/server/readiness.ts';
@@ -208,19 +209,37 @@ describe('config handling', () => {
     expect(secrets.sort()).toEqual(['ghp', 'k1', 'k2', 'legacy', 'mgmt', 'sk-upstream']);
   });
 
-  it('writes the managed config with listener and auth-dir defaults', async () => {
+  it('writes YAML with listener and auth-dir defaults, then reads it back', async () => {
+    expect(await readManagedConfig(dir)).toBeUndefined();
     const prepared = await writeManagedConfig({ access: { 'api-keys': ['k'] } }, dir, { host: '127.0.0.1', port: 1234 });
-    const written = JSON.parse(await readFile(prepared.configPath, 'utf8'));
-    expect(written).toEqual({
+    const text = await readFile(prepared.configPath, 'utf8');
+    expect(text).toContain('config-version: 8');
+    expect(text).not.toMatch(/^\{/);
+    expect(parseYaml(text)).toEqual({
       access: { 'api-keys': ['k'] },
       server: { host: '127.0.0.1', port: 1234 },
       'config-version': 8,
       oauth: { 'auth-dir': join(dir, 'auths') },
     });
-    expect(prepared.secrets).toEqual(['k']);
+    expect(prepared).toMatchObject({ secrets: ['k'], reused: false });
+    expect(await readManagedConfig(dir)).toMatchObject({
+      configPath: prepared.configPath,
+      listen: { host: '127.0.0.1', port: 1234 },
+      secrets: ['k'],
+      managed: true,
+      reused: true,
+    });
 
     const custom = await writeManagedConfig({ oauth: { 'auth-dir': '/elsewhere' } }, dir, { host: '', port: 1 });
-    expect(JSON.parse(await readFile(custom.configPath, 'utf8')).oauth).toEqual({ 'auth-dir': '/elsewhere' });
+    expect(parseYaml(await readFile(custom.configPath, 'utf8')).oauth).toEqual({ 'auth-dir': '/elsewhere' });
+  });
+
+  it('rejects a reused managed config without a fixed port', async () => {
+    const file = join(dir, 'config.yaml');
+    await writeFile(file, 'server:\n  host: 127.0.0.1\n');
+    await expect(readManagedConfig(dir)).rejects.toThrow(/fixed server\.port/);
+    await writeFile(file, 'server:\n  port: 0\n');
+    await expect(readManagedConfig(dir)).rejects.toThrow(/fixed server\.port/);
   });
 
   it('inspects an existing YAML file and rejects missing or invalid ports', async () => {

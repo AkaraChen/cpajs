@@ -39,14 +39,20 @@ await server.stop();
 ```
 
 - `config` and `configPath` are mutually exclusive.
-  - `config` is written to `<stateDir>/config.yaml` on every start. Credentials go to `<stateDir>/auths` unless
-    `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
-  - `configPath` hands an existing file to CPA unchanged. The file must set a fixed positive port: CPA does not
-    default the port, and a missing or non-positive one becomes 0, which makes CPA bind a random port it does not
-    report. Like upstream, `server.host` / `server.port` / `server.tls.enable` win by presence over the legacy
-    top-level `host` / `port` / `tls.enable`. CPA may rewrite the file on startup: it hashes a plaintext
+  - `config` is written as YAML to `<stateDir>/config.yaml` only when that file does not exist yet. On later
+    starts the existing file is reused, so changes made through the management API (or by CPA itself) survive
+    `stop()` and `startServer()`. Pass `overwriteConfig: true` to replace it; when a file is kept, `config`, `host`
+    and `port` are not applied and a message is emitted through `onLog`. Credentials go to `<stateDir>/auths`
+    unless `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
+  - `configPath` hands an existing file to CPA unchanged. CPA may rewrite it on startup: it hashes a plaintext
     `management.secret-key`, removes legacy keys that conflict with their v8 equivalents, and normalizes the
     layout (`internal/config/config_load.go` and `NormalizeConfigLayout`).
+
+  Both modes require the file to set a fixed positive port: CPA does not default the port, and a missing or
+  non-positive one becomes 0, which makes CPA bind a random port it does not report. Like upstream,
+  `server.host` / `server.port` / `server.tls.enable` win by presence over the legacy top-level `host` / `port` /
+  `tls.enable`. When cpajs writes the file and no port is given, it picks a free port first; a reused file keeps
+  the port it already has.
 - `startServer` resolves only once `/healthz` answers. It rejects with `CpaStartError` on early exit, port
   conflict, timeout (`startupTimeoutMs`, default 30 s) or `signal` abort. In every failure case the process is
   stopped and the temporary directory removed.
