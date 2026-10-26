@@ -1,0 +1,107 @@
+# Compatibility
+
+## Versions
+
+The `cpa-js` version and the bundled CLIProxyAPI version are tracked separately.
+
+| cpa-js | CLIProxyAPI | Commit | Go | Management API |
+| --- | --- | --- | --- | --- |
+| 0.1.x | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` |
+
+The pinned release lives in [`src/server/cpa-version.ts`](../src/server/cpa-version.ts) and is exported at
+runtime as `CPA_RELEASE`. The client also works with other v8.x servers when the routes it calls exist there.
+Use `client.server.info()` to check which version a server runs.
+
+### Upgrading the pinned CLIProxyAPI
+
+1. Update `CPA_RELEASE` (tag, commit, commit date, Go version from `go.mod`).
+2. Diff `internal/api/server_management_v8.go` and the handlers in `internal/api/handlers/management/`, as well as
+   `internal/config/` for config schema changes, between the old and new tag. Update the types,
+   the client methods and [`api-coverage.md`](api-coverage.md).
+3. Re-check the CLI flags in `cmd/server/main.go` that `startServer` relies on (`-config`), the
+   `MANAGEMENT_PASSWORD` variable, `/healthz`, and the bind error text in the process output
+   (`address already in use`).
+4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
+5. Bump the `cpa-js` version. Platform packages always share the main package version.
+
+## Runtimes
+
+| Runtime | Status |
+| --- | --- |
+| Node.js 22, 24 | Supported. CI runs unit tests on Linux, macOS and Windows, plus install tests. |
+| Bun | Supported. CI runs unit tests under Bun and installs/runs the package with `bun add` + `bun`. |
+| Browsers / edge runtimes | `cpa-js/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `cpa-js/server` needs Node.js APIs. |
+
+## Platforms
+
+Every target is built from the pinned source. Binary names and sizes are listed in `BUILD-INFO.json` inside each
+platform package. **Build**: `plugin` means CGO is on and dynamic library plugins are supported, which matches the
+upstream default. `portable` means CGO is off, the binary is static, and there are no plugins (upstream calls this
+"no-plugin"). **Verification**: `native` means CI starts the binary on matching hardware and runs HTTP smoke tests,
+`emulated` means the same under QEMU user-mode, and `cross-compiled` means the binary is only built.
+
+| Package | OS | CPU | libc | Build | Verification | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `@cpa-js/darwin-x64` | macOS | x64 | – | plugin | native | |
+| `@cpa-js/darwin-arm64` | macOS | arm64 | – | plugin | native | |
+| `@cpa-js/win32-x64` | Windows | x64 | – | plugin | native | |
+| `@cpa-js/win32-arm64` | Windows | arm64 | – | plugin | native | |
+| `@cpa-js/win32-ia32` | Windows | ia32 | – | portable | native (WOW64) | not built upstream |
+| `@cpa-js/linux-x64-gnu` | Linux | x64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
+| `@cpa-js/linux-arm64-gnu` | Linux | arm64 | glibc ≥ 2.17 | plugin | native | manylinux2014 |
+| `@cpa-js/linux-x64-musl` | Linux | x64 | musl | portable | native | |
+| `@cpa-js/linux-arm64-musl` | Linux | arm64 | musl | portable | native | |
+| `@cpa-js/linux-arm` | Linux | arm (ARMv7+) | any | portable | emulated | `GOARM=7`; not built upstream |
+| `@cpa-js/linux-ia32` | Linux | ia32 | any | portable | native | not built upstream |
+| `@cpa-js/linux-riscv64` | Linux | riscv64 | any | portable | emulated | not built upstream |
+| `@cpa-js/linux-ppc64` | Linux | ppc64le | any | portable | emulated | little-endian only |
+| `@cpa-js/linux-s390x` | Linux | s390x | any | portable | emulated | not built upstream |
+| `@cpa-js/linux-loong64` | Linux | loong64 | any | portable | emulated | not built upstream |
+| `@cpa-js/linux-mips` | Linux | mips | any | portable | emulated | soft float |
+| `@cpa-js/linux-mipsel` | Linux | mipsel | any | portable | emulated | soft float |
+| `@cpa-js/freebsd-x64` | FreeBSD | x64 | – | plugin | cross-compiled | FreeBSD 14 sysroot, as upstream |
+| `@cpa-js/freebsd-arm64` | FreeBSD | arm64 | – | portable | cross-compiled | |
+| `@cpa-js/freebsd-ia32` | FreeBSD | ia32 | – | portable | cross-compiled | not built upstream |
+| `@cpa-js/openbsd-x64` | OpenBSD | x64 | – | portable | cross-compiled | not built upstream |
+| `@cpa-js/openbsd-arm64` | OpenBSD | arm64 | – | portable | cross-compiled | not built upstream |
+| `@cpa-js/netbsd-x64` | NetBSD | x64 | – | portable | cross-compiled | not built upstream |
+
+### Unsupported
+
+These were checked by cross-compiling the pinned source with CGO disabled.
+
+| Platform | Reason |
+| --- | --- |
+| Android | Link fails: `github.com/wlynxg/anet` references `net.zoneCache`. |
+| Solaris / illumos (`sunos`) | `syscall.Flock` is undefined. `pion/transport` needs `SO_REUSEPORT`. |
+| AIX | `syscall.Flock` is undefined. |
+| linux mips64le | Builds, but Node.js has no matching `process.arch`. |
+| Haiku | Not a Go target. |
+
+On these platforms `startServer` fails with `CpaBinaryError` (`code: 'unsupported-platform'`). Pass `binaryPath`
+to use your own build.
+
+### How the right package is installed
+
+The main package lists every platform package in `optionalDependencies`. Each platform package declares `os`, `cpu`
+and, for the two glibc/musl pairs, `libc`, so the package manager installs only the matching ones. At runtime
+`resolveBinary()` detects the platform and libc (through `process.report`, falling back to looking for
+`/lib/ld-musl-*`). It then uses the best installed package. On Linux x64/arm64 it prefers the libc-specific build
+and falls back to the static musl build, which also runs on glibc. Package managers that ignore `libc` install both
+packages; the extra one is simply unused.
+
+Errors from `resolveBinary` have a `code`:
+
+- `unsupported-platform`: there is no package for this platform.
+- `package-not-installed`: the optional dependency was skipped (`--omit=optional`, or a lockfile made on another
+  platform).
+- `missing`: the binary file is missing.
+- `not-executable`: the file is not executable. An executable bit removed by the package manager is restored once
+  before this error is thrown.
+
+## Reproducibility
+
+Binaries are built with `-trimpath -buildvcs=false` and the commit date as `main.BuildDate`. They use the model
+catalogs embedded at the pinned commit; upstream release CI refreshes the catalogs from `router-for-me/models`
+first, and we skip that step. At runtime CPA refreshes its catalogs from the network anyway, unless `-local-model`
+is passed. Rebuilding the same target with the same Go toolchain gives the same SHA-256.

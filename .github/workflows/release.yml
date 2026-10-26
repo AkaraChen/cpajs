@@ -1,0 +1,189 @@
+name: release
+
+# Builds CLIProxyAPI for every target in src/server/targets.ts, verifies the
+# binaries, assembles and packs the npm packages, installs them through a
+# local registry on each platform, and publishes on version tags.
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - src/server/targets.ts
+      - src/server/cpa-version.ts
+      - scripts/**
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      go: ${{ steps.cpa.outputs.go }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - id: matrix
+        run: node scripts/ci-matrix.ts
+      - id: cpa
+        run: node --input-type=module -e "import { CPA_RELEASE } from './src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      # verify-binary --smoke runs startServer, which needs the runtime dependencies.
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.plan.outputs.go }}
+          cache: false
+      - name: Install FreeBSD cross toolchain
+        if: matrix.freebsdSysroot
+        run: sudo apt-get update && sudo apt-get install -y clang lld
+      # Ubuntu's qemu-user-static covers every emulated target (including 32-bit MIPS,
+      # which docker/setup-qemu-action lacks) and registers binfmt_misc handlers.
+      - name: Install QEMU user-mode emulation
+        if: matrix.qemu
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support
+      - run: node scripts/build-binary.ts --target ${{ matrix.target }}
+      - run: node scripts/verify-binary.ts --target ${{ matrix.target }} ${{ matrix.smoke && '--smoke' || '' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist-bin/${{ matrix.target }}
+          if-no-files-found: error
+
+  pack:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          path: dist-bin
+      - name: Flatten artifacts
+        run: |
+          cd dist-bin
+          for dir in bin-*; do mv "$dir" "${dir#bin-}"; done
+          ls -la
+      - run: node scripts/assemble-packages.ts --require-all
+      - run: node scripts/pack.ts --require-all
+      - name: Checksums
+        run: cd dist-npm/tarballs && sha256sum *.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarballs
+          path: dist-npm/tarballs
+          if-no-files-found: error
+
+  install-test:
+    name: install (${{ matrix.name }})
+    needs: pack
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64 npm + typecheck, runner: ubuntu-latest, pm: npm, runtime: node, expect: linux-x64-gnu, typecheck: true }
+          - { name: linux-x64 pnpm, runner: ubuntu-latest, pm: pnpm, runtime: node, expect: linux-x64-gnu }
+          - { name: linux-x64 bun, runner: ubuntu-latest, pm: bun, runtime: bun, expect: linux-x64-gnu }
+          - { name: linux-arm64 npm, runner: ubuntu-24.04-arm, pm: npm, runtime: node, expect: linux-arm64-gnu }
+          - { name: alpine x64 npm, runner: ubuntu-latest, docker: 'node:24-alpine', pm: npm, runtime: node, expect: linux-x64-musl }
+          - { name: alpine arm64 npm, runner: ubuntu-24.04-arm, docker: 'node:24-alpine', pm: npm, runtime: node, expect: linux-arm64-musl }
+          - { name: macos-arm64 npm, runner: macos-15, pm: npm, runtime: node, expect: darwin-arm64 }
+          - { name: macos-arm64 bun, runner: macos-15, pm: bun, runtime: bun, expect: darwin-arm64 }
+          - { name: macos-x64 npm, runner: macos-15-intel, pm: npm, runtime: node, expect: darwin-x64 }
+          - { name: windows-x64 npm, runner: windows-latest, pm: npm, runtime: node, expect: win32-x64 }
+          - { name: windows-x64 bun, runner: windows-latest, pm: bun, runtime: bun, expect: win32-x64 }
+          - { name: windows-arm64 npm, runner: windows-11-arm, pm: npm, runtime: node, expect: win32-arm64 }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.pm == 'bun'
+      - name: Enable pnpm
+        if: matrix.pm == 'pnpm'
+        run: corepack enable pnpm
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarballs
+          path: dist-npm/tarballs
+      - name: Install test
+        if: ${{ !matrix.docker }}
+        run: node scripts/install-test.ts --pm ${{ matrix.pm }} --runtime ${{ matrix.runtime }} --expect ${{ matrix.expect }} ${{ matrix.typecheck && '--typecheck' || '' }}
+      # JavaScript actions cannot run inside Alpine containers, so musl is tested with docker run.
+      - name: Install test (${{ matrix.docker }})
+        if: ${{ matrix.docker }}
+        run: docker run --rm -v "$PWD:/repo:ro" -w /repo ${{ matrix.docker }} node scripts/install-test.ts --pm ${{ matrix.pm }} --expect ${{ matrix.expect }}
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: install-test
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarballs
+          path: tarballs
+      - name: Publish platform packages, then the main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for tgz in tarballs/cpa-js-*.tgz; do
+            case "$tgz" in tarballs/cpa-js-[0-9]*) continue ;; esac
+            npm publish "$tgz" --access public --provenance
+          done
+          npm publish tarballs/cpa-js-[0-9]*.tgz --access public --provenance
+      - name: Attach tarballs to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" tarballs/*.tgz tarballs/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes

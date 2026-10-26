@@ -1,0 +1,41 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": [
+      "es2023",
+      "dom"
+    ],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "paths": {
+      "cpa-js": [
+        "./src/index.ts"
+      ],
+      "cpa-js/*": [
+        "./src/*/index.ts"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "scripts",
+    "tests",
+    "examples",
+    "vitest.config.ts",
+    "vitest.e2e.config.ts"
+  ]
+}
