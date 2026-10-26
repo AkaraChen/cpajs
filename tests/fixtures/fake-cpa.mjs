@@ -3,11 +3,13 @@
 // Reads `-config <file>` (YAML), serves GET /healthz on server.host/port.
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
+//   FAKE_EXIT_AFTER=<n>     only apply FAKE_EXIT from run <n> on (counted in FAKE_COUNTER)
 //   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
 //                           port occupied from a separate process so the real bind fails
 //                           and the process exits 0, like the real binary
 //   FAKE_IGNORE_TERM=1      ignore SIGTERM
 //   FAKE_DELAY_MS=<ms>      wait before listening
+//   FAKE_DELAY_AFTER=<n>    only apply FAKE_DELAY_MS from run <n>+1 on
 //   FAKE_ECHO=<text>        print <text> on stdout and stderr at startup
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
@@ -28,14 +30,17 @@ if (process.env.FAKE_ECHO) {
   console.log(`stdout: ${process.env.FAKE_ECHO}`);
   console.error(`stderr: ${process.env.FAKE_ECHO}`);
 }
-if (process.env.FAKE_EXIT) process.exit(Number(process.env.FAKE_EXIT));
 const runs = process.env.FAKE_COUNTER && existsSync(process.env.FAKE_COUNTER) ? Number(readFileSync(process.env.FAKE_COUNTER, 'utf8')) + 1 : 1;
 if (process.env.FAKE_COUNTER) writeFileSync(process.env.FAKE_COUNTER, String(runs));
+const exitAfter = Number(process.env.FAKE_EXIT_AFTER ?? 0);
+if (process.env.FAKE_EXIT && (!exitAfter || runs >= exitAfter)) process.exit(Number(process.env.FAKE_EXIT));
 if (process.env.FAKE_BIND_ERROR && runs <= Number(process.env.FAKE_BIND_ERROR)) {
   await holdPort(host, port);
 }
 if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => console.log('ignoring SIGTERM'));
 
+const delayAfter = Number(process.env.FAKE_DELAY_AFTER ?? 0);
+const delayMs = delayAfter && runs <= delayAfter ? 0 : Number(process.env.FAKE_DELAY_MS ?? 0);
 setTimeout(() => {
   const server = createServer((req, res) => {
     if (req.url === '/healthz') {
@@ -51,7 +56,7 @@ setTimeout(() => {
     process.exit(0);
   });
   server.listen(port, host, () => console.log(`API server started successfully on: ${host}:${port}`));
-}, Number(process.env.FAKE_DELAY_MS ?? 0));
+}, delayMs);
 
 function holdPort(host, port) {
   return new Promise((resolve, reject) => {

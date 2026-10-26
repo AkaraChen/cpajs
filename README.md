@@ -57,7 +57,15 @@ await server.stop();
   conflict, timeout (`startupTimeoutMs`, default 30 s) or `signal` abort. In every failure case the process is
   stopped and the temporary directory removed.
 - `stop()` is idempotent: it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On Windows Node
-  can only terminate forcefully. `server.exited` settles however the process ends.
+  can only terminate forcefully. `server.exited` settles on the final stop or an unexpected exit.
+- `restart({ timeoutMs, signal })` stops the old process with the same SIGTERM → SIGKILL sequence
+  (`timeoutMs` defaults to `stopTimeoutMs`) and starts it again with the original options. The handle keeps
+  `origin`, `baseUrl`, `host`, `port`, `stateDir` and `configPath`; `pid`, `process` and `recentLogs` point at the
+  new process. The existing `config.yaml` is reused and never rewritten, so changes made through the management
+  API survive. A dynamic port is reused too; if another process took it meanwhile, restart fails with
+  `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
+  operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
+  the handle stopped and cleans up a temporary state directory like `startServer` does.
 - `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
   `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
   (default `false`), so the plaintext never reaches disk and remote management stays off. The key, config
@@ -136,6 +144,16 @@ Every method takes `{ signal, timeoutMs, headers }`. Errors:
 - `CpaResponseError` when a 2xx response has a malformed body.
 
 A 207 partial result resolves normally. Use `client.request()` for anything without a typed method.
+
+### Management-key bans
+
+The fifth consecutive wrong management key from one IP address bans that IP for 30 minutes. While banned, CPA
+answers 403 `{"error":"IP banned due to too many failed attempts. Try again in <duration>"}` before it even checks
+the supplied key. Loopback clients are included, and `127.0.0.1` and `::1` are separate counters. The failed-attempt
+map is in process memory and upstream has no unban route.
+
+For a server you started with `startServer`, call `server.restart()` to clear the ban. For a remote instance you
+can only wait for it to expire. Do not retry a 401 `invalid management key` or `missing management key` in a loop.
 
 ### Model API
 

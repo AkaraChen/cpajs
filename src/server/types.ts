@@ -130,6 +130,16 @@ export interface StopOptions {
   timeoutMs?: number;
 }
 
+export interface RestartOptions {
+  /**
+   * Grace period after the termination signal before the old process is killed.
+   * Defaults to `stopTimeoutMs`.
+   */
+  timeoutMs?: number;
+  /** Cancels the restart. The server is left stopped, like any other failed restart. */
+  signal?: AbortSignal;
+}
+
 export interface CpaServer {
   /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */
   readonly origin: string;
@@ -146,8 +156,17 @@ export interface CpaServer {
   readonly process: ChildProcess;
   /** Recent output lines (redacted), oldest first. */
   readonly recentLogs: readonly LogLine[];
-  /** Settles when the process exits, whether or not `stop()` was called. */
+  /**
+   * Settles when the process exits for good: on `stop()` or an unexpected exit.
+   * A restart stops one process and starts another, so it does not settle this.
+   */
   readonly exited: Promise<ExitResult>;
   /** Terminates CPA gracefully, killing it after the grace period. Idempotent. */
   stop(options?: StopOptions): Promise<ExitResult>;
+  /**
+   * Restarts CPA with the original options, reusing `origin`, `baseUrl`, `host`,
+   * `port`, `stateDir` and the existing config file. Concurrent calls share one
+   * operation. A failed or cancelled restart leaves the server stopped.
+   */
+  restart(options?: RestartOptions): Promise<void>;
 }
