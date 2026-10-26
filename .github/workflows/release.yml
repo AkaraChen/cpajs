@@ -175,13 +175,10 @@ jobs:
       # Trusted publishing (OIDC) needs npm >= 11.5.1.
       - run: npm install -g npm@^11.15.0
       - name: Publish platform packages, then the main package
-        env:
-          # Only for the very first release: trusted publishing can only be configured on
-          # packages that already exist. Leave the secret unset afterwards; OIDC is used.
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Trusted publishing only: npm authenticates the job through OIDC (id-token: write)
+        # and adds provenance automatically. No npm token is set anywhere in this workflow.
         run: |
           set -euo pipefail
-          if [ -n "$NPM_TOKEN" ]; then export NODE_AUTH_TOKEN="$NPM_TOKEN"; echo "Publishing with NPM_TOKEN"; else echo "Publishing with trusted publishing (OIDC)"; fi
           version="${GITHUB_REF_NAME#v}"
           case "$version" in
             *-*) prerelease="${version#*-}"; tag="${prerelease%%[^a-z]*}"; tag="${tag:-next}" ;;

@@ -136,7 +136,7 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | `install-test.ts` | Install the tarballs through a local registry with npm, pnpm or bun, and run them. |
 | `trust-publishers.ts` | Configure npm trusted publishing for all packages (run locally after the first publish). |
 
-`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). `trust-publishers.ts` configures trusted publishing for every package; npm only allows this once a package exists, so the very first release needs a temporary `NPM_TOKEN` secret.
+`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). There is no npm token; `trust-publishers.ts` configures the trusted publisher for every package. A newly added platform package has to exist on npm before it can be trusted.
 
 ## License
 
