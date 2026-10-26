@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { parse as parseYaml } from 'yaml';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { CpaStartError, startServer, type LogLine, type StartWithConfigOptions } from '../../src/server/index.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url));
@@ -344,9 +344,9 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
       });
 
       // Simulate a runtime management-API change plus a credential written to stateDir.
-      const runtime = JSON.parse(await readFile(configPath, 'utf8'));
+      const runtime = parseYaml(await readFile(configPath, 'utf8'));
       runtime.routing = { strategy: 'round-robin' };
-      await writeFile(configPath, `${JSON.stringify(runtime, null, 2)}\n`);
+      await writeFile(configPath, stringifyYaml(runtime));
       await writeFile(join(stateDir, 'auths', 'marker.json'), '{"type":"claude"}');
 
       await server.restart();
@@ -366,7 +366,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
       expect(existsSync(stateDir)).toBe(true);
       expect(existsSync(join(stateDir, 'auths', 'marker.json'))).toBe(true);
       // restart must not rewrite config.yaml, otherwise runtime edits would be lost.
-      expect(JSON.parse(await readFile(configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+      expect(parseYaml(await readFile(configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
 
       const exit = await server.stop();
       expect(await server.exited).toEqual(exit);
