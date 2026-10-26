@@ -10,5 +10,5 @@ const server = createServer();
 server.once('error', () => process.exit(1));
 server.listen(port, host, () => process.send?.('listening'));
 
-process.on('disconnect', () => setTimeout(() => process.exit(0), 2_000));
+process.on('disconnect', () => setTimeout(() => process.exit(0), 5_000));
 setTimeout(() => process.exit(0), 15_000).unref();

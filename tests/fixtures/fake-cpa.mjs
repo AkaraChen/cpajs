@@ -68,11 +68,18 @@ function holdPort(host, port) {
     const holder = spawn(process.execPath, [fileURLToPath(new URL('./hold-port.mjs', import.meta.url))], {
       env: { ...process.env, HOLD_HOST: host, HOLD_PORT: String(port) },
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      // On Windows a non-detached child is killed with its parent (libuv job
+      // object), and the holder must outlive this process. It exits on its own.
+      detached: true,
+      windowsHide: true,
     });
+    holder.unref();
     holder.once('error', reject);
     holder.once('message', (message) => {
-      if (message === 'listening') console.log(`fake cpa: port holder ${holder.pid} listening on ${host}:${port}`);
-      if (message === 'listening') resolve();
+      if (message !== 'listening') return;
+      console.log(`fake cpa: port holder ${holder.pid} listening on ${host}:${port}`);
+      holder.disconnect();
+      resolve();
     });
   });
 }
