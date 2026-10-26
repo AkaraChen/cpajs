@@ -193,10 +193,24 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(written.etag).toBeDefined();
 
       const deadline = Date.now() + 15_000;
-      let current = await client.config.getYaml();
+      // CPA rewrites the file non-atomically (os.WriteFile truncates first), so a read
+      // that lands mid-rewrite answers 500 "empty config". Retry only that error.
+      const read = async (): Promise<Awaited<ReturnType<typeof client.config.getYaml>>> => {
+        while (true) {
+          try {
+            return await client.config.getYaml();
+          } catch (error) {
+            const transient =
+              error instanceof CpaHttpError && error.status === 500 && error.errorCode === 'invalid_config' && error.errorMessage === 'empty config';
+            if (!transient || Date.now() >= deadline) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+        }
+      };
+      let current = await read();
       while (Date.now() < deadline && !/secret-key: \$2[aby]\$/.test(current.data)) {
         await new Promise((resolve) => setTimeout(resolve, 250));
-        current = await client.config.getYaml();
+        current = await read();
       }
       expect(current.data).not.toContain(MANAGEMENT_KEY);
       expect(current.data).toMatch(/secret-key: \$2[aby]\$/);

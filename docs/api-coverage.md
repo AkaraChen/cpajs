@@ -46,6 +46,12 @@ v8 and hot-reload it.
 | PATCH | `/config/*path` | any JSON value; objects merge | write result | `config.patchPath(path, value)` | U E | ✅ |
 | DELETE | `/config/*path` | – | write result. Empty ancestors are pruned; missing → 404. | `config.delete(path)` | U E | ✅ |
 
+Transient read failure: CPA rewrites `config.yaml` non-atomically. It truncates and then writes
+(`os.WriteFile` in `internal/config/config_yaml.go:138` when the watcher hashes a plaintext secret, `O_TRUNC` in
+`WriteConfig`), and every config read goes to disk. A read that lands inside that window answers
+`500 {"error":"invalid_config","message":"empty config"}`. Retry that specific error after a short delay. The
+client does not retry automatically, because other 500s are real failures.
+
 Path rules: segments are dash-case YAML keys. List indices cannot be addressed, so lists are replaced whole.
 `%2F` is split, which means a key that contains `/` cannot be addressed. `encodePath` rejects such segments
 and empty segments. `DELETE /config` gives a 307 to `/config/`, which returns 400; the client refuses an
