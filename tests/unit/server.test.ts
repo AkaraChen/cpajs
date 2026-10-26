@@ -45,6 +45,12 @@ describe('targets', () => {
     expect(candidateTargets({ os: 'linux', cpu: 'arm', libc: 'musl' }).map((t) => t.id)).toEqual(['linux-arm']);
     expect(candidateTargets({ os: 'darwin', cpu: 'arm64' }).map((t) => t.id)).toEqual(['darwin-arm64']);
     expect(candidateTargets({ os: 'sunos', cpu: 'x64' })).toEqual([]);
+    // Non-Linux hosts have no libc. The static/portable targets are still eligible.
+    expect(candidateTargets({ os: 'freebsd', cpu: 'x64' }).map((t) => t.id)).toEqual(['freebsd-x64']);
+    expect(candidateTargets({ os: 'win32', cpu: 'arm64' }).map((t) => t.id)).toEqual(['win32-arm64']);
+    expect(candidateTargets({ os: 'openbsd', cpu: 'arm64' }).map((t) => t.id)).toEqual(['openbsd-arm64']);
+    // If libc is undetectable on Linux, only the static portable build can be offered.
+    expect(candidateTargets({ os: 'linux', cpu: 'x64' }).map((t) => t.id)).toEqual(['linux-x64-musl']);
   });
 });
 
@@ -215,6 +221,19 @@ describe('config handling', () => {
       'remote-management': { 'secret-key': 'legacy' },
     });
     expect(secrets.sort()).toEqual(['ghp', 'k1', 'k2', 'legacy', 'mgmt', 'sk-upstream']);
+  });
+
+  it('leaves open-ended fields alone by design', () => {
+    // A known key name is collected wherever it appears, but arbitrary names inside
+    // headers or plugin settings are not guessed at.
+    const secrets = configSecrets({
+      management: { 'secret-key': 'known' },
+      'api-keys': {
+        'openai-compatibility': [{ name: 'x', headers: { Authorization: 'Bearer hidden' }, 'api-key': 'upstream-known' }],
+      },
+      plugins: { configs: { 'my-plugin': { token: 'plugin-hidden', headers: { 'X-Token': 'plugin-hidden' } } } },
+    });
+    expect(secrets.sort()).toEqual(['known', 'upstream-known']);
   });
 
   it('writes YAML with listener and auth-dir defaults, then reads it back', async () => {

@@ -35,9 +35,29 @@ jobs:
           node -e "const r = require('./lifecycle.json'); if (r.numPendingTests || r.numTodoTests) { console.error('lifecycle tests were skipped'); process.exit(1); }"
       - run: pnpm build
 
-  e2e:
-    name: e2e against CPA (linux-x64-musl)
+  lint:
+    name: lint
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      # The existing tree predates Biome formatting, so this checks new examples only.
+      - run: pnpm format:check
+
+  e2e:
+    name: e2e against CPA (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # musl is the portable build; gnu is the plugin-enabled build.
+        target: [linux-x64-musl, linux-x64-gnu]
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
@@ -52,11 +72,11 @@ jobs:
           go-version: ${{ steps.cpa.outputs.go }}
           cache: false
       - run: pnpm install --frozen-lockfile
-      - run: node scripts/build-binary.ts --target linux-x64-musl
-      - run: node scripts/verify-binary.ts --target linux-x64-musl --smoke
+      - run: node scripts/build-binary.ts --target ${{ matrix.target }}
+      - run: node scripts/verify-binary.ts --target ${{ matrix.target }} --smoke
       - run: pnpm test:e2e
         env:
-          CPA_BINARY: ${{ github.workspace }}/dist-bin/linux-x64-musl/cli-proxy-api
+          CPA_BINARY: ${{ github.workspace }}/dist-bin/${{ matrix.target }}/cli-proxy-api
 
   e2e-windows:
     name: e2e against CPA (win32-x64)

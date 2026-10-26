@@ -171,10 +171,16 @@ const openai = new OpenAI({ baseURL: server.baseUrl, apiKey: 'sk-my-model-key' }
 
 ```sh
 pnpm install
+pnpm lint                                          # Biome
 pnpm typecheck && pnpm test                       # unit tests (mocked fetch + a fake CPA process)
+pnpm test:coverage                                 # line coverage for client resources and src/server
 node scripts/build-binary.ts --target linux-x64-musl
 CPA_BINARY=dist-bin/linux-x64-musl/cli-proxy-api pnpm test:e2e   # contract tests against real CPA
 ```
+
+Biome formatting is configured to match the existing style. The current tree predates it, so enforcing
+formatting across the whole repository is left to a dedicated change; `pnpm format:check` currently covers
+new examples only.
 
 Release tooling, all in `scripts/` and run directly with Node's type stripping:
 

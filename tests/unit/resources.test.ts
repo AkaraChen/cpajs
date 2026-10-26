@@ -1,8 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import { CpaHttpError } from '../../src/client/index.ts';
+import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
 const ok = { status: 'ok', 'config-version': 8 };
+
+describe('attachmentFilename', () => {
+  it('prefers the RFC 5987 filename* parameter and decodes it', () => {
+    expect(
+      attachmentFilename(
+        new Headers({ 'Content-Disposition': `attachment; filename="fallback.log"; filename*=UTF-8''%E6%97%A5%E5%BF%97.log` }),
+      ),
+    ).toBe('日志.log');
+    // The encoded value may itself be quoted.
+    expect(
+      attachmentFilename(new Headers({ 'Content-Disposition': `attachment; filename*=UTF-8''"na%C3%AFve.log"` })),
+    ).toBe('naïve.log');
+  });
+
+  it('falls back to filename when filename* is malformed, and returns undefined without a header', () => {
+    expect(
+      attachmentFilename(new Headers({ 'Content-Disposition': 'attachment; filename="fallback.log"; filename*=UTF-8\'\'%E6' })),
+    ).toBe('fallback.log');
+    expect(attachmentFilename(new Headers({ 'Content-Disposition': 'attachment' }))).toBeUndefined();
+    expect(attachmentFilename(new Headers())).toBeUndefined();
+  });
+});
 
 describe('config', () => {
   it('returns data with the ETag and sends If-Match on writes', async () => {

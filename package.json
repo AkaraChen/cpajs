@@ -35,7 +35,11 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "cpa:source": "node scripts/fetch-source.ts",
     "cpa:build": "node scripts/build-binary.ts",
@@ -50,7 +54,9 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.3",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^5.0.5",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },

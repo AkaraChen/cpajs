@@ -9,7 +9,8 @@ pinned source wherever source and docs differ. Each difference is listed in
 [Documentation differences](#documentation-differences).
 
 Tests: **U** = unit test with a mocked fetch (`tests/unit/resources.test.ts`, `tests/unit/transport.test.ts`).
-**E** = contract test against the real binary (`tests/e2e/contract.test.ts`).
+**E** = contract test against the real binary (`tests/e2e/contract.test.ts`) on linux-x64-musl and the
+plugin-enabled linux-x64-gnu build; plugin store tests use a local registry through `plugins.store-sources`.
 
 ## Common behaviour
 
@@ -49,7 +50,8 @@ Path rules: segments are dash-case YAML keys. List indices cannot be addressed, 
 `%2F` is split, which means a key that contains `/` cannot be addressed. `encodePath` rejects such segments
 and empty segments. `DELETE /config` gives a 307 to `/config/`, which returns 400; the client refuses an
 empty path. Validation errors: 400 `invalid_config` for unknown sections or legacy keys, 422 for type
-errors, 400 `read_only_field` for revision fields.
+errors, 400 `read_only_field` for revision fields. Writing a plaintext management secret makes the watcher
+rewrite the file with its bcrypt hash a few seconds later, which changes the ETag (contract-tested).
 
 ### Server
 
@@ -79,8 +81,8 @@ errors, 400 `read_only_field` for revision fields.
 | GET | `/observability/logs` | logs.go:40 (needs `logging-to-file`) | `logs.get({limit, after, cursor})` | U E | ✅ |
 | DELETE | `/observability/logs` | logs.go:135 | `logs.clear()` | U E | ✅ |
 | GET | `/observability/logs/errors` | logs.go:197 | `logs.listErrorLogs()` | U E | ✅ |
-| GET | `/observability/logs/errors/:name` | logs.go:430 (attachment) | `logs.downloadErrorLog(name)` → `{filename, blob}` | U | ✅ |
-| GET | `/observability/logs/requests/:id` | logs.go:261 (attachment; matches the last 8 chars of the ID) | `logs.downloadRequestLog(id)` | U | ✅ |
+| GET | `/observability/logs/errors/:name` | logs.go:430 (attachment) | `logs.downloadErrorLog(name)` → `{filename, blob}` | U E | ✅ |
+| GET | `/observability/logs/requests/:id` | logs.go:261 (attachment; matches the last 8 chars of the ID) | `logs.downloadRequestLog(id)` | U E | ✅ |
 | GET | `/observability/usage/api-keys` | api_key_usage.go:58 (raw keys in map keys) | `usage.apiKeys()` | U E | ✅ |
 | GET | `/observability/usage/queue` | usage.go:24 (**destructive pop**) | `usage.popQueue(count)` | U E | ✅ |
 
@@ -96,10 +98,11 @@ errors, 400 `read_only_field` for revision fields.
 | GET | `/credentials/download` | auth_files_crud.go:28 (attachment) | `credentials.download(name)` → `Blob` | U E | ✅ |
 | PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})` | U E | ✅ |
 | PATCH | `/credentials/fields` | auth_files_fields.go:262 | `credentials.patchFields({name, ...fields})` | U E | ✅ |
-| POST | `/credentials/refresh` | auth_files_refresh.go:15 | `credentials.refresh(selector)`, `credentials.refreshAll()` | U | ✅ |
+| POST | `/credentials/refresh` | auth_files_refresh.go:15 | `credentials.refresh(selector)`, `credentials.refreshAll()` | U E | ✅ |
 | GET | `/credentials/siwc/status` | oauth_siwc.go:140 | `credentials.siwcStatus(selector)` | U | ✅ |
 
-A successful single refresh needs a real provider token, so it is covered only by unit tests.
+E2E covers the success response shape with an API-key credential (its executor has no token to rotate) and
+the missing-file 404. Rotation against a real provider needs provider tokens and stays unit-only.
 
 ### OAuth
 
@@ -109,13 +112,14 @@ A successful single refresh needs a real provider token, so it is covered only b
 | GET | `/oauth/status` | auth_files_provider_oauth.go:984 | `oauth.status(state)`, `oauth.waitForCompletion(state)` | U E | ✅ |
 | DELETE | `/oauth/session` | auth_files_provider_oauth.go:970 | `oauth.cancel(state)` | U E | ✅ |
 | GET, POST | `/oauth/callback` (no auth) | oauth_siwc.go:315/324 | `oauth.callback(body)` (POST) | U E | ✅ |
-| POST | `/oauth/import` | auth_files_v8.go:279 → vertex_import.go:18 | `oauth.importVertex({serviceAccount, location})` | U | ✅ |
+| POST | `/oauth/import` | auth_files_v8.go:279 → vertex_import.go:18 | `oauth.importVertex({serviceAccount, location})` | U E | ✅ |
 | POST | `/oauth/siwc/bind` | oauth_siwc.go:195 | `oauth.siwcBind(name)` | U | ✅ |
 | GET | `/oauth/siwc/status` | oauth_siwc.go:140 | `oauth.siwcStatus(selector)` | U | ✅ |
 
-The OAuth tests in CI never talk to a real provider. They start a session, which only generates PKCE and a
+The OAuth tests in CI never talk to a real provider, but `oauth.importVertex` is exercised end to end with a
+generated RSA service-account key. They start a session, which only generates PKCE and a
 URL, then poll, cancel, and fail a session through the callback route. To test against a real account,
-follow these steps by hand:
+run [`examples/oauth-login.ts`](../examples/oauth-login.ts) or follow these steps by hand:
 
 1. Start a server with a management key: `startServer({ management: { key } })`.
 2. Call `client.oauth.start({ provider: 'claude' })` and open `url` in a browser on the same machine.
@@ -130,11 +134,16 @@ follow these steps by hand:
 | --- | --- | --- | --- | --- | --- |
 | GET | `/plugins` | plugins.go:68 | `plugins.list()` | U E | ✅ |
 | DELETE | `/plugins/:id` | plugins.go:324 | `plugins.delete(id)` | U E | ✅ |
-| GET | `/plugins/store` | plugin_store.go:120 (network) | `plugins.store()` | U | ✅ |
-| POST | `/plugins/store/:id/install` | plugin_store.go:221 (network) | `plugins.install(id, {source, version})` | U | ✅ |
-| GET | `/plugins/:id/quota` | plugin_quota.go:238 | `plugins.quota(id, authIndex)` | U | ✅ |
+| GET | `/plugins/store` | plugin_store.go:120 (network) | `plugins.store()` | U E | ✅ |
+| POST | `/plugins/store/:id/install` | plugin_store.go:221 (network) | `plugins.install(id, {source, version})` | U E | ✅ |
+| GET | `/plugins/:id/quota` | plugin_quota.go:238 | `plugins.quota(id, authIndex)` | U E | ✅ |
 | POST | `/plugins/:id/quota` | plugin_quota.go:252 | covered by `plugins.quota`; the handler is identical (`fetchQuotaForPlugin`) | – | ✅ (equivalent) |
-| DELETE | `/plugins/:id/quota` | plugin_quota.go:302 | `plugins.resetQuota(id, authIndex)` | U | ✅ |
+| DELETE | `/plugins/:id/quota` | plugin_quota.go:302 | `plugins.resetQuota(id, authIndex)` | U E | ✅ |
+
+E2E installs a direct plugin from a local registry served by the test. Upstream always probes its built-in
+official registry first, so an offline run records that source error but still lists and installs the local
+plugin. Quota and resetQuota are covered end to end for their 400/404 error paths; a successful reset needs
+an installed plugin with a quota provider.
 
 Any other route can be called through `client.request({ method, path, query, json, body, responseType })`.
 
