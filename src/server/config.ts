@@ -4,7 +4,6 @@ import { parse as parseYaml } from 'yaml';
 import type { CpaConfig } from '../client/types/config.ts';
 import { CpaStartError } from './errors.ts';
 
-export const DEFAULT_PORT = 8317;
 export const MANAGED_CONFIG_FILE = 'config.yaml';
 
 export interface ListenSettings {
@@ -20,24 +19,46 @@ function isRecord(value: unknown): value is Json {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function hasOwn(value: Json, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 /**
- * Reads listener settings from a parsed config document. The v8 `server.*`
- * keys win over the legacy top-level `host`/`port`/`tls` keys, mirroring CPA.
+ * Decodes a port like yaml.v3 decodes into an int: null (and a missing key)
+ * becomes 0, a finite float is truncated, and anything else is NaN. CPA does
+ * not default the port, so 0 must stay 0 instead of becoming 8317.
+ */
+function readPort(value: unknown, present: boolean): number {
+  if (!present || value === null || value === undefined) return 0;
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : Number.NaN;
+}
+
+/**
+ * Reads listener settings from a parsed config document using upstream's
+ * presence-based precedence: a `server.*` leaf wins whenever it is present,
+ * even when it is `0`, `false` or `null` (internal/config/config_v8.go).
+ * Legacy top-level `host`/`port`/`tls` are used only when that v8 leaf is
+ * absent, and `tls.enable` is resolved leaf by leaf rather than by replacing
+ * the whole `tls` object.
  */
 export function readListenSettings(doc: unknown): ListenSettings {
   const root = isRecord(doc) ? doc : {};
   const server = isRecord(root.server) ? root.server : {};
-  const pick = (key: string): unknown => (key in server ? server[key] : root[key]);
+  const serverTls = isRecord(server.tls) ? server.tls : undefined;
+  const legacyTls = isRecord(root.tls) ? root.tls : undefined;
 
-  const host = pick('host');
-  const port = pick('port');
-  const tls = pick('tls');
-  const parsedPort = typeof port === 'number' ? port : typeof port === 'string' ? Number(port) : Number.NaN;
+  const v8Port = hasOwn(server, 'port');
+  const host = hasOwn(server, 'host') ? server.host : root.host;
+  const port = readPort(v8Port ? server.port : root.port, v8Port || hasOwn(root, 'port'));
+
+  let tls: unknown;
+  if (serverTls !== undefined && hasOwn(serverTls, 'enable')) tls = serverTls.enable;
+  else if (legacyTls !== undefined && hasOwn(legacyTls, 'enable')) tls = legacyTls.enable;
+
   return {
     host: typeof host === 'string' ? host.trim() : '',
-    // CPA falls back to 8317 when the port is missing or not positive.
-    port: Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : port === 0 ? 0 : DEFAULT_PORT,
-    tls: isRecord(tls) && tls.enable === true,
+    port,
+    tls: tls === true,
   };
 }
 
@@ -113,15 +134,23 @@ export async function inspectConfigFile(configPath: string): Promise<PreparedCon
   }
   let doc: unknown;
   try {
-    doc = parseYaml(text);
+    doc = parseYaml(text, { merge: true });
   } catch (cause) {
     throw new CpaStartError('invalid-options', `configPath ${absolute} is not valid YAML.`, { cause });
   }
+  const root = isRecord(doc) ? doc : {};
+  if (hasOwn(root, 'server') && !isRecord(root.server)) {
+    throw new CpaStartError('invalid-options', `configPath ${absolute} has a "server" section that is not a mapping.`);
+  }
+  if (isRecord(root.server) && hasOwn(root.server, 'tls') && !isRecord(root.server.tls)) {
+    throw new CpaStartError('invalid-options', `configPath ${absolute} has a "server.tls" section that is not a mapping.`);
+  }
   const listen = readListenSettings(doc);
-  if (listen.port === 0) {
+  if (!Number.isInteger(listen.port) || listen.port <= 0 || listen.port > 65_535) {
+    const shown = Number.isNaN(listen.port) ? 'a non-numeric value' : String(listen.port);
     throw new CpaStartError(
       'invalid-options',
-      `configPath ${absolute} sets port 0. CLIProxyAPI does not report the port it picks, so set a fixed port or pass a config object instead.`,
+      `configPath ${absolute} does not set a fixed port between 1 and 65535 (got ${shown}). CLIProxyAPI does not default the port: a missing or non-positive port becomes 0 and binds a random port it does not report. Set a fixed port or pass a config object instead.`,
     );
   }
   return { configPath: absolute, listen, secrets: configSecrets(doc), managed: false };

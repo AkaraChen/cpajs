@@ -74,13 +74,127 @@ describe('resolveBinary', () => {
 });
 
 describe('config handling', () => {
-  it('reads v8 listener keys, then legacy keys, then defaults', () => {
-    expect(readListenSettings({ server: { host: '127.0.0.1', port: 9000, tls: { enable: true } } })).toEqual({ host: '127.0.0.1', port: 9000, tls: true });
-    expect(readListenSettings({ host: '0.0.0.0', port: '9001' })).toEqual({ host: '0.0.0.0', port: 9001, tls: false });
-    expect(readListenSettings({ port: 1, server: { port: 2 } }).port).toBe(2);
-    expect(readListenSettings({}).port).toBe(8317);
-    expect(readListenSettings({ server: { port: -5 } }).port).toBe(8317);
-    expect(readListenSettings({ server: { port: 0 } }).port).toBe(0);
+  it('follows upstream v8/legacy presence precedence', () => {
+    const cases: { name: string; doc: unknown; expected: { host: string; port: number; tls: boolean } }[] = [
+      {
+        name: 'v8 only',
+        doc: { server: { host: '127.0.0.1', port: 9000, tls: { enable: true } } },
+        expected: { host: '127.0.0.1', port: 9000, tls: true },
+      },
+      {
+        name: 'legacy only',
+        doc: { host: '0.0.0.0', port: 9001, tls: { enable: true } },
+        expected: { host: '0.0.0.0', port: 9001, tls: true },
+      },
+      {
+        name: 'v8 host and port win over legacy values',
+        doc: { host: '0.0.0.0', port: 1, server: { host: '127.0.0.1', port: 2 } },
+        expected: { host: '127.0.0.1', port: 2, tls: false },
+      },
+      {
+        name: 'v8 explicit zero port wins over legacy',
+        doc: { port: 8317, server: { port: 0 } },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'v8 null port wins over legacy and decodes as zero',
+        doc: { port: 8317, server: { port: null } },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'v8 null host wins over legacy and decodes as empty',
+        doc: { host: '0.0.0.0', server: { host: null } },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'legacy values apply when the v8 leaf is absent',
+        doc: { host: '0.0.0.0', port: 8080, server: { tls: {} } },
+        expected: { host: '0.0.0.0', port: 8080, tls: false },
+      },
+      {
+        name: 'missing port is zero, not 8317',
+        doc: {},
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'negative port is preserved for the caller to reject',
+        doc: { server: { port: -5 } },
+        expected: { host: '', port: -5, tls: false },
+      },
+      {
+        name: 'float port truncates like yaml.v3',
+        doc: { server: { port: 9001.9 } },
+        expected: { host: '', port: 9001, tls: false },
+      },
+      {
+        name: 'v8 tls enable true wins over legacy false',
+        doc: { tls: { enable: false }, server: { tls: { enable: true } } },
+        expected: { host: '', port: 0, tls: true },
+      },
+      {
+        name: 'v8 tls enable false wins over legacy true',
+        doc: { tls: { enable: true }, server: { tls: { enable: false } } },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'v8 tls enable null wins over legacy true and decodes as false',
+        doc: { tls: { enable: true }, server: { tls: { enable: null } } },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'v8 tls without enable inherits legacy enable leaf',
+        doc: { tls: { enable: true, cert: 'c', key: 'k' }, server: { tls: { cert: 'other' } } },
+        expected: { host: '', port: 0, tls: true },
+      },
+      {
+        name: 'legacy tls null means disabled',
+        doc: { tls: null },
+        expected: { host: '', port: 0, tls: false },
+      },
+      {
+        name: 'non-numeric port is invalid, not a default',
+        doc: { server: { port: '9001' } },
+        expected: { host: '', port: Number.NaN, tls: false },
+      },
+    ];
+    for (const testCase of cases) {
+      expect(readListenSettings(testCase.doc), testCase.name).toEqual(testCase.expected);
+    }
+  });
+
+  it('resolves YAML anchors, aliases and merge keys like yaml.v3', async () => {
+    const merged = join(dir, 'merged.yaml');
+    await writeFile(
+      merged,
+      [
+        'defaults: &defaults',
+        '  host: 127.0.0.1',
+        '  port: 9100',
+        '  tls:',
+        '    enable: true',
+        'server:',
+        '  <<: *defaults',
+        '  port: 9101',
+        '  tls:',
+        '    enable: false',
+        '',
+      ].join('\n'),
+    );
+    expect(await inspectConfigFile(merged)).toMatchObject({
+      listen: { host: '127.0.0.1', port: 9101, tls: false },
+    });
+
+    const aliased = join(dir, 'aliased.yaml');
+    await writeFile(aliased, 'listener: &listener\n  host: 0.0.0.0\n  port: 9102\nserver: *listener\n');
+    expect(await inspectConfigFile(aliased)).toMatchObject({
+      listen: { host: '0.0.0.0', port: 9102, tls: false },
+    });
+
+    const rootMerged = join(dir, 'root-merged.yaml');
+    await writeFile(rootMerged, 'defaults: &defaults\n  host: 127.0.0.1\n  port: 9103\n<<: *defaults\n');
+    expect(await inspectConfigFile(rootMerged)).toMatchObject({
+      listen: { host: '127.0.0.1', port: 9103, tls: false },
+    });
   });
 
   it('collects secrets from the whole document', () => {
@@ -109,12 +223,27 @@ describe('config handling', () => {
     expect(JSON.parse(await readFile(custom.configPath, 'utf8')).oauth).toEqual({ 'auth-dir': '/elsewhere' });
   });
 
-  it('inspects an existing YAML file and rejects port 0', async () => {
+  it('inspects an existing YAML file and rejects missing or invalid ports', async () => {
     const file = join(dir, 'c.yaml');
     await writeFile(file, 'server:\n  host: 127.0.0.1\n  port: 9100\nmanagement:\n  secret-key: s3cret\n');
     expect(await inspectConfigFile(file)).toMatchObject({ listen: { host: '127.0.0.1', port: 9100 }, secrets: ['s3cret'], managed: false });
-    await writeFile(file, 'server:\n  port: 0\n');
-    await expect(inspectConfigFile(file)).rejects.toThrow(/port 0/);
+
+    for (const yaml of [
+      'server:\n  host: 127.0.0.1\n',
+      'server:\n  port: 0\n',
+      'server:\n  port: null\n',
+      'port: -1\n',
+      'server:\n  port: 65_536\n',
+      "server:\n  port: '9001'\n",
+    ]) {
+      await writeFile(file, yaml);
+      await expect(inspectConfigFile(file), yaml).rejects.toMatchObject({ code: 'invalid-options' });
+    }
+
+    await writeFile(file, 'server: null\n');
+    await expect(inspectConfigFile(file)).rejects.toThrow(/server.*mapping/);
+    await writeFile(file, 'server:\n  tls: null\n');
+    await expect(inspectConfigFile(file)).rejects.toThrow(/server\.tls.*mapping/);
     await expect(inspectConfigFile(join(dir, 'missing.yaml'))).rejects.toBeInstanceOf(CpaStartError);
   });
 });
