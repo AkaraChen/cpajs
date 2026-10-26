@@ -10,23 +10,23 @@ import { fileURLToPath } from 'node:url';
 import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { CpaStartError, startServer, type CpaServer, type LogLine, type StartWithConfigOptions } from '../../src/server/index.ts';
+import {
+  CpaStartError,
+  startServer,
+  type CpaServer,
+  type LogLine,
+  type StartServerOptions,
+  type StartWithConfigOptions,
+} from '../../src/server/index.ts';
 import { internalCommand } from '../../src/server/internal.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url));
-// Run the fixture as `node <fixture>` through the internal launcher hook.
-const FIXTURE = { [internalCommand]: { path: process.execPath, args: [FAKE] } };
-function startFake(options: StartWithConfigOptions = {}): Promise<CpaServer> {
-  return startServer({ ...options, ...FIXTURE } as StartWithConfigOptions);
-}
-
 // startServer always passes `-config <file>` before any extra arguments, which
-// Node does not accept as an option. This internal-only hook runs
-// `node <fixture>` first; it is not part of the public StartServerOptions type.
-const FIXTURE = { command: { path: process.execPath, args: [FAKE] } };
-
-function startFake(options: StartWithConfigOptions = {}): Promise<CpaServer> {
-  return startServer({ ...options, ...FIXTURE } as StartWithConfigOptions);
+// Node does not accept as an option, so the internal launcher hook runs
+// `node <fixture>` first. It is not part of the public options.
+const FIXTURE = { [internalCommand]: { path: process.execPath, args: [FAKE] } };
+function startFake(options: StartServerOptions = {}): Promise<CpaServer> {
+  return startServer({ ...options, ...FIXTURE } as StartServerOptions);
 }
 
 let dir: string;
