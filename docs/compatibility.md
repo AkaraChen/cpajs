@@ -29,7 +29,7 @@ Use `client.server.info()` to check which version a server runs.
 
 | Runtime | Status |
 | --- | --- |
-| Node.js 22, 24 | Supported. CI runs unit tests on Linux, macOS and Windows, plus install tests. |
+| Node.js 22, 24 | Supported. CI runs unit tests on Linux, macOS and Windows, contract e2e tests against a real binary on Linux and Windows, plus install tests. |
 | Bun | Supported. CI runs unit tests under Bun and installs/runs the package with `bun add` + `bun`. |
 | Browsers / edge runtimes | `@cpajs/cpa/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `@cpajs/cpa/server` needs Node.js APIs. |
 

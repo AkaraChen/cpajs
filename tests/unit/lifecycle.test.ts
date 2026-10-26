@@ -1,5 +1,6 @@
-// Process lifecycle tests against tests/fixtures/fake-cpa.mjs (POSIX only:
-// the fixture is started through its shebang).
+// Process lifecycle tests against tests/fixtures/fake-cpa.mjs. The fixture is
+// started through the current Node executable because Windows does not honour
+// the shebang line.
 import { existsSync, readdirSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -9,16 +10,31 @@ import { fileURLToPath } from 'node:url';
 import { compareSync } from 'bcryptjs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
-import { CpaStartError, startServer, type LogLine, type StartWithConfigOptions } from '../../src/server/index.ts';
+import { CpaStartError, startServer, type CpaServer, type LogLine, type StartWithConfigOptions } from '../../src/server/index.ts';
+import { internalCommand } from '../../src/server/internal.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/fake-cpa.mjs', import.meta.url));
+// Run the fixture as `node <fixture>` through the internal launcher hook.
+const FIXTURE = { [internalCommand]: { path: process.execPath, args: [FAKE] } };
+function startFake(options: StartWithConfigOptions = {}): Promise<CpaServer> {
+  return startServer({ ...options, ...FIXTURE } as StartWithConfigOptions);
+}
+
+// startServer always passes `-config <file>` before any extra arguments, which
+// Node does not accept as an option. This internal-only hook runs
+// `node <fixture>` first; it is not part of the public StartServerOptions type.
+const FIXTURE = { command: { path: process.execPath, args: [FAKE] } };
+
+function startFake(options: StartWithConfigOptions = {}): Promise<CpaServer> {
+  return startServer({ ...options, ...FIXTURE } as StartWithConfigOptions);
+}
 
 let dir: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'cpajs-life-'));
 });
 afterEach(async () => {
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 10 });
 });
 
 async function startError(promise: Promise<unknown>): Promise<CpaStartError> {
@@ -41,10 +57,10 @@ async function waitFor(condition: () => Promise<boolean>, timeoutMs = 5_000): Pr
   throw new Error(`condition not met within ${timeoutMs} ms`);
 }
 
-describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', () => {
+describe('server lifecycle (fake binary)', () => {
   it('starts on a dynamic loopback port, reports addresses, and cleans its temp dir on stop', async () => {
     const lines: LogLine[] = [];
-    const server = await startServer({ binaryPath: FAKE, localModel: true, args: ['-plugin-flag=1'], onLog: (l) => lines.push(l) });
+    const server = await startFake({ localModel: true, args: ['-plugin-flag=1'], onLog: (l) => lines.push(l) });
     expect(server.host).toBe('127.0.0.1');
     expect(server.port).toBeGreaterThan(0);
     expect(server.origin).toBe(`http://127.0.0.1:${server.port}`);
@@ -63,7 +79,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   });
 
   it('keeps a caller-provided stateDir and writes the managed config there', async () => {
-    const server = await startServer({ binaryPath: FAKE, stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
+    const server = await startFake({ stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
     await server.stop();
     expect(server.configPath).toBe(join(dir, 'config.yaml'));
     const text = await readFile(server.configPath, 'utf8');
@@ -73,14 +89,12 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   });
 
   it('reuses an existing managed config, logs it, and overwrites on request', async () => {
-    const first = await startServer({ binaryPath: FAKE, stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
+    const first = await startFake({ stateDir: dir, config: { routing: { strategy: 'fill-first' } } });
     const port = first.port;
     await first.stop();
 
     const lines: LogLine[] = [];
-    const second = await startServer({
-      binaryPath: FAKE,
-      stateDir: dir,
+    const second = await startFake({ stateDir: dir,
       config: { routing: { strategy: 'round-robin' } },
       onLog: (l) => lines.push(l),
     });
@@ -89,9 +103,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     expect(parseYaml(await readFile(second.configPath, 'utf8')).routing).toEqual({ strategy: 'fill-first' });
     await second.stop();
 
-    const third = await startServer({
-      binaryPath: FAKE,
-      stateDir: dir,
+    const third = await startFake({ stateDir: dir,
       overwriteConfig: true,
       config: { routing: { strategy: 'round-robin' } },
     });
@@ -104,24 +116,24 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
     const port = (blocker.address() as { port: number }).port;
     try {
-      const error = await startError(startServer({ binaryPath: FAKE, port }));
+      const error = await startError(startFake({ port }));
       expect(error.code).toBe('port-in-use');
     } finally {
-      blocker.close();
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
     }
-    const server = await startServer({ binaryPath: FAKE, port });
+    const server = await startFake({ port });
     expect(server.port).toBe(port);
     await server.stop();
   });
 
   it('retries another dynamic port when the bind races', async () => {
     const counter = join(dir, 'runs');
-    const server = await startServer({ binaryPath: FAKE, env: { FAKE_BIND_ERROR: '2', FAKE_COUNTER: counter } });
+    const server = await startFake({ env: { FAKE_BIND_ERROR: '2', FAKE_COUNTER: counter } });
     expect(await readFile(counter, 'utf8')).toBe('3');
     await server.stop();
 
     await rm(counter);
-    const error = await startError(startServer({ binaryPath: FAKE, env: { FAKE_BIND_ERROR: '5', FAKE_COUNTER: counter } }));
+    const error = await startError(startFake({ env: { FAKE_BIND_ERROR: '5', FAKE_COUNTER: counter } }));
     expect(error.code).toBe('port-in-use');
     expect(await readFile(counter, 'utf8')).toBe('3');
     // Six fixture runs, each spawning a port-holder process: about 1.3 s locally,
@@ -129,14 +141,14 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   }, 30_000);
 
   it('reports an early exit with code and output', async () => {
-    const error = await startError(startServer({ binaryPath: FAKE, stateDir: dir, env: { FAKE_EXIT: '3' } }));
+    const error = await startError(startFake({ stateDir: dir, env: { FAKE_EXIT: '3' } }));
     expect(error.code).toBe('exited');
     expect(error.exitCode).toBe(3);
     expect(error.output).toContain('fake cpa starting');
   });
 
   it('reports exited when the process exits with code 0 but the port is free', async () => {
-    const error = await startError(startServer({ binaryPath: FAKE, stateDir: dir, env: { FAKE_EXIT: '0' } }));
+    const error = await startError(startFake({ stateDir: dir, env: { FAKE_EXIT: '0' } }));
     expect(error.code).toBe('exited');
     expect(error.exitCode).toBe(0);
     expect(error.output).toContain('fake cpa starting');
@@ -148,7 +160,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     const previousTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = root;
     try {
-      const error = await startError(startServer({ binaryPath: FAKE, startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
+      const error = await startError(startFake({ startupTimeoutMs: 300, env: { FAKE_DELAY_MS: '5000' } }));
       expect(error.code).toBe('timeout');
       expect(readdirSync(root)).toEqual([]);
     } finally {
@@ -161,33 +173,49 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   it('can be cancelled with an AbortSignal', async () => {
     const controller = new AbortController();
     setTimeout(() => controller.abort(new Error('stop it')), 200);
-    const error = await startError(startServer({ binaryPath: FAKE, signal: controller.signal, env: { FAKE_DELAY_MS: '5000' } }));
+    const error = await startError(startFake({ signal: controller.signal, env: { FAKE_DELAY_MS: '5000' } }));
     expect(error.code).toBe('aborted');
     expect(error.cause).toEqual(new Error('stop it'));
   });
 
-  it('kills a process that ignores SIGTERM after the grace period', async () => {
-    const server = await startServer({ binaryPath: FAKE, env: { FAKE_IGNORE_TERM: '1' } });
+  it('strips CRLF line endings from output', async () => {
+    const lines: LogLine[] = [];
+    const server = await startFake({ env: { FAKE_CRLF: '1' }, onLog: (l) => lines.push(l) });
+    await server.stop();
+    expect(lines.some((l) => l.stream === 'stdout' && l.line === 'crlf stdout line')).toBe(true);
+    expect(lines.some((l) => l.stream === 'stderr' && l.line === 'crlf stderr line')).toBe(true);
+    expect(lines.some((l) => l.line.includes('\r'))).toBe(false);
+  });
+
+  it('stops a process that does not handle the termination signal', async () => {
+    const server = await startFake({ env: { FAKE_IGNORE_TERM: '1' } });
     const started = Date.now();
     const exit = await server.stop({ timeoutMs: 300 });
-    expect(exit.signal).toBe('SIGKILL');
-    expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+    const elapsed = Date.now() - started;
+    if (process.platform === 'win32') {
+      // There is no graceful signal on Windows: Node terminates the process
+      // forcefully and reports the emulated SIGTERM.
+      expect(exit.signal).toBe('SIGTERM');
+      expect(elapsed).toBeLessThan(5_000);
+    } else {
+      expect(exit.signal).toBe('SIGKILL');
+      expect(elapsed).toBeGreaterThanOrEqual(250);
+    }
   });
 
   it('resolves exited when the process dies on its own', async () => {
-    const server = await startServer({ binaryPath: FAKE });
+    const server = await startFake();
     process.kill(server.pid, 'SIGKILL');
-    expect(await server.exited).toEqual({ code: null, signal: 'SIGKILL' });
-    expect(await server.stop()).toEqual({ code: null, signal: 'SIGKILL' });
+    const expected = process.platform === 'win32' ? { code: 1, signal: null } : { code: null, signal: 'SIGKILL' };
+    expect(await server.exited).toEqual(expected);
+    expect(await server.stop()).toEqual(expected);
     expect(existsSync(server.stateDir)).toBe(false);
   });
 
   it('hashes the management key into the managed config and keeps it out of the environment', async () => {
     const lines: LogLine[] = [];
     const key = 'mgmt-secret-value';
-    const server = await startServer({
-      binaryPath: FAKE,
-      stateDir: dir,
+    const server = await startFake({ stateDir: dir,
       management: { key },
       config: { access: { 'api-keys': ['model-secret-value'] } },
       redact: ['extra-secret-value'],
@@ -211,7 +239,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
   it('keeps a reused config untouched for the same key and updates only the hash for a new one', async () => {
     const start = async (key: string, lines: LogLine[]) =>
-      (await startServer({ binaryPath: FAKE, stateDir: dir, management: { key }, onLog: (l) => lines.push(l) })).stop();
+      (await startFake({ stateDir: dir, management: { key }, onLog: (l) => lines.push(l) })).stop();
 
     await start('first-key-value', []);
     const configPath = join(dir, 'config.yaml');
@@ -238,9 +266,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     process.env.MANAGEMENT_PASSWORD = 'inherited-value';
     try {
       const lines: LogLine[] = [];
-      const server = await startServer({
-        binaryPath: FAKE,
-        stateDir: dir,
+      const server = await startFake({ stateDir: dir,
         management: { key: 'chosen-key' },
         onLog: (l) => lines.push(l),
       });
@@ -256,9 +282,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
   it('can pass the key through MANAGEMENT_PASSWORD when explicitly requested', async () => {
     const lines: LogLine[] = [];
-    const server = await startServer({
-      binaryPath: FAKE,
-      stateDir: dir,
+    const server = await startFake({ stateDir: dir,
       management: { key: 'mgmt-secret-value', viaEnvironment: true },
       onLog: (l) => lines.push(l),
     });
@@ -272,7 +296,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   it('warns when remote management is exposed on a non-loopback host', async () => {
     const warn = async (options: Pick<StartWithConfigOptions, 'management' | 'host'>): Promise<string[]> => {
       const lines: LogLine[] = [];
-      const server = await startServer({ binaryPath: FAKE, host: '0.0.0.0', onLog: (l) => lines.push(l), ...options });
+      const server = await startFake({ host: '0.0.0.0', onLog: (l) => lines.push(l), ...options });
       await server.stop();
       return lines.filter((l) => l.line.includes('reachable from non-loopback')).map((l) => l.line);
     };
@@ -291,7 +315,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     const configPath = join(dir, 'config.yaml');
     await writeFile(configPath, 'config-version: 8\nserver:\n  host: 127.0.0.1\n  port: 12345\nmanagement:\n  secret-key: file-secret\n');
     const error = await startError(
-      startServer({ binaryPath: FAKE, configPath, management: { key: 'env-key', viaEnvironment: true } }),
+      startFake({ configPath, management: { key: 'env-key', viaEnvironment: true } }),
     );
     expect(error.code).toBe('invalid-options');
     expect(error.message).toMatch(/configPath/);
@@ -299,8 +323,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
   it('passes Home options as a flag plus HOME_JWT, keeping the JWT out of argv and logs', async () => {
     const lines: LogLine[] = [];
-    const server = await startServer({
-      binaryPath: FAKE,
+    const server = await startFake({
       home: { jwt: 'home-jwt-secret-value', disableClusterDiscovery: true },
       env: { FAKE_ECHO: 'home-jwt-secret-value' },
       onLog: (l) => lines.push(l),
@@ -314,7 +337,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   });
 
   it('reports a binary that cannot be executed', async () => {
-    const bogus = join(dir, 'cli-proxy-api');
+    const bogus = join(dir, process.platform === 'win32' ? 'cli-proxy-api.exe' : 'cli-proxy-api');
     await writeFile(bogus, Buffer.from([0, 1, 2, 3]));
     await chmod(bogus, 0o755);
     const error = await startError(startServer({ binaryPath: bogus }));
@@ -326,9 +349,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
   describe('restart', () => {
     it('keeps the handle and port, swaps process details, and preserves stateDir and config', async () => {
       const counter = join(dir, 'runs');
-      const server = await startServer({
-        binaryPath: FAKE,
-        config: { routing: { strategy: 'fill-first' }, access: { 'api-keys': ['model-key'] } },
+      const server = await startFake({ config: { routing: { strategy: 'fill-first' }, access: { 'api-keys': ['model-key'] } },
         env: { FAKE_COUNTER: counter },
       });
       const origin = server.origin;
@@ -378,7 +399,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
     it('shares one operation between concurrent restart calls', async () => {
       const counter = join(dir, 'runs');
-      const server = await startServer({ binaryPath: FAKE, env: { FAKE_COUNTER: counter } });
+      const server = await startFake({ env: { FAKE_COUNTER: counter } });
       const first = server.restart();
       const second = server.restart();
       expect(second).toBe(first);
@@ -389,9 +410,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
     it('aborts an in-flight restart when stop() is called', async () => {
       const counter = join(dir, 'runs');
-      const server = await startServer({
-        binaryPath: FAKE,
-        env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '5000' },
+      const server = await startFake({ env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '5000' },
       });
       const restarting = startError(server.restart());
       await waitFor(async () => (await readFile(counter, 'utf8')) === '2');
@@ -404,9 +423,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
 
     it('fails with port-in-use instead of switching ports, and cleans up', async () => {
       const counter = join(dir, 'runs');
-      const server = await startServer({
-        binaryPath: FAKE,
-        env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '1500' },
+      const server = await startFake({ env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '1500' },
       });
       const stateDir = server.stateDir;
       const restarting = startError(server.restart());
@@ -429,7 +446,7 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     });
 
     it('fails an already-aborted restart and leaves the server stopped', async () => {
-      const server = await startServer({ binaryPath: FAKE });
+      const server = await startFake();
       const error = await startError(server.restart({ signal: AbortSignal.abort(new Error('nope')) }));
       expect(error.code).toBe('aborted');
       expect(error.cause).toEqual(new Error('nope'));
@@ -439,10 +456,10 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     });
 
     it('resolves exited once when the restarted process dies on its own', async () => {
-      const server = await startServer({ binaryPath: FAKE });
+      const server = await startFake();
       await server.restart();
       process.kill(server.pid, 'SIGKILL');
-      const expected = { code: null, signal: 'SIGKILL' };
+      const expected = process.platform === 'win32' ? { code: 1, signal: null } : { code: null, signal: 'SIGKILL' };
       expect(await server.exited).toEqual(expected);
       expect(await server.stop()).toEqual(expected);
       expect(existsSync(server.stateDir)).toBe(false);

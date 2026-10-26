@@ -77,7 +77,7 @@ interface CommonServerOptions {
   onLog?: (log: LogLine) => void;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
-  /** Default grace period for `stop()` before the process is killed. Default 10 000 ms. */
+  /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
   stopTimeoutMs?: number;
 }
 
@@ -126,7 +126,7 @@ export interface ExitResult {
 }
 
 export interface StopOptions {
-  /** Grace period after the termination signal before the process is killed. */
+  /** Grace period after the termination signal before the process is killed. Ignored on Windows, where the process is terminated forcefully right away. */
   timeoutMs?: number;
 }
 
@@ -161,7 +161,12 @@ export interface CpaServer {
    * A restart stops one process and starts another, so it does not settle this.
    */
   readonly exited: Promise<ExitResult>;
-  /** Terminates CPA gracefully, killing it after the grace period. Idempotent. */
+  /**
+   * Stops CPA. On POSIX it sends SIGTERM and then SIGKILL after the grace
+   * period. On Windows Node cannot deliver a graceful signal, so the process is
+   * terminated forcefully (there is no grace period and CPA is not asked to
+   * flush state or update auth files). Idempotent.
+   */
   stop(options?: StopOptions): Promise<ExitResult>;
   /**
    * Restarts CPA with the original options, reusing `origin`, `baseUrl`, `host`,

@@ -334,7 +334,7 @@ describe.skipIf(!binary)('server with an existing config file', () => {
       const configPath = join(dir, 'config.yaml');
       await writeFile(
         configPath,
-        `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\nmanagement:\n  secret-key: file-secret\n  disable-control-panel: true\noauth:\n  auth-dir: ${join(dir, 'auths')}\n`,
+        `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\nmanagement:\n  secret-key: file-secret\n  disable-control-panel: true\noauth:\n  auth-dir: ${JSON.stringify(join(dir, 'auths'))}\n`,
       );
       await reservation.release();
       const lines: string[] = [];

@@ -27,6 +27,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Lifecycle tests must not be skipped (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pnpm vitest run tests/unit/lifecycle.test.ts --reporter=json --outputFile=lifecycle.json
+          node -e "const r = require('./lifecycle.json'); if (r.numPendingTests || r.numTodoTests) { console.error('lifecycle tests were skipped'); process.exit(1); }"
       - run: pnpm build
 
   e2e:
@@ -51,6 +57,32 @@ jobs:
       - run: pnpm test:e2e
         env:
           CPA_BINARY: ${{ github.workspace }}/dist-bin/linux-x64-musl/cli-proxy-api
+
+  e2e-windows:
+    name: e2e against CPA (win32-x64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - id: cpa
+        run: node --input-type=module -e "import { CPA_RELEASE } from './src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.cpa.outputs.go }}
+          cache: false
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/build-binary.ts --target win32-x64
+      - run: node scripts/verify-binary.ts --target win32-x64 --smoke
+      - run: pnpm test:e2e
+        env:
+          CPA_BINARY: ${{ github.workspace }}/dist-bin/win32-x64/cli-proxy-api.exe
 
   bun:
     name: unit tests under bun

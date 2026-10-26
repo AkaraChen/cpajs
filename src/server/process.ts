@@ -104,7 +104,8 @@ export class ManagedProcess {
 
   /**
    * Sends SIGTERM and waits up to `timeoutMs` before SIGKILL. On Windows Node
-   * can only terminate the process forcefully, so both steps are immediate.
+   * cannot deliver SIGTERM: both steps terminate the process forcefully, so
+   * there is no grace period and the timeout is irrelevant.
    */
   stop(timeoutMs: number): Promise<ExitResult> {
     if (this.exitResult) return Promise.resolve(this.exitResult);
