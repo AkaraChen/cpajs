@@ -10,7 +10,7 @@ import { keyMatches, resolveManagement, type ResolvedManagement } from './manage
 import { ManagedProcess } from './process.ts';
 import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { createRedactor } from './redact.ts';
-import type { CpaServer, ExitResult, StartServerOptions, StartWithConfigOptions } from './types.ts';
+import type { CpaServer, ExitResult, LogLine, RestartOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
 export type { HostPlatform, Libc, ResolvedBinary } from './binary.ts';
@@ -104,8 +104,91 @@ function configListen(options: StartWithConfigOptions): { host: string; port: nu
   return { host, port };
 }
 
-function abortError(signal: AbortSignal, output: string): CpaStartError {
-  return new CpaStartError('aborted', 'startServer was aborted.', { output, cause: signal.reason });
+function abortError(signal: AbortSignal, output: string, message = 'startServer was aborted.'): CpaStartError {
+  return new CpaStartError('aborted', message, { output, cause: signal.reason });
+}
+
+interface LaunchOptions {
+  binaryPath: string;
+  args: readonly string[];
+  stateDir: string;
+  env: NodeJS.ProcessEnv;
+  redact: (text: string) => string;
+  onLog?: ((log: LogLine) => void) | undefined;
+  host: string;
+  port: number;
+  origin: string;
+  deadline: number;
+  signal: AbortSignal | undefined;
+  startupTimeoutMs: number;
+  /** Description used when the port cannot be bound, e.g. `Port 8317 on 127.0.0.1 ...`. */
+  portMessage: string;
+  /** Retry with a different dynamically picked port on a bind race. */
+  allowRetry: boolean;
+  abortMessage: string;
+}
+
+type LaunchResult =
+  | { kind: 'ready'; proc: ManagedProcess }
+  | { kind: 'retry' }
+  | { kind: 'failed'; error: CpaStartError; result: ExitResult | undefined };
+
+/** Spawns CPA and waits for `/healthz`, stopping the child if it does not become ready. */
+async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
+  let proc: ManagedProcess;
+  try {
+    proc = new ManagedProcess(options.binaryPath, options.args, {
+      cwd: options.stateDir,
+      env: options.env,
+      redact: options.redact,
+      onLog: options.onLog,
+    });
+  } catch (cause) {
+    // Node reports spawn failures through the 'error' event; Bun throws synchronously.
+    const error = new CpaStartError('spawn-failed', `Failed to spawn ${options.binaryPath}: ${options.redact((cause as Error).message)}`, {
+      cause,
+    });
+    return { kind: 'failed', error, result: undefined };
+  }
+
+  const outcome = await waitUntilReady(proc, options.origin, options.deadline, options.signal);
+  if (outcome === 'ready') return { kind: 'ready', proc };
+
+  // Not ready: make sure the process is gone before deciding what to report.
+  const exit = await proc.stop(0);
+  const output = proc.output();
+  if (outcome === 'aborted') return { kind: 'failed', error: abortError(options.signal!, output, options.abortMessage), result: exit };
+  if (outcome === 'timeout') {
+    const error = new CpaStartError('timeout', `CLIProxyAPI did not become ready within ${options.startupTimeoutMs} ms.`, { output });
+    return { kind: 'failed', error, result: exit };
+  }
+  if (proc.spawnError) {
+    const error = new CpaStartError('spawn-failed', `Failed to spawn ${options.binaryPath}: ${options.redact(proc.spawnError.message)}`, {
+      output,
+      cause: proc.spawnError,
+    });
+    return { kind: 'failed', error, result: exit };
+  }
+  // CPA exits with code 0 when its bind fails, so the output cannot tell a
+  // port conflict apart from any other early exit. Probe the port instead.
+  // This is best-effort: the port can be taken or freed between the child's
+  // bind attempt and this check.
+  if (!(await isPortFree(options.host, options.port))) {
+    // A dynamically picked port can be taken between probing and binding; try another.
+    if (options.allowRetry) return { kind: 'retry' };
+    const error = new CpaStartError('port-in-use', options.portMessage, {
+      output,
+      exitCode: exit.code,
+      signal: exit.signal,
+    });
+    return { kind: 'failed', error, result: exit };
+  }
+  const error = new CpaStartError(
+    'exited',
+    `CLIProxyAPI exited before becoming ready (code ${String(exit.code)}, signal ${String(exit.signal)}).`,
+    { output, exitCode: exit.code, signal: exit.signal },
+  );
+  return { kind: 'failed', error, result: exit };
 }
 
 /**
@@ -219,65 +302,43 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       const held = reservation;
       reservation = undefined;
       await held?.release();
-      let proc: ManagedProcess;
-      try {
-        proc = new ManagedProcess(binary.path, ['-config', prepared.configPath, ...extraArgs], {
-          cwd: stateDir,
-          env,
-          redact,
-          onLog: options.onLog,
-        });
-      } catch (cause) {
-        // Node reports spawn failures through the 'error' event; Bun throws synchronously.
-        throw new CpaStartError('spawn-failed', `Failed to spawn ${binary.path}: ${redact((cause as Error).message)}`, { cause });
-      }
+      const result = await launchProcess({
+        binaryPath: binary.path,
+        args: ['-config', prepared.configPath, ...extraArgs],
+        stateDir,
+        env,
+        redact,
+        onLog: options.onLog,
+        host,
+        port,
+        origin,
+        deadline,
+        signal,
+        startupTimeoutMs,
+        portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
+        allowRetry: dynamicPort && attempt < DYNAMIC_PORT_ATTEMPTS,
+        abortMessage: 'startServer was aborted.',
+      });
 
-      const outcome = await waitUntilReady(proc, origin, deadline, signal);
-      if (outcome === 'ready') {
-        return createHandle(proc, {
-          origin,
-          host,
-          port,
+      if (result.kind === 'ready') {
+        return createHandle(result.proc, {
           binaryPath: binary.path,
           configPath: prepared.configPath,
+          listen: prepared.listen,
+          origin,
           stateDir,
+          env,
+          extraArgs,
+          redact,
+          onLog: options.onLog,
           managementKey: management.key,
+          startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           cleanup,
         });
       }
-
-      // Not ready: make sure the process is gone before deciding what to report.
-      const exit = await proc.stop(0);
-      const output = proc.output();
-      if (outcome === 'aborted') throw abortError(signal!, output);
-      if (outcome === 'timeout') {
-        throw new CpaStartError('timeout', `CLIProxyAPI did not become ready within ${startupTimeoutMs} ms.`, { output });
-      }
-      if (proc.spawnError) {
-        throw new CpaStartError('spawn-failed', `Failed to spawn ${binary.path}: ${redact(proc.spawnError.message)}`, {
-          output,
-          cause: proc.spawnError,
-        });
-      }
-      // CPA exits with code 0 when its bind fails, so the output cannot tell a
-      // port conflict apart from any other early exit. Probe the port instead.
-      // This is best-effort: the port can be taken or freed between the child's
-      // bind attempt and this check.
-      if (!(await isPortFree(host, port))) {
-        // A dynamically picked port can be taken between probing and binding; try another.
-        if (dynamicPort && attempt < DYNAMIC_PORT_ATTEMPTS) continue;
-        throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`, {
-          output,
-          exitCode: exit.code,
-          signal: exit.signal,
-        });
-      }
-      throw new CpaStartError(
-        'exited',
-        `CLIProxyAPI exited before becoming ready (code ${String(exit.code)}, signal ${String(exit.signal)}).`,
-        { output, exitCode: exit.code, signal: exit.signal },
-      );
+      if (result.kind === 'retry') continue;
+      throw result.error;
     }
   } catch (error) {
     await reservation?.release();
@@ -313,42 +374,163 @@ async function waitUntilReady(
   }
 }
 
-function createHandle(
-  proc: ManagedProcess,
-  info: {
-    origin: string;
-    host: string;
-    port: number;
-    binaryPath: string;
-    configPath: string;
-    stateDir: string;
-    managementKey: string | undefined;
-    stopTimeoutMs: number;
-    cleanup: () => Promise<void>;
-  },
-): CpaServer {
-  const exited: Promise<ExitResult> = proc.exited.then(async (result) => {
-    await info.cleanup();
-    return result;
+interface HandleInfo {
+  binaryPath: string;
+  configPath: string;
+  listen: PreparedConfig['listen'];
+  origin: string;
+  stateDir: string;
+  env: NodeJS.ProcessEnv;
+  extraArgs: readonly string[];
+  redact: (text: string) => string;
+  onLog?: ((log: LogLine) => void) | undefined;
+  managementKey: string | undefined;
+  startupTimeoutMs: number;
+  stopTimeoutMs: number;
+  cleanup: () => Promise<void>;
+}
+
+function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
+  let currentProc = initialProc;
+  let state: 'running' | 'restarting' | 'stopping' | 'stopped' = 'running';
+  let restartTask: Promise<void> | undefined;
+  let restartController: AbortController | undefined;
+  let stopTask: Promise<ExitResult> | undefined;
+  let resolveExited!: (result: ExitResult) => void;
+  let finalizePromise: Promise<void> | undefined;
+  const exited = new Promise<ExitResult>((resolve) => {
+    resolveExited = resolve;
   });
+
+  const settle = (result: ExitResult): Promise<void> => {
+    if (finalizePromise) return finalizePromise;
+    state = 'stopped';
+    finalizePromise = (async () => {
+      try {
+        await info.cleanup();
+      } finally {
+        resolveExited(result);
+      }
+    })();
+    return finalizePromise;
+  };
+
+  const watch = (proc: ManagedProcess): void => {
+    void proc.exited.then((result) => {
+      if (proc !== currentProc || state !== 'running') return;
+      void settle(result).catch(() => {});
+    });
+  };
+  watch(initialProc);
+
+  const restart = (restartOptions: RestartOptions = {}): Promise<void> => {
+    if (state === 'stopped' || state === 'stopping') {
+      return Promise.reject(new CpaStartError('stopped', 'Cannot restart a stopped server.'));
+    }
+    if (restartTask) return restartTask;
+
+    state = 'restarting';
+    const controller = new AbortController();
+    restartController = controller;
+    const signal = restartOptions.signal
+      ? AbortSignal.any([restartOptions.signal, controller.signal])
+      : controller.signal;
+
+    restartTask = (async () => {
+      const previous = currentProc;
+      const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
+      if (signal.aborted) {
+        await settle(previousExit);
+        throw abortError(signal, previous.output(), 'restart was aborted.');
+      }
+
+      // Reuse the original port, dynamic or not. The old listener is gone, and
+      // Go sets SO_REUSEADDR on Unix, so TIME_WAIT does not block the bind.
+      // Windows relies on its default (Go does not set SO_REUSEADDR there);
+      // either way another process holding the port is reported, never swapped.
+      const { host, port } = info.listen;
+      if (!(await isPortFree(host, port))) {
+        await settle(previousExit);
+        throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
+      }
+
+      // Reuse the config file as CPA left it. Rewriting it here would discard
+      // changes made through the management API during the previous run (#13).
+      const result = await launchProcess({
+        binaryPath: info.binaryPath,
+        args: ['-config', info.configPath, ...info.extraArgs],
+        stateDir: info.stateDir,
+        env: info.env,
+        redact: info.redact,
+        onLog: info.onLog,
+        host,
+        port,
+        origin: info.origin,
+        deadline: Date.now() + info.startupTimeoutMs,
+        signal,
+        startupTimeoutMs: info.startupTimeoutMs,
+        portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
+        allowRetry: false,
+        abortMessage: 'restart was aborted.',
+      });
+
+      if (result.kind !== 'ready') {
+        const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
+        await settle(failure.result ?? previousExit);
+        throw failure.error;
+      }
+
+      currentProc = result.proc;
+      watch(result.proc);
+      state = 'running';
+      // The process may have exited between the readiness probe and this point.
+      if (result.proc.exitResult) void settle(result.proc.exitResult).catch(() => {});
+    })().finally(() => {
+      restartTask = undefined;
+      restartController = undefined;
+      if (state === 'restarting') state = 'running';
+    });
+
+    return restartTask;
+  };
+
+  const stop = (stopOptions: StopOptions = {}): Promise<ExitResult> => {
+    stopTask ??= (async () => {
+      if (state !== 'stopped') state = 'stopping';
+      restartController?.abort(new Error('server stopped'));
+      if (restartTask) {
+        try {
+          await restartTask;
+        } catch {
+          // An aborted restart always rejects; stop() still has to finish.
+        }
+      }
+      await settle(await currentProc.stop(stopOptions.timeoutMs ?? info.stopTimeoutMs));
+      return exited;
+    })();
+    return stopTask;
+  };
+
   return {
     origin: info.origin,
     baseUrl: `${info.origin}/v1`,
-    host: info.host,
-    port: info.port,
-    pid: proc.child.pid!,
+    host: info.listen.host,
+    port: info.listen.port,
     binaryPath: info.binaryPath,
     configPath: info.configPath,
     stateDir: info.stateDir,
     managementKey: info.managementKey,
-    process: proc.child,
+    get pid() {
+      return currentProc.child.pid!;
+    },
+    get process() {
+      return currentProc.child;
+    },
     get recentLogs() {
-      return [...proc.recentLogs];
+      return [...currentProc.recentLogs];
     },
     exited,
-    async stop(stopOptions = {}) {
-      await proc.stop(stopOptions.timeoutMs ?? info.stopTimeoutMs);
-      return exited;
-    },
+    stop,
+    restart,
   };
 }

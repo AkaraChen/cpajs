@@ -23,9 +23,11 @@ export type CpaStartErrorCode =
   /** Readiness was not reached within `startupTimeoutMs`. */
   | 'timeout'
   /** The `signal` passed to `startServer` was aborted. */
-  | 'aborted';
+  | 'aborted'
+  /** `restart` was called after the server stopped. */
+  | 'stopped';
 
-/** `startServer` failed. Secrets are redacted from `message` and `output`. */
+/** `startServer` or `restart` failed. Secrets are redacted from `message` and `output`. */
 export class CpaStartError extends Error {
   override readonly name = 'CpaStartError';
   readonly code: CpaStartErrorCode;

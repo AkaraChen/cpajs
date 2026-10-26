@@ -32,6 +32,15 @@ async function startError(promise: Promise<unknown>): Promise<CpaStartError> {
   return error as CpaStartError;
 }
 
+async function waitFor(condition: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`condition not met within ${timeoutMs} ms`);
+}
+
 describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', () => {
   it('starts on a dynamic loopback port, reports addresses, and cleans its temp dir on stop', async () => {
     const lines: LogLine[] = [];
@@ -310,5 +319,131 @@ describe.skipIf(process.platform === 'win32')('server lifecycle (fake binary)', 
     // libuv reports exec failures either as a spawn error or as exit code 127, depending on the OS.
     expect(['spawn-failed', 'exited']).toContain(error.code);
     if (error.code === 'exited') expect(error.exitCode).toBe(127);
+  });
+
+  describe('restart', () => {
+    it('keeps the handle and port, swaps process details, and preserves stateDir and config', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startServer({
+        binaryPath: FAKE,
+        config: { routing: { strategy: 'fill-first' }, access: { 'api-keys': ['model-key'] } },
+        env: { FAKE_COUNTER: counter },
+      });
+      const origin = server.origin;
+      const baseUrl = server.baseUrl;
+      const host = server.host;
+      const port = server.port;
+      const stateDir = server.stateDir;
+      const configPath = server.configPath;
+      const firstPid = server.pid;
+      const firstProcess = server.process;
+      const firstLogs = server.recentLogs;
+      let exits = 0;
+      void server.exited.then(() => {
+        exits++;
+      });
+
+      // Simulate a runtime management-API change plus a credential written to stateDir.
+      const runtime = JSON.parse(await readFile(configPath, 'utf8'));
+      runtime.routing = { strategy: 'round-robin' };
+      await writeFile(configPath, `${JSON.stringify(runtime, null, 2)}\n`);
+      await writeFile(join(stateDir, 'auths', 'marker.json'), '{"type":"claude"}');
+
+      await server.restart();
+      expect(server.origin).toBe(origin);
+      expect(server.baseUrl).toBe(baseUrl);
+      expect(server.host).toBe(host);
+      expect(server.port).toBe(port);
+      expect(server.stateDir).toBe(stateDir);
+      expect(server.configPath).toBe(configPath);
+      expect(server.pid).not.toBe(firstPid);
+      expect(server.process).not.toBe(firstProcess);
+      expect(server.process.pid).toBe(server.pid);
+      expect(server.recentLogs.includes(firstLogs[0]!)).toBe(false);
+      expect(server.recentLogs.filter((l) => l.line.startsWith('fake cpa starting'))).toHaveLength(1);
+      expect(exits).toBe(0);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      expect(existsSync(stateDir)).toBe(true);
+      expect(existsSync(join(stateDir, 'auths', 'marker.json'))).toBe(true);
+      // restart must not rewrite config.yaml, otherwise runtime edits would be lost.
+      expect(JSON.parse(await readFile(configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+
+      const exit = await server.stop();
+      expect(await server.exited).toEqual(exit);
+      expect(exits).toBe(1);
+      expect(existsSync(stateDir)).toBe(false);
+    });
+
+    it('shares one operation between concurrent restart calls', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startServer({ binaryPath: FAKE, env: { FAKE_COUNTER: counter } });
+      const first = server.restart();
+      const second = server.restart();
+      expect(second).toBe(first);
+      await first;
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      await server.stop();
+    });
+
+    it('aborts an in-flight restart when stop() is called', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startServer({
+        binaryPath: FAKE,
+        env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '5000' },
+      });
+      const restarting = startError(server.restart());
+      await waitFor(async () => (await readFile(counter, 'utf8')) === '2');
+      const [error, exit] = await Promise.all([restarting, server.stop()]);
+      expect(error.code).toBe('aborted');
+      expect(await server.exited).toEqual(exit);
+      expect(existsSync(server.stateDir)).toBe(false);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('fails with port-in-use instead of switching ports, and cleans up', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startServer({
+        binaryPath: FAKE,
+        env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '1500' },
+      });
+      const stateDir = server.stateDir;
+      const restarting = startError(server.restart());
+      await waitFor(async () => (await readFile(counter, 'utf8')) === '2');
+      const blocker = createServer();
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(server.port, '127.0.0.1', () => resolve());
+      });
+      try {
+        const error = await restarting;
+        expect(error.code).toBe('port-in-use');
+      } finally {
+        blocker.close();
+      }
+      expect(existsSync(stateDir)).toBe(false);
+      const exit = await server.stop();
+      expect(await server.exited).toEqual(exit);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('fails an already-aborted restart and leaves the server stopped', async () => {
+      const server = await startServer({ binaryPath: FAKE });
+      const error = await startError(server.restart({ signal: AbortSignal.abort(new Error('nope')) }));
+      expect(error.code).toBe('aborted');
+      expect(error.cause).toEqual(new Error('nope'));
+      expect(existsSync(server.stateDir)).toBe(false);
+      await server.stop();
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('resolves exited once when the restarted process dies on its own', async () => {
+      const server = await startServer({ binaryPath: FAKE });
+      await server.restart();
+      process.kill(server.pid, 'SIGKILL');
+      const expected = { code: null, signal: 'SIGKILL' };
+      expect(await server.exited).toEqual(expected);
+      expect(await server.stop()).toEqual(expected);
+      expect(existsSync(server.stateDir)).toBe(false);
+    });
   });
 });
