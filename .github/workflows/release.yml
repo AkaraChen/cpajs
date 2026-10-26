@@ -188,7 +188,7 @@ jobs:
             *) tag=latest ;;
           esac
           echo "dist-tag: $tag"
-          main="tarballs/cpa-js-$version.tgz"
+          main="tarballs/cpajs-cpa-$version.tgz"
           publish() {
             name="$(tar -xOzf "$1" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')"
             if npm view "$name@$version" version >/dev/null 2>&1; then

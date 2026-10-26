@@ -22,10 +22,10 @@
     "skipLibCheck": true,
     "noEmit": true,
     "paths": {
-      "cpa-js": [
+      "@cpajs/cpa": [
         "./src/index.ts"
       ],
-      "cpa-js/*": [
+      "@cpajs/cpa/*": [
         "./src/*/index.ts"
       ]
     }

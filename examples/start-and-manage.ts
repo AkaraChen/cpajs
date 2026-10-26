@@ -1,7 +1,7 @@
 // Start a bundled CLIProxyAPI, change its config and list credentials.
 //   node examples/start-and-manage.ts
-import { createClient } from 'cpa-js/client';
-import { startServer } from 'cpa-js/server';
+import { createClient } from '@cpajs/cpa/client';
+import { startServer } from '@cpajs/cpa/server';
 
 const managementKey = 'example-management-key';
 const server = await startServer({

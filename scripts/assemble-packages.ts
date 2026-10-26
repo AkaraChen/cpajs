@@ -24,7 +24,7 @@ function platformManifest(target: Target, version: string, repository: unknown) 
   return {
     name: packageName(target),
     version,
-    description: `CLIProxyAPI ${CPA_RELEASE.version} binary for ${target.id} (${target.build === 'plugin' ? 'with plugin support' : 'portable, no plugins'}), used by cpa-js`,
+    description: `CLIProxyAPI ${CPA_RELEASE.version} binary for ${target.id} (${target.build === 'plugin' ? 'with plugin support' : 'portable, no plugins'}), used by @cpajs/cpa`,
     license: 'MIT',
     repository,
     os: [target.os],
@@ -40,7 +40,7 @@ function readme(target: Target, info: BuildInfo): string {
   return `# ${packageName(target)}
 
 Prebuilt [CLIProxyAPI](${CPA_RELEASE.repository}) ${CPA_RELEASE.tag} for \`${target.id}\`.
-Install [\`cpa-js\`](https://www.npmjs.com/package/cpa-js) instead; it depends on this package
+Install [\`@cpajs/cpa\`](https://www.npmjs.com/package/@cpajs/cpa) instead; it depends on this package
 through \`optionalDependencies\` and picks the right one for your platform.
 
 | | |

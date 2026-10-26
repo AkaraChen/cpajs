@@ -2,9 +2,9 @@
 
 ## Versions
 
-The `cpa-js` version and the bundled CLIProxyAPI version are tracked separately.
+The `@cpajs/cpa` version and the bundled CLIProxyAPI version are tracked separately.
 
-| cpa-js | CLIProxyAPI | Commit | Go | Management API |
+| @cpajs/cpa | CLIProxyAPI | Commit | Go | Management API |
 | --- | --- | --- | --- | --- |
 | 0.0.x | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` |
 
@@ -22,7 +22,7 @@ Use `client.server.info()` to check which version a server runs.
    `MANAGEMENT_PASSWORD` variable, `/healthz`, and the bind error text in the process output
    (`address already in use`).
 4. Run `node scripts/build-binary.ts --all-portable`, the unit tests, and `pnpm test:e2e` against a fresh build.
-5. Bump the `cpa-js` version. Platform packages always share the main package version.
+5. Bump the `@cpajs/cpa` version. Platform packages always share the main package version.
 
 ## Runtimes
 
@@ -30,7 +30,7 @@ Use `client.server.info()` to check which version a server runs.
 | --- | --- |
 | Node.js 22, 24 | Supported. CI runs unit tests on Linux, macOS and Windows, plus install tests. |
 | Bun | Supported. CI runs unit tests under Bun and installs/runs the package with `bun add` + `bun`. |
-| Browsers / edge runtimes | `cpa-js/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `cpa-js/server` needs Node.js APIs. |
+| Browsers / edge runtimes | `@cpajs/cpa/client` uses only `fetch`, `Headers`, `FormData`, `Blob`, `AbortSignal`, so it works anywhere those exist. `@cpajs/cpa/server` needs Node.js APIs. |
 
 ## Platforms
 
