@@ -277,12 +277,14 @@ describe.skipIf(!binary)('server with an existing config file', () => {
     const { findFreePort } = await import('../../src/server/readiness.ts');
     const dir = await mkdtemp(join(tmpdir(), 'cpajs-e2e-'));
     try {
-      const port = await findFreePort('127.0.0.1');
+      const reservation = await findFreePort('127.0.0.1');
+      const port = reservation.port;
       const configPath = join(dir, 'config.yaml');
       await writeFile(
         configPath,
         `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\nmanagement:\n  secret-key: file-secret\n  disable-control-panel: true\noauth:\n  auth-dir: ${join(dir, 'auths')}\n`,
       );
+      await reservation.release();
       const lines: string[] = [];
       const server = await startServer({ binaryPath: binary!, configPath, localModel: true, onLog: (l) => lines.push(l.line) });
       try {
