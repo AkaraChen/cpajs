@@ -1,6 +1,6 @@
 # Platform packages
 
-The `@cpa-js/<target>` packages are generated, not checked in. Their manifests come from
+The `@cpajs/<target>` packages are generated, not checked in. Their manifests come from
 [`src/server/targets.ts`](../src/server/targets.ts), which is the single list of targets
 used by the runtime lookup, the build scripts and the CI matrix.
 
