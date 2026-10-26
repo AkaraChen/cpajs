@@ -366,6 +366,9 @@ describe('startServer option validation', () => {
     expect(await invalid({ management: { key: 'a' }, config: { management: { 'secret-key': 'b' } } })).toMatch(
       /config\.management\["secret-key"\]/,
     );
+    // MANAGEMENT_PASSWORD in env is rejected unless viaEnvironment is used, with or without a key.
+    expect(await invalid({ env: { MANAGEMENT_PASSWORD: 'b' } })).toMatch(/MANAGEMENT_PASSWORD/);
+    expect(await invalid({ management: { key: ' padded ', viaEnvironment: true } })).toMatch(/whitespace/);
     expect(await invalid({ management: { key: 'a' }, env: { MANAGEMENT_PASSWORD: 'b' } })).toMatch(
       /MANAGEMENT_PASSWORD/,
     );

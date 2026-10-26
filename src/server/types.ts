@@ -151,8 +151,6 @@ export interface CpaServer {
   readonly binaryPath: string;
   readonly configPath: string;
   readonly stateDir: string;
-  /** The resolved management key (`management.key` or the deprecated alias), if any. */
-  readonly managementKey: string | undefined;
   readonly process: ChildProcess;
   /** Recent output lines (redacted), oldest first. */
   readonly recentLogs: readonly LogLine[];

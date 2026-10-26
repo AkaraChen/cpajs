@@ -58,6 +58,12 @@ function validate(options: StartServerOptions): void {
   if (typeof options.managementKey === 'string' && options.managementKey.trim() === '') {
     throw new CpaStartError('invalid-options', 'managementKey must not be empty.');
   }
+  if (options.management?.viaEnvironment !== true && options.env?.MANAGEMENT_PASSWORD !== undefined) {
+    throw new CpaStartError(
+      'invalid-options',
+      'Do not set MANAGEMENT_PASSWORD in env: cpajs only passes it to CPA for management: { key, viaEnvironment: true }, because upstream treats it as enabling remote management.',
+    );
+  }
   const requestedKey = options.management?.key ?? options.managementKey;
   if (requestedKey === undefined) return;
   if (options.configPath !== undefined) {
@@ -76,12 +82,6 @@ function validate(options: StartServerOptions): void {
       'management.key conflicts with config.management["secret-key"]. Keep one key: either let cpajs hash management.key into the managed config, or set config.management["secret-key"] yourself.',
     );
   }
-  if (options.management?.viaEnvironment !== true && options.env?.MANAGEMENT_PASSWORD !== undefined) {
-    throw new CpaStartError(
-      'invalid-options',
-      'management.key writes a bcrypt hash into the config; do not also set MANAGEMENT_PASSWORD in env. Use management.viaEnvironment: true to pass the key through the environment.',
-    );
-  }
 }
 
 function buildEnv(options: StartServerOptions, management: ResolvedManagement): NodeJS.ProcessEnv {
@@ -90,10 +90,11 @@ function buildEnv(options: StartServerOptions, management: ResolvedManagement): 
     if (value === undefined) delete env[key];
     else env[key] = value;
   }
+  // MANAGEMENT_PASSWORD reaches CPA only through management.viaEnvironment. Upstream
+  // accepts it as an extra plaintext key and forces remote management on, so one
+  // inherited from the parent environment must never leak in.
   if (management.viaEnvironment) env.MANAGEMENT_PASSWORD = management.key;
-  // The default mode must not accidentally inherit MANAGEMENT_PASSWORD: upstream
-  // would enable remote access and stop verifying the hash in the config.
-  else if (management.key !== undefined) delete env.MANAGEMENT_PASSWORD;
+  else delete env.MANAGEMENT_PASSWORD;
   if (options.home !== undefined) env.HOME_JWT = options.home.jwt;
   return env;
 }
@@ -284,19 +285,23 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       }
 
       const { host, port, tls } = prepared.listen;
-      // Upstream trims MANAGEMENT_PASSWORD, and an empty value does not enable anything.
-      const envSecret = env.MANAGEMENT_PASSWORD?.trim();
-      const remoteManagement = Boolean(envSecret) || prepared.management.allowRemote;
-      if (!warnedRemote && remoteManagement && !isLoopbackHost(host)) {
+      if (!warnedRemote) {
         warnedRemote = true;
-        const reason = envSecret
-          ? 'MANAGEMENT_PASSWORD makes upstream allow remote management'
-          : 'management.allow-remote is true';
         const target = host === '' ? 'all interfaces' : host;
-        options.onLog?.({
-          stream: 'stderr',
-          line: `cpajs: warning: ${reason} and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
-        });
+        const exposed = !isLoopbackHost(host);
+        if (management.viaEnvironment) {
+          options.onLog?.({
+            stream: 'stderr',
+            line:
+              'cpajs: warning: management.viaEnvironment passes the key through MANAGEMENT_PASSWORD, which upstream compares in plaintext and which always enables remote management' +
+              (exposed ? `; the server binds ${target}, so the management API is reachable from non-loopback clients.` : '.'),
+          });
+        } else if (prepared.management.allowRemote && exposed) {
+          options.onLog?.({
+            stream: 'stderr',
+            line: `cpajs: warning: management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
+          });
+        }
       }
 
       const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
@@ -340,7 +345,6 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           extraArgs,
           redact,
           onLog: options.onLog,
-          managementKey: management.key,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           cleanup,
@@ -395,7 +399,6 @@ interface HandleInfo {
   extraArgs: readonly string[];
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
-  managementKey: string | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   cleanup: () => Promise<void>;
@@ -530,7 +533,6 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     binaryPath: info.binaryPath,
     configPath: info.configPath,
     stateDir: info.stateDir,
-    managementKey: info.managementKey,
     get pid() {
       return currentProc.child.pid!;
     },
