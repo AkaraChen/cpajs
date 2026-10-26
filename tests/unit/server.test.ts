@@ -4,10 +4,18 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 import { candidateTargets, resolveBinary } from '../../src/server/binary.ts';
-import { configSecrets, inspectConfigFile, readListenSettings, readManagedConfig, writeManagedConfig } from '../../src/server/config.ts';
+import {
+  configSecrets,
+  inspectConfigFile,
+  readListenSettings,
+  readManagedConfig,
+  readManagementSettings,
+  updateManagedSecret,
+  writeManagedConfig,
+} from '../../src/server/config.ts';
 import { buildArgs } from '../../src/server/args.ts';
 import { CpaBinaryError, CpaStartError, startServer } from '../../src/server/index.ts';
-import { connectHost, formatOrigin } from '../../src/server/readiness.ts';
+import { connectHost, formatOrigin, isLoopbackHost } from '../../src/server/readiness.ts';
 import { createRedactor } from '../../src/server/redact.ts';
 import { TARGETS } from '../../src/server/targets.ts';
 
@@ -229,6 +237,7 @@ describe('config handling', () => {
       managed: true,
       reused: true,
     });
+    expect(prepared.management).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined });
 
     const custom = await writeManagedConfig({ oauth: { 'auth-dir': '/elsewhere' } }, dir, { host: '', port: 1 });
     expect(parseYaml(await readFile(custom.configPath, 'utf8')).oauth).toEqual({ 'auth-dir': '/elsewhere' });
@@ -240,6 +249,56 @@ describe('config handling', () => {
     await expect(readManagedConfig(dir)).rejects.toThrow(/fixed server\.port/);
     await writeFile(file, 'server:\n  port: 0\n');
     await expect(readManagedConfig(dir)).rejects.toThrow(/fixed server\.port/);
+  });
+
+  it('merges a management hash without dropping other management settings', async () => {
+    const prepared = await writeManagedConfig(
+      { management: { 'disable-control-panel': true } },
+      dir,
+      { host: '127.0.0.1', port: 1234 },
+      { secretKeyHash: '$2b$10$hash', allowRemote: true },
+    );
+    const written = parseYaml(await readFile(prepared.configPath, 'utf8'));
+    expect(written.management).toEqual({
+      'disable-control-panel': true,
+      'secret-key': '$2b$10$hash',
+      'allow-remote': true,
+    });
+    expect(prepared.management).toEqual({ allowRemote: true, hasSecret: true, secretKey: '$2b$10$hash' });
+  });
+
+  it('updates only the management fields of a reused config, keeping comments', async () => {
+    const file = join(dir, 'config.yaml');
+    await writeFile(
+      file,
+      '# written by CPA\nserver:\n  port: 1234 # keep me\nremote-management:\n  secret-key: legacy\nrouting:\n  strategy: fill-first\n',
+    );
+    await updateManagedSecret(file, { secretKeyHash: '$2b$10$new', allowRemote: false });
+    const text = await readFile(file, 'utf8');
+    expect(text).toContain('# written by CPA');
+    expect(text).toContain('# keep me');
+    expect(parseYaml(text)).toEqual({
+      server: { port: 1234 },
+      routing: { strategy: 'fill-first' },
+      management: { 'secret-key': '$2b$10$new', 'allow-remote': false },
+    });
+  });
+
+  it('reads management settings from the v8 and legacy sections', () => {
+    expect(readManagementSettings({ management: { 'allow-remote': true, 'secret-key': 's' } })).toEqual({
+      allowRemote: true,
+      hasSecret: true,
+      secretKey: 's',
+    });
+    expect(readManagementSettings({ 'remote-management': { 'allow-remote': true, 'secret-key': ' ' } })).toEqual({
+      allowRemote: true,
+      hasSecret: false,
+      secretKey: undefined,
+    });
+    // The v8 section wins even when it is empty.
+    expect(
+      readManagementSettings({ management: {}, 'remote-management': { 'allow-remote': true, 'secret-key': 's' } }),
+    ).toEqual({ allowRemote: false, hasSecret: false, secretKey: undefined });
   });
 
   it('inspects an existing YAML file and rejects missing or invalid ports', async () => {
@@ -274,6 +333,32 @@ describe('startServer option validation', () => {
     await expect(startServer({ port: 70_000 })).rejects.toMatchObject({ code: 'invalid-options' });
     await expect(startServer({ signal: AbortSignal.abort() })).rejects.toMatchObject({ code: 'aborted' });
   });
+
+  it('rejects conflicting management key sources', async () => {
+    const invalid = async (options: Parameters<typeof startServer>[0]) => {
+      const error = (await startServer(options).catch((e: unknown) => e)) as CpaStartError;
+      expect(error).toBeInstanceOf(CpaStartError);
+      expect(error.code).toBe('invalid-options');
+      return error.message;
+    };
+
+    expect(await invalid({ management: { key: 'a' }, managementKey: 'b' })).toMatch(/deprecated alias/);
+    expect(await invalid({ management: { key: '  ' } })).toMatch(/must not be empty/);
+    expect(await invalid({ management: { key: 'a' }, config: { management: { 'secret-key': 'b' } } })).toMatch(
+      /config\.management\["secret-key"\]/,
+    );
+    expect(await invalid({ management: { key: 'a' }, env: { MANAGEMENT_PASSWORD: 'b' } })).toMatch(
+      /MANAGEMENT_PASSWORD/,
+    );
+    expect(await invalid({ management: { key: 'a' }, configPath: '/tmp/config.yaml' })).toMatch(
+      /must not edit your config file/,
+    );
+    // The deprecated alias maps to the default mode, which cannot edit configPath.
+    expect(await invalid({ managementKey: 'a', configPath: '/tmp/config.yaml' })).toMatch(
+      /must not edit your config file/,
+    );
+    expect(await invalid({ management: { key: 'a'.repeat(73) } })).toMatch(/72 bytes/);
+  });
 });
 
 describe('CLI arguments', () => {
@@ -296,7 +381,7 @@ describe('CLI arguments', () => {
     expect(() => buildArgs({ args: ['-local-model'] })).toThrow(/localModel option/);
     expect(() => buildArgs({ args: ['--config', 'x.yaml'] })).toThrow(/configPath/);
     expect(() => buildArgs({ args: ['-home-jwt=x'] })).toThrow(/home\.jwt/);
-    expect(() => buildArgs({ args: ['-password', 'x'] })).toThrow(/managementKey/);
+    expect(() => buildArgs({ args: ['-password', 'x'] })).toThrow(/management\.key/);
     // Values are not mistaken for flags.
     expect(buildArgs({ args: ['-plugin-path', 'codex-login'] })).toEqual(['-plugin-path', 'codex-login']);
   });
@@ -317,5 +402,14 @@ describe('helpers', () => {
     expect(connectHost('::')).toBe('::1');
     expect(formatOrigin('http', '::1', 80)).toBe('http://[::1]:80');
     expect(formatOrigin('https', 'localhost', 8443)).toBe('https://localhost:8443');
+  });
+
+  it('detects loopback bind hosts', () => {
+    for (const host of ['127.0.0.1', '127.10.20.30', 'localhost', '::1', '[::1]', '::ffff:127.0.0.1']) {
+      expect(isLoopbackHost(host), host).toBe(true);
+    }
+    for (const host of ['', '0.0.0.0', '::', '[::]', '192.168.1.10', 'cpa.example.com']) {
+      expect(isLoopbackHost(host), host).toBe(false);
+    }
   });
 });

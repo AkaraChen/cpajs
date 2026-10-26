@@ -4,10 +4,11 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildArgs } from './args.ts';
 import { resolveBinary } from './binary.ts';
-import { inspectConfigFile, readManagedConfig, writeManagedConfig, type PreparedConfig } from './config.ts';
+import { inspectConfigFile, readManagedConfig, updateManagedSecret, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
+import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
 import { ManagedProcess } from './process.ts';
-import { connectHost, findFreePort, formatOrigin, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
+import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, probeHealth, type PortReservation } from './readiness.ts';
 import { createRedactor } from './redact.ts';
 import type { CpaServer, ExitResult, StartServerOptions, StartWithConfigOptions } from './types.ts';
 
@@ -41,15 +42,57 @@ function validate(options: StartServerOptions): void {
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65_535)) {
     throw new CpaStartError('invalid-options', `Invalid port ${String(port)}.`);
   }
+  if (options.management !== undefined && options.managementKey !== undefined) {
+    throw new CpaStartError(
+      'invalid-options',
+      'management and managementKey are mutually exclusive; managementKey is the deprecated alias for management.key.',
+    );
+  }
+  if (
+    options.management !== undefined &&
+    (typeof options.management.key !== 'string' || options.management.key.trim() === '')
+  ) {
+    throw new CpaStartError('invalid-options', 'management.key must not be empty.');
+  }
+  if (typeof options.managementKey === 'string' && options.managementKey.trim() === '') {
+    throw new CpaStartError('invalid-options', 'managementKey must not be empty.');
+  }
+  const requestedKey = options.management?.key ?? options.managementKey;
+  if (requestedKey === undefined) return;
+  if (options.configPath !== undefined) {
+    if (options.management?.viaEnvironment !== true) {
+      throw new CpaStartError(
+        'invalid-options',
+        'management.key cannot be combined with configPath because cpajs must not edit your config file. Put management.secret-key in the file, or use management.viaEnvironment: true to pass the key through MANAGEMENT_PASSWORD (which also enables remote management).',
+      );
+    }
+    return;
+  }
+  const configuredSecret = options.config?.management?.['secret-key'];
+  if (typeof configuredSecret === 'string' && configuredSecret.trim() !== '') {
+    throw new CpaStartError(
+      'invalid-options',
+      'management.key conflicts with config.management["secret-key"]. Keep one key: either let cpajs hash management.key into the managed config, or set config.management["secret-key"] yourself.',
+    );
+  }
+  if (options.management?.viaEnvironment !== true && options.env?.MANAGEMENT_PASSWORD !== undefined) {
+    throw new CpaStartError(
+      'invalid-options',
+      'management.key writes a bcrypt hash into the config; do not also set MANAGEMENT_PASSWORD in env. Use management.viaEnvironment: true to pass the key through the environment.',
+    );
+  }
 }
 
-function buildEnv(options: StartServerOptions): NodeJS.ProcessEnv {
+function buildEnv(options: StartServerOptions, management: ResolvedManagement): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const [key, value] of Object.entries(options.env ?? {})) {
     if (value === undefined) delete env[key];
     else env[key] = value;
   }
-  if (options.managementKey !== undefined) env.MANAGEMENT_PASSWORD = options.managementKey;
+  if (management.viaEnvironment) env.MANAGEMENT_PASSWORD = management.key;
+  // The default mode must not accidentally inherit MANAGEMENT_PASSWORD: upstream
+  // would enable remote access and stop verifying the hash in the config.
+  else if (management.key !== undefined) delete env.MANAGEMENT_PASSWORD;
   if (options.home !== undefined) env.HOME_JWT = options.home.jwt;
   return env;
 }
@@ -76,6 +119,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
   const { signal } = options;
   if (signal?.aborted) throw abortError(signal, '');
 
+  const management = await resolveManagement(options);
   const binary = resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath });
   const ownsStateDir = options.stateDir === undefined;
   const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
@@ -86,8 +130,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
 
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const deadline = Date.now() + startupTimeoutMs;
-  const env = buildEnv(options);
+  const env = buildEnv(options, management);
   const extraArgs = buildArgs(options);
+  const managedSecret =
+    management.secretKeyHash === undefined
+      ? undefined
+      : { secretKeyHash: management.secretKeyHash, allowRemote: management.allowRemote };
+  let warnedRemote = false;
 
   let reservation: PortReservation | undefined;
   let wroteConfig = false;
@@ -98,12 +147,32 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       let dynamicPort = false;
       if (options.configPath !== undefined) {
         prepared = await inspectConfigFile(options.configPath);
+        if (management.key !== undefined && prepared.management.hasSecret) {
+          throw new CpaStartError(
+            'invalid-options',
+            'management.key conflicts with the management.secret-key in configPath. Keep one key: remove management.key or remove secret-key from the file.',
+          );
+        }
       } else {
         // The file belongs to CPA after the first start: management API writes and
         // CPA's own normalisation must survive later starts.
         const existing = options.overwriteConfig || wroteConfig ? undefined : await readManagedConfig(stateDir);
         if (existing) {
           prepared = existing;
+          // A reused file keeps everything CPA persisted, but the key passed to this
+          // start must still work: rewrite only the management fields when they differ.
+          if (
+            managedSecret !== undefined &&
+            (existing.management.allowRemote !== managedSecret.allowRemote ||
+              !(await keyMatches(management.key!, existing.management.secretKey)))
+          ) {
+            await updateManagedSecret(existing.configPath, managedSecret);
+            prepared = (await readManagedConfig(stateDir))!;
+            options.onLog?.({
+              stream: 'stdout',
+              line: `Updated management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`,
+            });
+          }
           if (!announcedReuse) {
             announcedReuse = true;
             options.onLog?.({
@@ -118,13 +187,28 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
             listen.port = reservation.port;
             dynamicPort = true;
           }
-          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen);
+          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen, managedSecret);
           wroteConfig = true;
         }
       }
 
       const { host, port, tls } = prepared.listen;
-      const redact = createRedactor([options.managementKey, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
+      // Upstream trims MANAGEMENT_PASSWORD, and an empty value does not enable anything.
+      const envSecret = env.MANAGEMENT_PASSWORD?.trim();
+      const remoteManagement = Boolean(envSecret) || prepared.management.allowRemote;
+      if (!warnedRemote && remoteManagement && !isLoopbackHost(host)) {
+        warnedRemote = true;
+        const reason = envSecret
+          ? 'MANAGEMENT_PASSWORD makes upstream allow remote management'
+          : 'management.allow-remote is true';
+        const target = host === '' ? 'all interfaces' : host;
+        options.onLog?.({
+          stream: 'stderr',
+          line: `cpajs: warning: ${reason} and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
+        });
+      }
+
+      const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
       if (!dynamicPort && !(await isPortFree(host, port))) {
         throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
       }
@@ -157,7 +241,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           binaryPath: binary.path,
           configPath: prepared.configPath,
           stateDir,
-          managementKey: options.managementKey,
+          managementKey: management.key,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           cleanup,
         });

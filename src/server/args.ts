@@ -26,7 +26,7 @@ const MANAGED_FLAGS: Record<string, string> = {
   'local-model': 'localModel',
   'home-jwt': 'home.jwt',
   'home-disable-cluster-discovery': 'home.disableClusterDiscovery',
-  password: 'managementKey',
+  password: 'management.key',
 };
 
 function flagName(arg: string): string | undefined {

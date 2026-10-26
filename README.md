@@ -24,7 +24,7 @@ import { startServer } from '@cpajs/cpa/server';
 
 const server = await startServer({
   stateDir: './.cpa',                 // omit for a temporary directory that is removed on stop
-  managementKey: process.env.CPA_MANAGEMENT_KEY,
+  management: { key: process.env.CPA_MANAGEMENT_KEY! },
   config: {                           // native v8 config, typed as CpaConfig
     access: { 'api-keys': ['sk-my-model-key'] },
     routing: { strategy: 'fill-first' },
@@ -58,9 +58,26 @@ await server.stop();
   stopped and the temporary directory removed.
 - `stop()` is idempotent: it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On Windows Node
   can only terminate forcefully. `server.exited` settles however the process ends.
-- `managementKey` is passed through `MANAGEMENT_PASSWORD`, so it never touches disk. Upstream treats that
-  variable as also allowing remote management. The key, config secrets and `redact` values are masked in logs and
-  errors.
+- `management: { key }` manages the management API key. The default mode writes a bcrypt hash into
+  `management.secret-key` of the managed config and sets `management.allow-remote` from `allowRemote`
+  (default `false`), so the plaintext never reaches disk and remote management stays off. The key, config
+  secrets and `redact` values are masked in logs and errors.
+
+  | Mode | How CPA compares the key | Remote access |
+  | --- | --- | --- |
+  | `management: { key }` (default) | bcrypt hash in `management.secret-key` | Written from `allowRemote`, default `false` |
+  | `management: { key, allowRemote: true }` | bcrypt hash in `management.secret-key` | Non-loopback clients allowed |
+  | `management: { key, viaEnvironment: true }` | Plaintext `MANAGEMENT_PASSWORD` | Always allowed: upstream treats the variable as `allow-remote: true` |
+  | `config.management['secret-key']` | What you write; CPA hashes plaintext on startup | `config.management['allow-remote']` |
+  | `configPath` | `secret-key` in the file | `allow-remote` in the file |
+  | `managementKey` (deprecated) | bcrypt hash, same as the default | Same as the default; it no longer opens remote access |
+
+  `management.key` is rejected together with `config.management['secret-key']`, or with a `secret-key`
+  already present in `configPath`. In `configPath` mode it also requires `viaEnvironment: true`, because
+  cpajs must not edit your file. When the bind host is not loopback and remote management is enabled (by
+  `allowRemote`, `viaEnvironment` or `MANAGEMENT_PASSWORD`), `startServer` emits a warning through `onLog`.
+  A warning is used instead of an error because `allowRemote: true` is already an explicit opt-in and the
+  environment variable's remote behaviour cannot be disabled upstream.
 - CLI flags are typed options:
   - `localModel: true` → `-local-model`, which uses the embedded model catalogs.
   - `home: { jwt, disableClusterDiscovery }` → Home mode. The JWT is passed through `HOME_JWT`, so it never appears in argv.

@@ -16,7 +16,7 @@ Tests: **U** = unit test with a mocked fetch (`tests/unit/resources.test.ts`, `t
 | Topic | Behaviour (verified against v8.0.43) | Client |
 | --- | --- | --- |
 | Auth | `Authorization: Bearer <key>`. CPA also accepts a bare `Authorization: <key>` or `X-Management-Key`. Wrong key → 401 `{"error":"invalid management key"}`. Five failures from one IP ban it for 30 minutes, localhost included (handler.go:358-457). | Always sends Bearer; `CpaHttpError.errorCode`. **U E** |
-| Remote access | Non-loopback clients need `management.allow-remote`. Setting `MANAGEMENT_PASSWORD` also allows them. | `startServer({ managementKey })` uses `MANAGEMENT_PASSWORD`, documented on the option. |
+| Remote access | Non-loopback clients need `management.allow-remote`. Setting `MANAGEMENT_PASSWORD` also allows them. | The default `startServer({ management: { key } })` writes a bcrypt hash and leaves `allow-remote` false; `management.viaEnvironment` uses `MANAGEMENT_PASSWORD`, which also allows them. |
 | Disabled management | 404 with an empty body and no `X-CPA-*` headers. | `CpaHttpError` with `status: 404`, `data: undefined`. **U** |
 | Version headers | `X-CPA-VERSION`, `X-CPA-COMMIT`, `X-CPA-BUILD-DATE`, `X-CPA-SUPPORT-PLUGIN` on every authenticated response, 401/403 included. | `client.server.info()`. **U E** |
 | Error bodies | `{"error": string, "message"?: string, ...}`. The oauth status, session and callback routes use `{"status":"error","error": string}`. | `CpaHttpError.status/body/data/errorCode/errorMessage`. **U E** |
@@ -117,7 +117,7 @@ The OAuth tests in CI never talk to a real provider. They start a session, which
 URL, then poll, cancel, and fail a session through the callback route. To test against a real account,
 follow these steps by hand:
 
-1. Start a server with a management key: `startServer({ managementKey })`.
+1. Start a server with a management key: `startServer({ management: { key } })`.
 2. Call `client.oauth.start({ provider: 'claude' })` and open `url` in a browser on the same machine.
    If the browser runs on another machine, pass `is_webui: true` or paste the final redirect URL into
    `client.oauth.callback({ redirect_url })`.
@@ -151,4 +151,4 @@ These are differences between the official docs and the v8.0.43 source. The clie
 | `DELETE /credentials` | `name` or `all=true` | Repeated `name`, a JSON body of names, and `all=1` / `all=*` also work. Partial failure returns 207. |
 | `PUT /config.yaml` content type | `application/yaml` | The content type is never inspected. JSON bodies are accepted. |
 | `secret-key` persistence | "hashed on startup" | It is also hashed after a management write: the watcher rewrites the file a few seconds later, which changes the ETag. |
-| Management password env | Not mentioned on this page | `MANAGEMENT_PASSWORD` enables management and also allows remote access. |
+| Management password env | Not mentioned on this page | `MANAGEMENT_PASSWORD` enables management, allows remote access and is compared in plaintext. Prefer `management: { key }`, which writes a bcrypt hash. |
