@@ -186,7 +186,9 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
     it('changes the ETag when the watcher hashes a plaintext secret', async () => {
       const before = await client.config.getYaml();
       const doc = parse(before.data) as { management?: Record<string, unknown> };
-      doc.management = { ...(doc.management ?? {}), 'secret-key': 'cpajs-e2e-plaintext' };
+      // Write the current key in plaintext: the management key lives as a hash in this
+      // config, so a different value would lock every later test out.
+      doc.management = { ...(doc.management ?? {}), 'secret-key': MANAGEMENT_KEY };
       const written = await client.config.replaceYaml(stringify(doc));
       expect(written.etag).toBeDefined();
 
@@ -196,7 +198,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
         await new Promise((resolve) => setTimeout(resolve, 250));
         current = await client.config.getYaml();
       }
-      expect(current.data).not.toContain('cpajs-e2e-plaintext');
+      expect(current.data).not.toContain(MANAGEMENT_KEY);
       expect(current.data).toMatch(/secret-key: \$2[aby]\$/);
       expect(current.etag).toBeDefined();
       expect(current.etag).not.toBe(written.etag);
@@ -570,6 +572,11 @@ describe.skipIf(!binary)('managed config ownership', () => {
     } finally {
       await second?.stop();
       await first?.stop();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe.skipIf(!binary)('plugin store against a local registry', () => {
   it('lists and installs a direct plugin from plugins.store-sources without external network', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'cpajs-store-'));
