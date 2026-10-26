@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     include: ['tests/unit/**/*.test.ts'],
+    globalSetup: ['tests/setup/launcher.ts'],
     coverage: {
       provider: 'v8',
       // Show line coverage for the client (transport and resources) and the server runtime.

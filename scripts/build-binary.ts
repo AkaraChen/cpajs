@@ -3,6 +3,7 @@
  *
  *   node scripts/build-binary.ts --target linux-x64-musl[,win32-ia32] [--source <dir>] [--out <dir>]
  *   node scripts/build-binary.ts --all-portable
+ *   node scripts/build-binary.ts --target <id> --launcher-only   # add cpa-launcher to an existing build
  *
  * Output: <out>/<target>/{cli-proxy-api[.exe], BUILD-INFO.json}
  *
@@ -13,13 +14,13 @@
  *   - darwin / windows: built natively on a host of the same OS and CPU
  */
 import { existsSync } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { arch, platform } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { TARGETS, binaryName, packageName, type Target } from '../src/server/targets.ts';
+import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../src/server/targets.ts';
 import { fetchSource } from './fetch-source.ts';
-import { CACHE_DIR, DEFAULT_BIN_DIR, args, fail, log, run, selectTargets, sha256File, type BuildInfo } from './lib.ts';
+import { CACHE_DIR, DEFAULT_BIN_DIR, ROOT, args, fail, log, run, selectTargets, sha256File, type BuildInfo } from './lib.ts';
 
 const FLAGS = ['-trimpath', '-buildvcs=false'];
 const LDFLAGS = [
@@ -107,6 +108,28 @@ async function freebsdSysroot(goarch: string): Promise<string> {
   return dir;
 }
 
+/**
+ * Builds cpa-launcher (launcher/, pure Go, CGO disabled) for a target. It
+ * cross-compiles from any host and never needs CPA's source.
+ */
+export async function buildLauncher(target: Target, dir: string): Promise<BuildInfo['launcher']> {
+  if (!hasLauncher(target)) return undefined;
+  const output = join(dir, LAUNCHER_NAME);
+  await run('go', ['build', ...FLAGS, '-ldflags=-s -w', '-o', output, '.'], {
+    cwd: join(ROOT, 'launcher'),
+    env: {
+      ...process.env,
+      GOTOOLCHAIN: process.env.GOTOOLCHAIN ?? `go${CPA_RELEASE.goVersion}`,
+      GOOS: target.goos,
+      GOARCH: target.goarch,
+      CGO_ENABLED: '0',
+      ...target.goenv,
+    },
+  });
+  log(`built ${output}`);
+  return { file: LAUNCHER_NAME, sha256: await sha256File(output), size: (await stat(output)).size };
+}
+
 async function buildOne(source: string, target: Target, outDir: string): Promise<BuildInfo> {
   const dir = join(outDir, target.id);
   await rm(dir, { recursive: true, force: true });
@@ -133,7 +156,9 @@ async function buildOne(source: string, target: Target, outDir: string): Promise
     await goBuild(source, output, env);
   }
 
+  const launcher = await buildLauncher(target, dir);
   const info: BuildInfo = {
+    ...(launcher === undefined ? {} : { launcher }),
     target: target.id,
     package: packageName(target),
     binary: binaryName(target),
@@ -162,9 +187,22 @@ if (import.meta.main) {
     'all-portable': { type: 'boolean' },
     source: { type: 'string' },
     out: { type: 'string' },
+    'launcher-only': { type: 'boolean' },
   });
   const targets = values['all-portable'] ? TARGETS.filter((t) => t.build === 'portable') : selectTargets(values);
-  const source = await fetchSource(values.source);
   const outDir = values.out ?? DEFAULT_BIN_DIR;
-  for (const target of targets) await buildOne(source, target, outDir);
+  if (values['launcher-only']) {
+    // Add cpa-launcher to existing builds without rebuilding CPA.
+    for (const target of targets) {
+      const dir = join(outDir, target.id);
+      const infoPath = join(dir, 'BUILD-INFO.json');
+      if (!existsSync(infoPath)) fail(`${target.id}: no existing build in ${dir}`);
+      const info = JSON.parse(await readFile(infoPath, 'utf8')) as BuildInfo;
+      const launcher = await buildLauncher(target, dir);
+      await writeFile(infoPath, `${JSON.stringify(launcher === undefined ? info : { ...info, launcher }, null, 2)}\n`);
+    }
+  } else {
+    const source = await fetchSource(values.source);
+    for (const target of targets) await buildOne(source, target, outDir);
+  }
 }

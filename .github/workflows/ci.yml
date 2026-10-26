@@ -26,6 +26,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: pnpm
+      # The launcher tests build cpa-launcher (launcher/, pure Go) in vitest's global setup;
+      # Windows does not use the launcher.
+      - uses: actions/setup-go@v6
+        if: runner.os != 'Windows'
+        with:
+          go-version-file: launcher/go.mod
+          cache: false
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
@@ -51,6 +58,15 @@ jobs:
       - run: pnpm lint
       # The existing tree predates Biome formatting, so this checks new examples only.
       - run: pnpm format:check
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: launcher/go.mod
+          cache: false
+      - name: go vet (launcher)
+        working-directory: launcher
+        run: |
+          for os in linux darwin freebsd openbsd netbsd; do GOOS=$os go vet ./...; done
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
 
   e2e:
     name: e2e against CPA (${{ matrix.target }})
@@ -117,5 +133,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: oven-sh/setup-bun@v2
+      # The launcher tests build cpa-launcher (launcher/, pure Go) in vitest's global setup.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: launcher/go.mod
+          cache: false
       - run: pnpm install --frozen-lockfile
       - run: bun --bun vitest run

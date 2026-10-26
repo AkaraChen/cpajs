@@ -131,3 +131,11 @@ export function packageName(target: Target): string {
 export function binaryName(target: Pick<Target, 'os'>): string {
   return target.os === 'win32' ? 'cli-proxy-api.exe' : 'cli-proxy-api';
 }
+
+/** Name of the launcher shipped next to the CPA binary. Windows needs none (see binary.ts). */
+export const LAUNCHER_NAME = 'cpa-launcher';
+
+/** True for targets whose platform package ships `cpa-launcher`. */
+export function hasLauncher(target: Pick<Target, 'os'>): boolean {
+  return target.os !== 'win32';
+}

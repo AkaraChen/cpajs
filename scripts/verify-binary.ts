@@ -12,12 +12,13 @@
  * when binfmt_misc is registered) and checks /healthz, the management API and
  * the model API.
  */
+import { existsSync } from 'node:fs';
 import { open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createClient } from '../src/client/index.ts';
 import { CPA_RELEASE } from '../src/server/cpa-version.ts';
 import { startServer } from '../src/server/index.ts';
-import { binaryName, type Target } from '../src/server/targets.ts';
+import { LAUNCHER_NAME, binaryName, hasLauncher, type Target } from '../src/server/targets.ts';
 import { DEFAULT_BIN_DIR, args, fail, log, selectTargets, sha256File, type BuildInfo } from './lib.ts';
 
 const GLIBC_BASELINE = [2, 17];
@@ -159,6 +160,17 @@ if (import.meta.main) {
     const problems = await staticChecks(target, binary);
     const sha = await sha256File(binary);
     if (sha !== info.sha256) problems.push(`sha256 ${sha} does not match BUILD-INFO.json ${info.sha256}`);
+    if (hasLauncher(target)) {
+      const launcherPath = join(dir, target.id, LAUNCHER_NAME);
+      if (!info.launcher || !existsSync(launcherPath)) {
+        problems.push(`${LAUNCHER_NAME} is missing`);
+      } else {
+        // The launcher is pure Go with CGO off: check it as a static build for this CPU.
+        const asPortable: Target = { ...target, build: 'portable', libc: undefined } as unknown as Target;
+        problems.push(...(await staticChecks(asPortable, launcherPath)).map((p) => `${LAUNCHER_NAME}: ${p}`));
+        if ((await sha256File(launcherPath)) !== info.launcher.sha256) problems.push(`${LAUNCHER_NAME}: sha256 does not match BUILD-INFO.json`);
+      }
+    }
     if (info.target !== target.id || info.cpa.commit !== CPA_RELEASE.commit) problems.push('BUILD-INFO.json does not match this target/release');
     if (problems.length) {
       failed = true;

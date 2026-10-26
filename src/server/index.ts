@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildArgs } from './args.ts';
-import { resolveBinary } from './binary.ts';
+import { resolveBinary, resolveLauncher } from './binary.ts';
 import { inspectConfigFile, readManagedConfig, updateManagedSecret, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
@@ -111,7 +111,10 @@ function abortError(signal: AbortSignal, output: string, message = 'startServer 
 }
 
 interface LaunchOptions {
+  /** Executable to spawn: cpa-launcher, or CPA itself. */
   binaryPath: string;
+  /** cpa-launcher supervise mode (process group + liveness pipe). */
+  supervised: boolean;
   args: readonly string[];
   stateDir: string;
   env: NodeJS.ProcessEnv;
@@ -140,6 +143,7 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
   let proc: ManagedProcess;
   try {
     proc = new ManagedProcess(options.binaryPath, options.args, {
+      supervised: options.supervised,
       cwd: options.stateDir,
       env: options.env,
       redact: options.redact,
@@ -210,11 +214,29 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
     command === undefined
       ? resolveBinary(options.binaryPath === undefined ? {} : { binaryPath: options.binaryPath })
       : { path: command.path };
-  const prefixArgs = command?.args ?? [];
+  // What actually gets spawned: CPA wrapped in cpa-launcher when available, so CPA
+  // cannot outlive this process (see binary.ts and the launcher/ sources).
+  const program = command?.path ?? binary.path;
+  const launcher =
+    options.launcher === false ? undefined : command !== undefined ? command.launcher : resolveLauncher(binary.path);
+  const spawnPath = launcher?.path ?? program;
+  const supervised = launcher?.mode === 'supervise';
+  const prefixArgs = [
+    ...(launcher === undefined ? [] : [...(supervised ? ['--supervise', '--watch-stdin'] : []), '--', program]),
+    ...(command?.args ?? []),
+  ];
   // Validate everything that can be validated before creating any resource, so a
   // rejected option never leaves a temporary state directory behind.
   const env = buildEnv(options, management);
+  // Exec mode checks this after PR_SET_PDEATHSIG to catch a parent that died first.
+  if (launcher?.mode === 'exec') env.CPAJS_PARENT_PID = String(process.pid);
   const extraArgs = buildArgs(options);
+  if (launcher === undefined && options.launcher !== false && command === undefined && process.platform !== 'win32') {
+    options.onLog?.({
+      stream: 'stderr',
+      line: `cpajs: notice: no cpa-launcher found for ${binary.path}; CPA will keep running if this process is killed. Pass launcher: false to silence this.`,
+    });
+  }
   const ownsStateDir = options.stateDir === undefined;
   const stateDir = ownsStateDir ? await mkdtemp(join(tmpdir(), 'cpajs-')) : resolve(options.stateDir!);
   if (!ownsStateDir) await mkdir(stateDir, { recursive: true });
@@ -318,7 +340,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       reservation = undefined;
       await held?.release();
       const result = await launchProcess({
-        binaryPath: binary.path,
+        binaryPath: spawnPath,
+        supervised,
         args: [...prefixArgs, '-config', prepared.configPath, ...extraArgs],
         stateDir,
         env,
@@ -338,6 +361,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
       if (result.kind === 'ready') {
         return createHandle(result.proc, {
           binaryPath: binary.path,
+          spawnPath,
+          supervised,
           prefixArgs,
           configPath: prepared.configPath,
           listen: prepared.listen,
@@ -390,7 +415,11 @@ async function waitUntilReady(
 }
 
 interface HandleInfo {
+  /** The CPA binary (exposed on the handle). */
   binaryPath: string;
+  /** What is spawned: cpa-launcher or CPA itself. */
+  spawnPath: string;
+  supervised: boolean;
   /** Arguments before `-config` (only set by the internal test launcher). */
   prefixArgs: readonly string[];
   configPath: string;
@@ -474,7 +503,8 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       // Reuse the config file as CPA left it. Rewriting it here would discard
       // changes made through the management API during the previous run (#13).
       const result = await launchProcess({
-        binaryPath: info.binaryPath,
+        binaryPath: info.spawnPath,
+        supervised: info.supervised,
         args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
         stateDir: info.stateDir,
         env: info.env,

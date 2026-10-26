@@ -93,4 +93,6 @@ export interface BuildInfo {
   ldflags: string;
   toolchain: string;
   verification: Target['verification'];
+  /** cpa-launcher built from launcher/ (absent on Windows targets). */
+  launcher?: { file: string; sha256: string; size: number };
 }

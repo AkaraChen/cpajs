@@ -26,6 +26,7 @@ const host = config.server?.host || '127.0.0.1';
 const port = config.server?.port;
 
 console.log(`fake cpa starting with ${args.join(' ')}`);
+console.log(`fake cpa pid ${process.pid}`);
 if (process.env.HOME_JWT) console.log(`HOME_JWT length ${process.env.HOME_JWT.length}`);
 if (process.env.MANAGEMENT_PASSWORD) console.log(`MANAGEMENT_PASSWORD length ${process.env.MANAGEMENT_PASSWORD.length}`);
 if (process.env.FAKE_ECHO) {
