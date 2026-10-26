@@ -53,9 +53,13 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+          cache: pnpm
+      # verify-binary --smoke runs startServer, which needs the runtime dependencies.
+      - run: pnpm install --frozen-lockfile
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ needs.plan.outputs.go }}
