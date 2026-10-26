@@ -18,7 +18,7 @@ const ENVIRONMENT = 'npm';
 
 if (import.meta.main) {
   const values = args({ 'dry-run': { type: 'boolean' } });
-  const packages = [...TARGETS.map(packageName), 'cpa-js'];
+  const packages = [...TARGETS.map(packageName), '@cpajs/cpa'];
   const shell = process.platform === 'win32';
   for (const [i, name] of packages.entries()) {
     const argv = ['trust', 'github', name, '--file', WORKFLOW, '--repo', REPOSITORY, '--env', ENVIRONMENT, '--allow-publish', '--yes'];

@@ -122,7 +122,7 @@ export function resolveBinary(options: { binaryPath?: string; platform?: HostPla
   throw new CpaBinaryError(
     'package-not-installed',
     `The CLIProxyAPI binary package for ${hostLabel} is not installed (expected ${expected}). ` +
-      'It is an optional dependency of cpa-js; reinstall without --no-optional / --omit=optional, ' +
+      'It is an optional dependency of @cpajs/cpa; reinstall without --no-optional / --omit=optional, ' +
       'make sure your lockfile was not created on another platform without it, or pass binaryPath.',
   );
 }

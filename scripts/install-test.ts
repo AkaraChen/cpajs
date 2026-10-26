@@ -15,10 +15,10 @@ import { startLocalRegistry } from './local-registry.ts';
 
 const CHECK_SCRIPT = `
 import { createRequire } from 'node:module';
-import { TARGETS, packageName, resolveBinary, startServer } from 'cpa-js/server';
-import { createClient } from 'cpa-js/client';
+import { TARGETS, packageName, resolveBinary, startServer } from '@cpajs/cpa/server';
+import { createClient } from '@cpajs/cpa/client';
 
-const require = createRequire(import.meta.resolve('cpa-js/server'));
+const require = createRequire(import.meta.resolve('@cpajs/cpa/server'));
 const installed = TARGETS.map(packageName).filter((name) => {
   try { require.resolve(name + '/package.json'); return true; } catch { return false; }
 });
@@ -39,9 +39,9 @@ try {
 `;
 
 const TYPECHECK_SOURCE = `
-import { createClient, CpaHttpError, type CpaConfig, type AuthFileEntry } from 'cpa-js/client';
-import { startServer, type CpaServer } from 'cpa-js/server';
-import * as root from 'cpa-js';
+import { createClient, CpaHttpError, type CpaConfig, type AuthFileEntry } from '@cpajs/cpa/client';
+import { startServer, type CpaServer } from '@cpajs/cpa/server';
+import * as root from '@cpajs/cpa';
 
 const config: CpaConfig = { routing: { strategy: 'fill-first' }, access: { 'api-keys': ['k'] } };
 export async function main(): Promise<AuthFileEntry[]> {
@@ -74,8 +74,8 @@ if (import.meta.main) {
   if (!expected) fail('No target for this platform; pass --expect.');
 
   const registry = await startLocalRegistry(values.tarballs ?? join(DEFAULT_NPM_DIR, 'tarballs'));
-  const mainManifest = registry.packages.includes('cpa-js');
-  if (!mainManifest) fail('No cpa-js tarball found.');
+  const mainManifest = registry.packages.includes('@cpajs/cpa');
+  if (!mainManifest) fail('No @cpajs/cpa tarball found.');
   log(`local registry ${registry.url} serving ${registry.packages.length} packages`);
 
   const dir = await mkdtemp(join(tmpdir(), 'cpa-js-install-'));
@@ -94,10 +94,10 @@ if (import.meta.main) {
     const extra = values.typecheck ? ['typescript@^7', '@types/node@^24'] : [];
     const shell = process.platform === 'win32';
     const install: Record<string, [string, string[]]> = {
-      npm: ['npm', ['install', '--no-audit', '--no-fund', 'cpa-js', ...extra]],
-      pnpm: ['pnpm', ['add', '--store-dir', join(dir, '.pnpm-store'), 'cpa-js', ...extra]],
-      bun: ['bun', ['add', 'cpa-js', ...extra]],
-      yarn: ['yarn', ['add', 'cpa-js', ...extra]],
+      npm: ['npm', ['install', '--no-audit', '--no-fund', '@cpajs/cpa', ...extra]],
+      pnpm: ['pnpm', ['add', '--store-dir', join(dir, '.pnpm-store'), '@cpajs/cpa', ...extra]],
+      bun: ['bun', ['add', '@cpajs/cpa', ...extra]],
+      yarn: ['yarn', ['add', '@cpajs/cpa', ...extra]],
     };
     const command = install[pm];
     if (!command) fail(`Unknown package manager ${pm}`);

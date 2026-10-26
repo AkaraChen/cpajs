@@ -1,6 +1,6 @@
 // Manage an existing CLIProxyAPI instance.
 //   CPA_URL=https://cpa.example.com CPA_MANAGEMENT_KEY=... node examples/remote-client.ts
-import { CpaHttpError, createClient } from 'cpa-js/client';
+import { CpaHttpError, createClient } from '@cpajs/cpa/client';
 
 const client = createClient({
   baseUrl: process.env.CPA_URL ?? 'http://127.0.0.1:8317',
