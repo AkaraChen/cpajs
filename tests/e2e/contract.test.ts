@@ -309,6 +309,43 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(missing.status).toBe(404);
       expect(missing.errorCode).toBe('auth file not found');
     });
+
+    it('reconciles by owner and revision across a CPA rewrite', async () => {
+      const owner = 'e2e-reconcile';
+      const files = [
+        { name: 'e2e-reconcile-a.json', content: { type: 'claude', email: 'reconcile-a@example.com', api_key: 'sk-a' }, revision: 'r1' },
+        { name: 'e2e-reconcile-b.json', content: { type: 'claude', email: 'reconcile-b@example.com', api_key: 'sk-b' }, revision: 'r1' },
+      ];
+      try {
+        await expect(client.credentials.reconcile({ owner, files })).resolves.toEqual({
+          uploaded: ['e2e-reconcile-a.json', 'e2e-reconcile-b.json'],
+          deleted: [],
+          unchanged: [],
+        });
+        await client.credentials.upload({
+          name: 'e2e-reconcile-other.json',
+          content: { type: 'claude', email: 'other@example.com', api_key: 'sk-other', 'x-cpajs': { owner: 'someone-else', revision: 'r1' } },
+        });
+
+        // A management write makes CPA rewrite the file. The unknown marker must survive.
+        await client.credentials.patchFields({ name: 'e2e-reconcile-a.json', priority: 9 });
+        const rewritten = JSON.parse(await (await client.credentials.download('e2e-reconcile-a.json')).text()) as Record<string, unknown>;
+        expect(rewritten['x-cpajs']).toEqual({ owner, revision: 'r1' });
+
+        await expect(
+          client.credentials.reconcile({ owner, files: [files[0]!, { ...files[1]!, revision: 'r2' }] }),
+        ).resolves.toEqual({ uploaded: ['e2e-reconcile-b.json'], deleted: [], unchanged: ['e2e-reconcile-a.json'] });
+
+        await expect(client.credentials.reconcile({ owner, files: [files[0]!] })).resolves.toEqual({
+          uploaded: [],
+          deleted: ['e2e-reconcile-b.json'],
+          unchanged: ['e2e-reconcile-a.json'],
+        });
+        expect(await client.credentials.get('e2e-reconcile-other.json')).toBeDefined();
+      } finally {
+        await client.credentials.delete(['e2e-reconcile-a.json', 'e2e-reconcile-b.json', 'e2e-reconcile-other.json']).catch(() => {});
+      }
+    });
   });
 
   describe('oauth', () => {

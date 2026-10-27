@@ -24,8 +24,39 @@ export interface CredentialFile {
   content: CredentialContent;
 }
 
+/** One file in a reconcile set. */
+export interface ReconcileCredentialFile {
+  /** File name in the auth directory; must end with `.json`. */
+  name: string;
+  content: Record<string, unknown>;
+  /** Opaque version. An unchanged revision leaves the file alone. */
+  revision: string;
+}
+
+export interface ReconcileCredentialsInput {
+  /** Only files carrying this owner in `x-cpajs` are managed; others are never touched. */
+  owner: string;
+  files: readonly ReconcileCredentialFile[];
+  /** Delete files owned by `owner` that are not in `files`. Defaults to true. */
+  prune?: boolean;
+}
+
+export interface ReconcileCredentialsResult {
+  uploaded: string[];
+  deleted: string[];
+  unchanged: string[];
+}
+
 /** Identifies a credential by auth ID / file name or by `auth_index`. */
 export type CredentialSelector = { name: string; auth_index?: string } | { auth_index: string; name?: string };
+
+/** Reserved top-level credential field that records ownership and revision. */
+const RECONCILE_MARKER = 'x-cpajs';
+
+interface ReconcileMarker {
+  owner: string;
+  revision?: string;
+}
 
 function toBlob(content: CredentialContent): Blob {
   if (content instanceof Blob) return content;
@@ -101,6 +132,84 @@ export class CredentialsResource {
     return (await this.#t.request<Blob>({ ...options, method: 'GET', path: '/credentials/download', query: { name }, responseType: 'blob' })).data;
   }
 
+  /**
+   * Aligns the credential files owned by `owner` with `files`.
+   *
+   * Every upload carries a reserved `x-cpajs: { owner, revision }` field. Only the
+   * revision is compared, so a token refresh that rewrites a file does not cause
+   * another upload. With `prune` (the default), owned files that are no longer in
+   * `files` are deleted; files owned by anyone else are never touched.
+   */
+  async reconcile(input: ReconcileCredentialsInput, options: RequestOptions = {}): Promise<ReconcileCredentialsResult> {
+    const { owner, files } = input;
+    const prune = input.prune ?? true;
+    if (owner.trim() === '') throw new TypeError('reconcile needs a non-empty owner.');
+
+    const desired = new Map<string, ReconcileCredentialFile>();
+    for (const file of files) {
+      if (desired.has(file.name)) throw new TypeError(`reconcile received "${file.name}" more than once.`);
+      desired.set(file.name, file);
+    }
+
+    const listed = await this.list({}, options);
+    const existing = new Map<string, ReconcileMarker>();
+    const claims = new Map<string, string>();
+    for (const entry of listed.files) {
+      if (entry.source !== 'file' || !entry.name.toLowerCase().endsWith('.json')) continue;
+      if (!prune && !desired.has(entry.name)) continue;
+      const marker = await this.#readReconcileMarker(entry.name, options);
+      if (marker === undefined) continue;
+      claims.set(entry.name, marker.owner);
+      if (marker.owner === owner) existing.set(entry.name, marker);
+    }
+
+    for (const file of files) {
+      const claimed = claims.get(file.name);
+      if (claimed !== undefined && claimed !== owner) {
+        throw new Error(`Credential "${file.name}" belongs to owner "${claimed}", not "${owner}".`);
+      }
+    }
+
+    const uploaded: string[] = [];
+    const unchanged: string[] = [];
+    for (const file of files) {
+      if (existing.get(file.name)?.revision === file.revision) {
+        unchanged.push(file.name);
+        continue;
+      }
+      await this.upload({ name: file.name, content: stampReconcileMarker(file.content, owner, file.revision) }, options);
+      uploaded.push(file.name);
+    }
+
+    const deleted: string[] = [];
+    if (prune) {
+      for (const name of existing.keys()) {
+        if (desired.has(name)) continue;
+        await this.delete(name, options);
+        deleted.push(name);
+      }
+    }
+
+    return { uploaded, deleted, unchanged };
+  }
+
+  async #readReconcileMarker(name: string, options: RequestOptions): Promise<ReconcileMarker | undefined> {
+    const text = await (await this.download(name, options)).text();
+    let content: unknown;
+    try {
+      content = JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+    if (!isRecord(content) || !isRecord(content[RECONCILE_MARKER])) return undefined;
+    const marker = content[RECONCILE_MARKER];
+    if (typeof marker.owner !== 'string') return undefined;
+    return {
+      owner: marker.owner,
+      ...(typeof marker.revision === 'string' ? { revision: marker.revision } : {}),
+    };
+  }
+
   /** Enables or disables a credential. */
   async setStatus(request: PatchCredentialStatusRequest, options: RequestOptions = {}): Promise<PatchCredentialStatusResponse> {
     return (await this.#t.request<PatchCredentialStatusResponse>({ ...options, method: 'PATCH', path: '/credentials/status', json: request })).data;
@@ -130,4 +239,17 @@ export class CredentialsResource {
   async siwcStatus(selector: CredentialSelector, options: RequestOptions = {}): Promise<SIWCStatusResponse> {
     return (await this.#t.request<SIWCStatusResponse>({ ...options, method: 'GET', path: '/credentials/siwc/status', query: { ...selector } })).data;
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Returns a new content object with the marker set; the caller's object is untouched. */
+function stampReconcileMarker(content: Record<string, unknown>, owner: string, revision: string): Record<string, unknown> {
+  const current = content[RECONCILE_MARKER];
+  return {
+    ...content,
+    [RECONCILE_MARKER]: { ...(isRecord(current) ? current : {}), owner, revision },
+  };
 }

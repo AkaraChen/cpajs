@@ -202,6 +202,12 @@ await client.config.set('routing/retry/request-retry', 2); // value typed by pat
 const { files } = await client.credentials.list();
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
 
+const synced = await client.credentials.reconcile({
+  owner: 'chat',
+  files: [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }],
+});
+console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [] }
+
 const login = await client.oauth.start({ provider: 'claude' });
 console.log('open', login.url);
 await client.oauth.waitForCompletion(login.state);
@@ -213,10 +219,16 @@ try {
 }
 ```
 
+`credentials.reconcile` keeps a set of files owned by one caller in sync. Uploads carry a reserved
+`x-cpajs: { owner, revision }` field. Only `revision` is compared, so CPA rewriting a file during a token
+refresh does not cause another upload. With `prune` (the default), files owned by `owner` that are no longer
+in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
+mutated.
+
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match` |
-| `credentials` | list, upload (raw or multipart), delete, models, download, status, fields, refresh, SIWC status |
+| `credentials` | list, upload (raw or multipart), reconcile by owner/revision, delete, models, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |

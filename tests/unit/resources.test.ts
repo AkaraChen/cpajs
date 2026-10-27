@@ -120,6 +120,104 @@ describe('credentials', () => {
     expect(await files[1]!.text()).toBe('{"type":"codex"}');
   });
 
+  it('reconciles owned files by revision and prunes the rest', async () => {
+    const markers: Record<string, Record<string, unknown>> = {
+      'chat-a.json': { owner: 'chat', revision: 'r1' },
+      'chat-b.json': { owner: 'chat', revision: 'r1' },
+      'chat-stale.json': { owner: 'chat', revision: 'r1' },
+      'other.json': { owner: 'other', revision: 'r1' },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-b.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+            { name: 'chat-memory', source: 'memory' },
+          ],
+        });
+      }
+      if (req.url.pathname.endsWith('/download')) {
+        const name = req.url.searchParams.get('name')!;
+        return Response.json({ type: 'claude', email: `${name}@example.com`, 'x-cpajs': markers[name] });
+      }
+      return Response.json({ status: 'ok' });
+    });
+
+    const added = { type: 'claude', email: 'added@example.com' };
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [
+        // Same revision: CPA may have rewritten the tokens, but this must not be re-uploaded.
+        { name: 'chat-a.json', content: { type: 'claude', access_token: 'rewritten-by-cpa' }, revision: 'r1' },
+        { name: 'chat-b.json', content: { type: 'claude', email: 'b@example.com' }, revision: 'r2' },
+        { name: 'chat-c.json', content: added, revision: 'r9' },
+      ],
+    });
+
+    expect(result).toEqual({ uploaded: ['chat-b.json', 'chat-c.json'], deleted: ['chat-stale.json'], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual([
+      'chat-a.json',
+      'chat-b.json',
+      'chat-stale.json',
+      'other.json',
+    ]);
+    const uploads = calls.filter((c) => c.method === 'POST');
+    expect(uploads.map((c) => c.url.search)).toEqual(['?name=chat-b.json', '?name=chat-c.json']);
+    expect(JSON.parse(uploads[1]!.body)).toEqual({ type: 'claude', email: 'added@example.com', 'x-cpajs': { owner: 'chat', revision: 'r9' } });
+    expect(added).toEqual({ type: 'claude', email: 'added@example.com' });
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url.search)).toEqual(['?name=chat-stale.json']);
+  });
+
+  it('leaves unmanaged files alone when prune is off', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+          ],
+        });
+      }
+      return Response.json({ type: 'claude', 'x-cpajs': { owner: 'chat', revision: 'r1' } });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' }],
+      prune: false,
+    });
+
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual(['chat-a.json']);
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+  });
+
+  it('refuses to overwrite a file owned by someone else', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.url.pathname.endsWith('/download')
+        ? Response.json({ type: 'claude', 'x-cpajs': { owner: 'other', revision: 'r1' } })
+        : Response.json({ observed_at: '', files: [{ name: 'other.json', source: 'file' }] }),
+    );
+
+    await expect(
+      client.credentials.reconcile({ owner: 'chat', files: [{ name: 'other.json', content: { type: 'claude' }, revision: 'r2' }] }),
+    ).rejects.toThrow(/belongs to owner "other", not "chat"/);
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+  });
+
+  it('rejects duplicate file names before making requests', async () => {
+    const { client, calls } = mockClient();
+    const file = { name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' };
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file, file] })).rejects.toThrow(/more than once/);
+    expect(calls).toEqual([]);
+  });
+
   it('maps the remaining routes', async () => {
     const { client, calls } = mockClient((req) =>
       req.url.pathname.endsWith('/download') ? new Response('{"type":"codex"}', { headers: { 'Content-Type': 'application/json' } }) : Response.json({ status: 'ok' }),
