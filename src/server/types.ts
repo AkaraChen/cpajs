@@ -227,6 +227,14 @@ export interface RestartPolicy {
   /** Start CPA again after an unexpected exit. Default `false`. */
   onUnexpectedExit?: boolean;
   /**
+   * Retry a first start that fails before becoming ready (`exited`, `timeout`,
+   * `port-in-use`), as well as a failing `afterStart` or config function. Uses
+   * `backoffMs` and `maxAttempts`; `invalid-options`, aborted starts and a
+   * missing binary still reject right away. The retries are reported as
+   * `restart-failed` events registered through `on`. Default `false`.
+   */
+  onStartFailure?: boolean;
+  /**
    * Backoff before each restart attempt, in milliseconds; the last value is
    * reused. Default `[500, 1000, 5000, 30_000]`.
    */
@@ -241,9 +249,18 @@ export interface RestartPolicy {
   stableAfterMs?: number;
   /**
    * Give up after this many consecutive restarts without a stable run: the
-   * handle enters `stopped` and `exited` settles. Default `Infinity`.
+   * handle enters `stopped` and `exited` settles. With `onStartFailure`, it is
+   * the maximum number of retries after the first attempt. Default `Infinity`.
    */
   maxAttempts?: number;
+  /**
+   * When a restart finds the original dynamic port taken, pick a new free port
+   * instead of failing. Only applies when cpajs chose the port (no explicit
+   * `port` or `configPath`); a fixed port is never changed. `origin`,
+   * `baseUrl`, `port`, the managed config and existing `server.client()`
+   * instances follow the new port. Default `false`.
+   */
+  allowNewPort?: boolean;
 }
 
 export interface StartWithConfigOptions<Client extends CpaClient | undefined = CpaClient | undefined>
@@ -347,7 +364,7 @@ export interface RestartEvent {
 }
 
 export interface RestartedEvent extends RestartEvent {
-  /** Reserved for a future port change; currently always `false`. */
+  /** True when `allowNewPort` moved the server to a new origin. */
   originChanged: boolean;
 }
 
@@ -370,11 +387,15 @@ export type ServerEventListeners = {
 };
 
 export interface CpaServer {
-  /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */
+  /**
+   * e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. Changes when
+   * `restart.allowNewPort` moves a dynamic port.
+   */
   readonly origin: string;
   /** Model API base URL (`<origin>/v1`) for OpenAI-compatible SDKs. */
   readonly baseUrl: string;
   readonly host: string;
+  /** The current listen port; changes when `allowNewPort` picks a new one. */
   readonly port: number;
   readonly pid: number;
   readonly binaryPath: string;

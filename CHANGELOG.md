@@ -14,6 +14,13 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `restart.onStartFailure` retries a first start that fails before becoming ready (`exited`, `timeout`,
+  `port-in-use`), as well as a failing `afterStart` or config function, using `restart.backoffMs` and
+  `restart.maxAttempts`. Retries are reported as `restart-failed` events registered through `on`; invalid
+  options, an aborted signal and a missing binary still reject immediately.
+- `restart.allowNewPort` moves a restart to a new free port when the original dynamic port was taken, updating
+  `origin`, `baseUrl`, `port`, the managed config's `server.port` and already-created `server.client()`
+  instances. `restarted` then reports `originChanged: true`; a fixed port is never changed.
 - `credentials.modelsFor` also accepts a `listAll()` entry, skipping the `GET /credentials` and `GET /config`
   lookups for config keys. Its `details: true` model definitions are cached for the lifetime of the
   `CredentialsResource`; concurrent calls share one request, `refreshDefinitions: true` fetches them again,

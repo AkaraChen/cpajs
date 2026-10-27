@@ -662,6 +662,184 @@ describe('server lifecycle (fake binary)', () => {
     });
   });
 
+  describe('first start failure retries', () => {
+    it('retries a readiness failure and succeeds when onStartFailure is set', async () => {
+      const counter = join(dir, 'runs');
+      const failures: RestartFailedEvent[] = [];
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter, FAKE_EXIT: '3', FAKE_EXIT_MAX_RUNS: '1' },
+        on: { 'restart-failed': (event) => failures.push(event) },
+        restart: { onStartFailure: true, backoffMs: [10], maxAttempts: 1 },
+      });
+
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: true });
+      expect((failures[0]!.error as CpaStartError).code).toBe('exited');
+      await server.stop();
+    });
+
+    it('retries a config function that throws', async () => {
+      let calls = 0;
+      const server = await startFake({
+        config: () => {
+          calls++;
+          if (calls === 1) throw new Error('transient config');
+          return {};
+        },
+        restart: { onStartFailure: true, backoffMs: [10], maxAttempts: 1 },
+      });
+
+      expect(calls).toBe(2);
+      await server.stop();
+    });
+
+    it('retries afterStart during the first start and keeps the same stateDir', async () => {
+      let calls = 0;
+      const stateDirs: string[] = [];
+      const server = await startFake({
+        hooks: {
+          afterStart: (ctx) => {
+            calls++;
+            stateDirs.push(ctx.server.stateDir);
+            if (calls === 1) throw new Error('hook boom');
+          },
+        },
+        restart: { onStartFailure: true, backoffMs: [10], maxAttempts: 1 },
+      });
+
+      expect(calls).toBe(2);
+      expect(stateDirs[1]).toBe(stateDirs[0]);
+      await server.stop();
+    });
+
+    it('rejects with the last error after the retries are exhausted', async () => {
+      const counter = join(dir, 'runs');
+      const failures: RestartFailedEvent[] = [];
+      const error = await startError(
+        startFake({
+          env: { FAKE_COUNTER: counter, FAKE_EXIT: '3' },
+          on: { 'restart-failed': (event) => failures.push(event) },
+          restart: { onStartFailure: true, backoffMs: [10], maxAttempts: 2 },
+        }),
+      );
+
+      expect(error.code).toBe('exited');
+      expect(await readFile(counter, 'utf8')).toBe('3');
+      expect(failures.map((failure) => failure.attempt)).toEqual([1, 2, 3]);
+      expect(failures.map((failure) => failure.willRetry)).toEqual([true, true, false]);
+      expect(failures.at(-1)!.error).toBe(error);
+    });
+
+    it('does not retry a non-retryable option error', async () => {
+      const counter = join(dir, 'runs');
+      const error = await startError(
+        startFake({
+          env: { FAKE_COUNTER: counter },
+          logs: { minLevel: 'verbose' } as never,
+          restart: { onStartFailure: true, backoffMs: [10], maxAttempts: 3 },
+        }),
+      );
+
+      expect(error.code).toBe('invalid-options');
+      expect(existsSync(counter)).toBe(false);
+    });
+
+    it('rejects as aborted when the signal aborts during a retry backoff', async () => {
+      const controller = new AbortController();
+      const error = await startError(
+        startFake({
+          signal: controller.signal,
+          env: { FAKE_EXIT: '3' },
+          on: { 'restart-failed': () => controller.abort(new Error('stop it')) },
+          restart: { onStartFailure: true, backoffMs: [10_000], maxAttempts: 3 },
+        }),
+      );
+
+      expect(error.code).toBe('aborted');
+      expect(error.cause).toEqual(new Error('stop it'));
+    });
+  });
+
+  describe('allowNewPort', () => {
+    it('moves a dynamic port and keeps an existing client usable', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter },
+        restart: { onUnexpectedExit: true, backoffMs: [10_000], allowNewPort: true },
+      });
+      const client = server.client();
+      const oldOrigin = server.origin;
+      const oldPort = server.port;
+      const exitedEvent = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+      const restartedEvent = new Promise<RestartedEvent>((resolve) => server.on('restarted', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      expect((await exitedEvent).willRestart).toBe(true);
+
+      // The old process is gone, so its port can now be taken before restart()
+      // skips the auto-restart backoff.
+      const blocker = createServer();
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(oldPort, '127.0.0.1', () => resolve());
+      });
+      try {
+        const restarting = server.restart();
+        const event = await restartedEvent;
+        await restarting;
+
+        expect(event.originChanged).toBe(true);
+        expect(server.origin).not.toBe(oldOrigin);
+        expect(server.port).not.toBe(oldPort);
+        expect(server.baseUrl).toBe(`${server.origin}/v1`);
+        expect(client.baseUrl.origin).toBe(server.origin);
+        const health = await client.request<{ status: string }>({
+          method: 'GET',
+          path: '/healthz',
+          root: true,
+          anonymous: true,
+        });
+        expect(health.data).toEqual({ status: 'ok' });
+        expect(parseYaml(await readFile(server.configPath, 'utf8')).server.port).toBe(server.port);
+      } finally {
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+        await server.stop();
+      }
+    });
+
+    it('never moves a fixed port', async () => {
+      const probe = createServer();
+      await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as { port: number }).port;
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+      const server = await startFake({
+        port,
+        restart: { onUnexpectedExit: true, backoffMs: [10_000], allowNewPort: true },
+      });
+      const exitedEvent = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      expect((await exitedEvent).willRestart).toBe(true);
+
+      const blocker = createServer();
+      await new Promise<void>((resolve, reject) => {
+        blocker.once('error', reject);
+        blocker.listen(port, '127.0.0.1', () => resolve());
+      });
+      try {
+        const error = await startError(server.restart());
+        expect(error.code).toBe('port-in-use');
+        expect(server.port).toBe(port);
+        expect(server.origin).toBe(`http://127.0.0.1:${port}`);
+        await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+      } finally {
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+        await server.stop();
+      }
+    });
+  });
+
   describe('auto restart', () => {
     it('restarts after an unexpected exit and keeps the handle and client usable', async () => {
       const counter = join(dir, 'runs');
