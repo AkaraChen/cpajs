@@ -37,9 +37,6 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
   JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
   behaviour.
-
-### Added
-
 - `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
   and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
   a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
