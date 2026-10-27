@@ -1,4 +1,4 @@
-import { CpaReconcileError } from '../errors.ts';
+import { CpaCredentialNotFoundError, CpaReconcileError, type CpaCredentialNotFoundSelector } from '../errors.ts';
 import { ConfigResource } from './config.ts';
 import type {
   CpaClaudeKey,
@@ -34,7 +34,7 @@ import type {
   UploadCredentialsResponse,
 } from '../types/credentials.ts';
 import type { ModelDefinitionsResponse, ModelInfo, ThinkingSupport } from '../types/routing.ts';
-import type { RequestOptions, Transport } from '../transport.ts';
+import { managementUrl, type RequestOptions, type Transport } from '../transport.ts';
 
 /** Credential file content: a parsed JSON object, JSON text, or raw bytes. */
 export type CredentialContent = Record<string, unknown> | string | Blob | Uint8Array<ArrayBuffer> | ArrayBuffer;
@@ -55,6 +55,20 @@ export interface ReconcileCredentialFile {
   revision: string;
 }
 
+/** A claimed file's revision plus legacy top-level fields to drop before writing the marker. */
+export interface ReconcileAdoption {
+  /** Revision to record in `x-cpajs`; compared with the desired file's revision. */
+  revision: string;
+  /**
+   * Top-level fields to delete from the kept content before `x-cpajs` is written.
+   * Removing `x-cpajs` itself is ignored: reconcile always stamps its own marker.
+   */
+  remove?: readonly string[];
+}
+
+/** What `adopt` may return: a revision string, a revision with removals, or `undefined`. */
+export type ReconcileAdoptionResult = string | ReconcileAdoption;
+
 export interface ReconcileCredentialsInput {
   /** Only files carrying this owner in `x-cpajs` are managed; others are never touched. */
   owner: string;
@@ -64,10 +78,15 @@ export interface ReconcileCredentialsInput {
   /**
    * Claims files without an `x-cpajs` marker. Return a revision to keep the
    * file's existing content (tokens included) and add `x-cpajs: { owner, revision }`,
-   * or `undefined` to leave it unmanaged. Without this, an unmarked file with the
-   * same name makes reconcile throw instead of overwriting it.
+   * or `undefined` to leave it unmanaged. Return `{ revision, remove }` to drop
+   * legacy top-level fields such as `chat_seed` from the kept content first;
+   * `remove` cannot delete the `x-cpajs` marker. Without this, an unmarked file
+   * with the same name makes reconcile throw instead of overwriting it.
    */
-  adopt?: (name: string, body: Record<string, unknown>) => string | undefined | Promise<string | undefined>;
+  adopt?: (
+    name: string,
+    body: Record<string, unknown>,
+  ) => ReconcileAdoptionResult | undefined | Promise<ReconcileAdoptionResult | undefined>;
 }
 
 export interface ReconcileCredentialsResult {
@@ -124,6 +143,12 @@ export interface ConfigCredentialSummary {
   /** Config group name. */
   label?: string;
   disabled: boolean;
+  /**
+   * This entry's API key in plaintext: the key of a native provider key or of an
+   * OpenAI-compatible key entry. Absent when the entry has no `api-key`, including
+   * a keyless OpenAI-compatible group (which is itself the credential).
+   */
+  apiKey?: string;
   raw: ConfigCredentialRaw;
   /** The enclosing group, without its `keys`. */
   group: ConfigCredentialGroup;
@@ -284,7 +309,7 @@ export class CredentialsResource {
     }
 
     const [file] = (await this.list({ auth_index: authIndex }, options)).files;
-    if (file === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    if (file === undefined) throw this.#credentialNotFound({ auth_index: authIndex });
     return (await this.#t.request<DeleteCredentialsResponse>({ ...options, method: 'DELETE', path: '/credentials', query: { name: [file.name] } }))
       .data;
   }
@@ -345,12 +370,12 @@ export class CredentialsResource {
         (authIndex === undefined || entry.auth_index === authIndex),
     );
     if (file !== undefined) return this.#modelsForFile(file, details, requestOptions, refreshDefinitions);
-    if (authIndex === undefined) throw new Error(`Credential "${name}" was not found.`);
+    if (authIndex === undefined) throw this.#credentialNotFound(name === undefined ? {} : { name });
 
     const entry = configCredentials(await this.#readConfig(requestOptions)).find(
       (credential) => credential.summary.auth_index === authIndex && (name === undefined || credential.summary.label === name),
     );
-    if (entry === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    if (entry === undefined) throw this.#credentialNotFound({ auth_index: authIndex, ...(name === undefined ? {} : { name }) });
     return this.#modelsForConfig(entry, details, requestOptions, refreshDefinitions);
   }
 
@@ -373,9 +398,11 @@ export class CredentialsResource {
    * `files` are deleted; files owned by anyone else are never touched.
    *
    * A file without the marker is never overwritten: reconcile throws
-   * {@link CpaReconcileError} with code `unmarked` unless `adopt` claims it. Content
-   * may be a parsed object, JSON text or raw bytes; it is normalized to an object
-   * before any request is sent.
+   * {@link CpaReconcileError} with code `unmarked` unless `adopt` claims it.
+   * `adopt` returning `{ revision, remove }` deletes the named top-level legacy
+   * fields (except `x-cpajs`) before writing the marker. Content may be a parsed
+   * object, JSON text or raw bytes; it is normalized to an object before any
+   * request is sent.
    */
   async reconcile(input: ReconcileCredentialsInput, options: RequestOptions = {}): Promise<ReconcileCredentialsResult> {
     const { owner, files } = input;
@@ -417,11 +444,11 @@ export class CredentialsResource {
       }
     }
 
-    const adoptions = new Map<string, string>();
+    const adoptions = new Map<string, ReconcileAdoption>();
     if (input.adopt !== undefined) {
       for (const [name, body] of unmarked) {
-        const revision = await input.adopt(name, body);
-        if (revision !== undefined) adoptions.set(name, revision);
+        const result = await input.adopt(name, body);
+        if (result !== undefined) adoptions.set(name, typeof result === 'string' ? { revision: result } : result);
       }
     }
 
@@ -436,10 +463,11 @@ export class CredentialsResource {
     }
 
     const adopted: string[] = [];
-    for (const [name, revision] of adoptions) {
-      await this.upload({ name, content: stampReconcileMarker(unmarked.get(name)!, owner, revision) }, options);
+    for (const [name, adoption] of adoptions) {
+      const kept = removeTopLevelFields(unmarked.get(name)!, adoption.remove);
+      await this.upload({ name, content: stampReconcileMarker(kept, owner, adoption.revision) }, options);
       adopted.push(name);
-      existing.set(name, { owner, revision });
+      existing.set(name, { owner, revision: adoption.revision });
     }
 
     const uploaded: string[] = [];
@@ -481,7 +509,7 @@ export class CredentialsResource {
       'api-keys',
       (current) => {
         const found = locateConfigCredential(current, target);
-        if (found === undefined) throw new Error(`Config key with auth_index "${authIndex}" was not found.`);
+        if (found === undefined) throw this.#credentialNotFound({ auth_index: authIndex }, '/config');
         setExcludedAll(found.key, disabled);
         return current;
       },
@@ -496,14 +524,14 @@ export class CredentialsResource {
       'api-keys',
       (current) => {
         const found = locateConfigCredential(current, target);
-        if (found === undefined) throw new Error(`Config key with auth_index "${entry.summary.auth_index}" was not found.`);
+        if (found === undefined) throw this.#credentialNotFound({ auth_index: entry.summary.auth_index }, '/config');
         if (target.groupAsCredential) {
           found.groups.splice(found.groupIndex, 1);
           return current;
         }
         const keys = found.group.keys;
         if (!Array.isArray(keys) || found.keyIndex === undefined) {
-          throw new Error(`Config key with auth_index "${entry.summary.auth_index}" was not found.`);
+          throw this.#credentialNotFound({ auth_index: entry.summary.auth_index }, '/config');
         }
         keys.splice(found.keyIndex, 1);
         // Upstream accepts an empty native-provider group and registers no auth for it.
@@ -513,6 +541,10 @@ export class CredentialsResource {
       },
       options,
     );
+  }
+
+  #credentialNotFound(selector: CpaCredentialNotFoundSelector, path = '/credentials'): CpaCredentialNotFoundError {
+    return new CpaCredentialNotFoundError(selector, { method: 'GET', url: managementUrl(this.#t.baseUrl, path).toString() });
   }
 
   async #readConfig(options: RequestOptions): Promise<CpaConfig> {
@@ -624,7 +656,7 @@ export class CredentialsResource {
     if (entry !== undefined) return this.#setConfigCredentialStatus(entry, request.disabled, authIndex, options);
 
     const [file] = (await this.list({ auth_index: authIndex }, options)).files;
-    if (file === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    if (file === undefined) throw this.#credentialNotFound({ auth_index: authIndex });
     return (
       await this.#t.request<PatchCredentialStatusResponse>({
         ...options,
@@ -797,6 +829,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       for (const [keyIndex, item] of keys.entries()) {
         if (!isRecord(item)) continue;
         const excluded = readStrings(item['excluded-models']) ?? groupExcluded;
+        const apiKey = readString(item['api-key']);
         out.push({
           summary: {
             auth_index: readString(item.auth_index) ?? '',
@@ -804,6 +837,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
             source: 'config',
             ...(label === undefined ? {} : { label }),
             disabled: configDisabled(group, excluded),
+            ...(apiKey === undefined ? {} : { apiKey }),
             raw: item as unknown as ConfigCredentialRaw,
             group: stripped,
           },
@@ -834,12 +868,15 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       const entries: unknown[] = keys.length > 0 ? keys : [group];
       for (const [entryIndex, item] of entries.entries()) {
         if (!isRecord(item)) continue;
+        // A keyless group is itself the credential and has no key entry to expose.
+        const apiKey = keys.length > 0 ? readString(item['api-key']) : undefined;
         const summary: MarkedConfigSummary = {
           auth_index: readString(item.auth_index) ?? '',
           provider,
           source: 'config',
           ...(name === undefined ? {} : { label: name }),
           disabled: configDisabled(group, readStrings(item['excluded-models']) ?? excluded),
+          ...(apiKey === undefined ? {} : { apiKey }),
           raw: item as unknown as ConfigCredentialRaw,
           group: stripped,
         };
@@ -1084,6 +1121,17 @@ function parseCredentialJson(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Copies content without the requested top-level fields; the reconcile marker is never removed. */
+function removeTopLevelFields(content: Record<string, unknown>, remove: readonly string[] | undefined): Record<string, unknown> {
+  if (remove === undefined || remove.length === 0) return content;
+  const next = { ...content };
+  for (const field of remove) {
+    if (field === RECONCILE_MARKER) continue;
+    delete next[field];
+  }
+  return next;
 }
 
 /** Returns a new content object with the marker set; the caller's object is untouched. */

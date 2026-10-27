@@ -4,6 +4,25 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `credentials.listAll` config entries expose `apiKey`, the entry's plaintext API key (a native provider key or
+  an OpenAI-compatible key entry). It is absent for a keyless OpenAI-compatible group and for file entries.
+- `CpaCredentialNotFoundError` (with `CpaCredentialNotFoundSelector`) carries `selector`
+  (`{ name?, auth_index? }`). `credentials.setStatus`, `credentials.delete` and `credentials.modelsFor` throw it
+  when cpajs cannot resolve the selector; a 404 answered by upstream remains a `CpaHttpError`.
+- `credentials.reconcile`'s `adopt` may return `{ revision, remove }` to delete legacy top-level fields such as
+  `chat_seed` from the kept file before the `x-cpajs` marker is written. Listing `x-cpajs` in `remove` is
+  ignored; returning a plain revision string works as before.
+
+### Changed
+
+- `credentials.setStatus`, `credentials.delete` and `credentials.modelsFor` throw `CpaCredentialNotFoundError`
+  instead of a plain `Error` for a selector they resolved to nothing. Code catching `Error` keeps working;
+  `instanceof CpaCredentialNotFoundError` lets a caller map the result to its own `not_found`.
+
 ## 0.1.0-rc.6
 
 ### Breaking

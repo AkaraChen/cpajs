@@ -10,6 +10,7 @@ import { compareSync } from 'bcryptjs';
 import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  CpaCredentialNotFoundError,
   CpaCredentialTokenError,
   CpaHttpError,
   CpaReconcileError,
@@ -330,16 +331,34 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.errorCode).toBe('file not found');
     });
 
+    it('reports an unresolved selector with CpaCredentialNotFoundError', async () => {
+      const missing = 'ffffffffffffffff';
+      for (const run of [
+        () => client.credentials.modelsFor({ auth_index: missing }),
+        () => client.credentials.setStatus({ auth_index: missing, disabled: true }),
+        () => client.credentials.delete({ auth_index: missing }),
+      ]) {
+        const error = await run().catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(CpaCredentialNotFoundError);
+        expect(error).toMatchObject({ selector: { auth_index: missing } });
+      }
+
+      const byName = await client.credentials.modelsFor({ name: 'e2e-missing.json' }).catch((e: unknown) => e);
+      expect(byName).toBeInstanceOf(CpaCredentialNotFoundError);
+      expect(byName).toMatchObject({ selector: { name: 'e2e-missing.json' } });
+    });
+
     it('lists files and config keys, and resolves models for both', async () => {
       await client.credentials.upload({ name: 'e2e-list-all.json', content: { type: 'claude', email: 'list-all@example.com', api_key: 'sk-list' } });
       try {
         const entries = await client.credentials.listAll();
         const file = entries.find((entry) => entry.source === 'file' && entry.name === 'e2e-list-all.json');
         expect(file).toMatchObject({ source: 'file', provider: 'claude', disabled: false });
+        expect(file).not.toHaveProperty('apiKey');
         expect(file!.auth_index).not.toBe('');
 
         const config = entries.find((entry) => entry.source === 'config' && entry.provider === 'fake');
-        expect(config).toMatchObject({ source: 'config', label: 'fake', disabled: false });
+        expect(config).toMatchObject({ source: 'config', label: 'fake', disabled: false, apiKey: 'upstream-key' });
         expect(config!.auth_index).not.toBe('');
 
         await expect(client.credentials.modelsFor({ name: 'e2e-list-all.json' })).resolves.toBeInstanceOf(Array);
@@ -491,13 +510,16 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
         revision,
       });
       try {
-        await client.credentials.upload({ name, content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-legacy' } });
+        await client.credentials.upload({
+          name,
+          content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-legacy', chat_seed: 'seed-token', access_token: 'token-legacy-1' },
+        });
 
         const refused = (await client.credentials.reconcile({ owner, files: [desired('r1')] }).catch((e: unknown) => e)) as CpaReconcileError;
         expect(refused).toBeInstanceOf(CpaReconcileError);
         expect(refused).toMatchObject({ code: 'unmarked', file: name });
         const untouched = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
-        expect(untouched).toMatchObject({ api_key: 'sk-legacy' });
+        expect(untouched).toMatchObject({ api_key: 'sk-legacy', chat_seed: 'seed-token' });
         expect(untouched['x-cpajs']).toBeUndefined();
 
         const adopted = await client.credentials.reconcile({
@@ -505,13 +527,18 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
           files: [desired('r1')],
           adopt: (file, body) => {
             if (file !== name) return undefined;
-            expect(body).toMatchObject({ api_key: 'sk-legacy' });
-            return 'r1';
+            expect(body).toMatchObject({ api_key: 'sk-legacy', chat_seed: 'seed-token' });
+            return { revision: 'r1', remove: ['chat_seed'] };
           },
         });
         expect(adopted).toEqual({ uploaded: [], deleted: [], unchanged: [name], adopted: [name] });
         const claimed = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
-        expect(claimed).toMatchObject({ api_key: 'sk-legacy', 'x-cpajs': { owner, revision: 'r1' } });
+        expect(claimed).toMatchObject({
+          api_key: 'sk-legacy',
+          access_token: 'token-legacy-1',
+          'x-cpajs': { owner, revision: 'r1' },
+        });
+        expect(claimed).not.toHaveProperty('chat_seed');
 
         await expect(client.credentials.reconcile({ owner, files: [desired('r2')] })).resolves.toEqual({
           uploaded: [name],
