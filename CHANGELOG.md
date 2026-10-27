@@ -4,6 +4,15 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Changed
+
+- A generated management key is hashed at bcrypt cost 4 (upstream's `bcrypt.MinCost`) instead of 10. CPA
+  checks the key against the hash on every management request at the stored cost, so cost 10 spent about
+  65 ms of CPU per request, which adds up for hosts that poll the management API. The key is 256 random
+  bits, so the cheaper hash does not make it easier to guess. An explicit `management.key` keeps cost 10.
+
 ## 0.1.0-rc.4
 
 ### Added

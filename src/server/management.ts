@@ -6,6 +6,14 @@ import type { ManagementOptions } from './types.ts';
 /** bcrypt cost; matches upstream's `bcrypt.DefaultCost` (about 50-100 ms per hash). */
 export const BCRYPT_COST = 10;
 
+/**
+ * bcrypt cost for generated keys; upstream's `bcrypt.MinCost`. CPA compares the
+ * key against the hash on every management request, at the cost stored in the
+ * hash, so the default cost burns ~65 ms of CPU per request. A generated key has
+ * 256 bits of entropy, so a slow hash adds no protection against brute force.
+ */
+export const GENERATED_KEY_BCRYPT_COST = 4;
+
 // bcrypt only uses the first 72 bytes and upstream's Go implementation rejects
 // longer passwords, so a hash of a longer key could never authenticate.
 const MAX_BCRYPT_BYTES = 72;
@@ -51,7 +59,7 @@ export async function resolveManagement(options: {
     const ownSecret = options.config?.management?.['secret-key'];
     if (options.configPath !== undefined || (typeof ownSecret === 'string' && ownSecret.trim() !== '')) return none;
     const key = randomBytes(32).toString('base64url');
-    return { key, generated: true, viaEnvironment: false, allowRemote: false, secretKeyHash: await hash(key, BCRYPT_COST) };
+    return { key, generated: true, viaEnvironment: false, allowRemote: false, secretKeyHash: await hash(key, GENERATED_KEY_BCRYPT_COST) };
   }
   const key = management.key;
   if (typeof key !== 'string' || key.trim() === '') {
