@@ -170,6 +170,7 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -204,6 +205,9 @@ jobs:
           for tgz in ./tarballs/*.tgz; do
             [ "$tgz" = "$main" ] || publish "$tgz"
           done
+          # Registry metadata is CDN-cached: a platform package can 404 for a while after
+          # its publish. Do not publish the main package until every dependency resolves.
+          node scripts/wait-for-packages.ts --version "$version"
           publish "$main"
       - name: Attach tarballs to the GitHub release
         env:

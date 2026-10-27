@@ -152,8 +152,12 @@ interface CommonServerOptions {
   logs?: LogOptions;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
-  /** Lifecycle hooks that run after each process becomes ready. */
-  hooks?: ServerHooks;
+  /**
+   * Listeners registered before the first process is watched, so they also see
+   * an immediate exit. With `singleton: true`, only the first call's listeners
+   * are registered; later calls return the existing handle and ignore theirs.
+   */
+  on?: Partial<ServerEventListeners>;
   /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
   stopTimeoutMs?: number;
   /**
@@ -182,21 +186,41 @@ export interface ConfigContext {
   reason: ConfigReason;
 }
 
-export interface AfterStartContext {
+/** Runs once when the process that `afterStart` observed has exited, before its restart or after the final stop. */
+export type AfterStartCleanup = () => void | Promise<void>;
+
+export type AfterStartResult = undefined | AfterStartCleanup;
+
+export interface AfterStartContext<Client extends CpaClient | undefined = CpaClient | undefined> {
   /** The server handle, already bound to the new process and ready. */
   server: CpaServer;
-  /** `server.client()` when cpajs knows the plaintext management key, otherwise `undefined`. */
-  client: CpaClient | undefined;
+  /**
+   * `server.client()` when cpajs knows the plaintext management key, otherwise
+   * `undefined`. `startServer` narrows this to `CpaClient` only when the key is
+   * provably known: `management: false` and `configPath` are absent, and
+   * `config` is omitted, a function, or an object whose type has no
+   * `management['secret-key']`. A wide `CpaConfig` variable stays
+   * `CpaClient | undefined`, so use `requireClient()` when the key may come
+   * from a config the type cannot prove.
+   */
+  client: Client;
   reason: ConfigReason;
+  /** Returns `client`, or throws a clear error with the reason it is unavailable. */
+  requireClient(): CpaClient;
 }
 
-export interface ServerHooks {
+export interface ServerHooks<Client extends CpaClient | undefined = CpaClient | undefined> {
   /**
    * Called after each process is ready: the first start and every restart
    * (manual or automatic). A failure fails `startServer` and stops the process;
    * on a restart it is reported as `restart-failed`.
+   *
+   * It may return a cleanup function, which cpajs calls once when that process
+   * exits: before the next process starts on a restart, or on the final stop.
+   * A failing cleanup is reported as a `CpaWarning` and never changes the
+   * lifecycle outcome.
    */
-  afterStart?: (ctx: AfterStartContext) => void | Promise<void>;
+  afterStart?: (ctx: AfterStartContext<Client>) => AfterStartResult | Promise<AfterStartResult>;
 }
 
 export interface RestartPolicy {
@@ -222,7 +246,10 @@ export interface RestartPolicy {
   maxAttempts?: number;
 }
 
-export interface StartWithConfigOptions extends CommonServerOptions {
+export interface StartWithConfigOptions<Client extends CpaClient | undefined = CpaClient | undefined>
+  extends CommonServerOptions {
+  /** Lifecycle hooks that run after each process becomes ready. */
+  hooks?: ServerHooks<Client>;
   /**
    * Native CPA configuration, or a function that returns one.
    *
@@ -256,7 +283,10 @@ export interface StartWithConfigOptions extends CommonServerOptions {
   port?: number;
 }
 
-export interface StartWithConfigPathOptions extends CommonServerOptions {
+export interface StartWithConfigPathOptions<Client extends CpaClient | undefined = CpaClient | undefined>
+  extends CommonServerOptions {
+  /** Lifecycle hooks that run after each process becomes ready. */
+  hooks?: ServerHooks<Client>;
   /**
    * Existing CPA config file, handed to CPA as-is. CPA may rewrite it on
    * startup: it hashes a plaintext `management.secret-key`, removes legacy
@@ -270,7 +300,9 @@ export interface StartWithConfigPathOptions extends CommonServerOptions {
   port?: never;
 }
 
-export type StartServerOptions = StartWithConfigOptions | StartWithConfigPathOptions;
+export type StartServerOptions<Client extends CpaClient | undefined = CpaClient | undefined> =
+  | StartWithConfigOptions<Client>
+  | StartWithConfigPathOptions<Client>;
 
 export interface ExitResult {
   code: number | null;
@@ -294,6 +326,9 @@ export interface RestartOptions {
 
 export type RestartReason = 'unexpected-exit' | 'manual';
 
+/** Why a process exited: `stop()` asked, a restart replaced it, or it died on its own. */
+export type ExitReason = 'stop' | 'restart' | 'unexpected';
+
 export interface ExitEvent {
   code: number | null;
   signal: NodeJS.Signals | null;
@@ -301,6 +336,8 @@ export interface ExitEvent {
   recentLogs: readonly LogLine[];
   /** Whether a new process will be started (a manual restart or auto-restart). */
   willRestart: boolean;
+  /** `stop` for `stop()`, `restart` while a restart stops the old process, else `unexpected`. */
+  reason: ExitReason;
 }
 
 export interface RestartEvent {
@@ -327,6 +364,10 @@ export interface CpaServerEvents {
   restarted: RestartedEvent;
   'restart-failed': RestartFailedEvent;
 }
+
+export type ServerEventListeners = {
+  [K in keyof CpaServerEvents]: (event: CpaServerEvents[K]) => void;
+};
 
 export interface CpaServer {
   /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */

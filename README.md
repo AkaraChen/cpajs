@@ -100,15 +100,24 @@ await server.stop();
   The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
   in the same process share it.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
-  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
-  `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
-  `originChanged` (currently always `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A
-  listener that throws is reported through `process.emitWarning` and never disturbs the server.
-- `hooks.afterStart({ server, client, reason })` runs after each process is ready: the first start and every
-  restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is `server.client()` when cpajs
-  knows the plaintext management key and `undefined` otherwise. If it throws, the first start rejects with
-  `CpaStartError` code `hook-failed` after stopping the process, while a restart fails like any other
-  (`restart-failed`, then backoff or a rejected `restart()`).
+  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs`, `willRestart` and `reason`:
+  `'stop'` when `stop()` stopped the process, `'restart'` when a manual or automatic restart replaced it, and
+  `'unexpected'` when the process exited by itself. `restart` and `restarted` carry `reason`
+  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (currently always
+  `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A listener that throws is reported through
+  `process.emitWarning` and never disturbs the server. Pass `on` to `startServer` to subscribe before the first
+  process is watched; with `singleton: true` only the first call's listeners are registered.
+- `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
+  start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
+  `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`
+  narrows `client` to `CpaClient` only when the key is provably known: no `management: false` or `configPath`,
+  and `config` omitted, a function, or an object whose type has no `management['secret-key']`. A wide
+  `CpaConfig` variable stays `CpaClient | undefined`; `requireClient()` returns the client or throws with the
+  reason it is unavailable. The hook may return a cleanup function (or a promise of one), which cpajs calls once
+  when that process exits: before the replacement starts on a restart, or after the final stop. A cleanup that
+  throws is reported through `process.emitWarning` and does not change the lifecycle. If the hook throws, the
+  first start rejects with `CpaStartError` code `hook-failed` after stopping the process, while a restart fails
+  like any other (`restart-failed`, then backoff or a rejected `restart()`).
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:
@@ -459,9 +468,10 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | `assemble-packages.ts` | Create the `@cpajs/*` platform packages. |
 | `pack.ts` | Produce the tarballs. |
 | `install-test.ts` | Install the tarballs through a local registry with npm, pnpm or bun, and run them. |
+| `wait-for-packages.ts` | Poll the npm registry until every platform package resolves at a version; run it before publishing the main package. |
 | `trust-publishers.ts` | Configure npm trusted publishing for all packages (run locally after the first publish). |
 
-`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). There is no npm token; `trust-publishers.ts` configures the trusted publisher for every package. A newly added platform package has to exist on npm before it can be trusted.
+`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). There is no npm token; `trust-publishers.ts` configures the trusted publisher for every package. A newly added platform package has to exist on npm before it can be trusted. The publish job runs `wait-for-packages.ts --version <version>` after publishing the platform packages and before the main package, so `@cpajs/cpa` is not published while one of its optional dependencies is still missing from the install packument that npm, pnpm and bun read (registry metadata is CDN-cached). It can be run locally against an already published release, e.g. `node scripts/wait-for-packages.ts --version 0.1.0-rc.5`; `--timeout` and `--interval` take seconds.
 
 ## License
 
