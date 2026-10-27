@@ -93,6 +93,30 @@ export class CpaCredentialTokenError extends CpaClientError {
   }
 }
 
+export type CpaReconcileErrorCode =
+  /** The file has no `x-cpajs` marker, so it may belong to someone else. */
+  | 'unmarked'
+  /** The file carries another caller's `x-cpajs` marker. */
+  | 'owned-by-other';
+
+/**
+ * `credentials.reconcile` found an existing file it must not overwrite.
+ *
+ * `unmarked` files can be claimed by passing `adopt`; `owned-by-other` files
+ * are never overwritten. `file` is the auth directory file name.
+ */
+export class CpaReconcileError extends Error {
+  override readonly name = 'CpaReconcileError';
+  readonly code: CpaReconcileErrorCode;
+  readonly file: string;
+
+  constructor(code: CpaReconcileErrorCode, file: string, message: string) {
+    super(message);
+    this.code = code;
+    this.file = file;
+  }
+}
+
 /** The request could not be sent or the response could not be read. */
 export class CpaNetworkError extends CpaClientError {
   override readonly name = 'CpaNetworkError';

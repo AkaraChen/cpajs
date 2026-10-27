@@ -9,7 +9,14 @@ import { crc32 } from 'node:zlib';
 import { compareSync } from 'bcryptjs';
 import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, createClient, type CpaClient } from '../../src/client/index.ts';
+import {
+  CpaCredentialTokenError,
+  CpaHttpError,
+  CpaReconcileError,
+  CpaUpstreamError,
+  createClient,
+  type CpaClient,
+} from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
 import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './helpers.ts';
@@ -374,6 +381,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
           uploaded: ['e2e-reconcile-a.json', 'e2e-reconcile-b.json'],
           deleted: [],
           unchanged: [],
+          adopted: [],
         });
         await client.credentials.upload({
           name: 'e2e-reconcile-other.json',
@@ -387,16 +395,61 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
 
         await expect(
           client.credentials.reconcile({ owner, files: [files[0]!, { ...files[1]!, revision: 'r2' }] }),
-        ).resolves.toEqual({ uploaded: ['e2e-reconcile-b.json'], deleted: [], unchanged: ['e2e-reconcile-a.json'] });
+        ).resolves.toEqual({ uploaded: ['e2e-reconcile-b.json'], deleted: [], unchanged: ['e2e-reconcile-a.json'], adopted: [] });
 
         await expect(client.credentials.reconcile({ owner, files: [files[0]!] })).resolves.toEqual({
           uploaded: [],
           deleted: ['e2e-reconcile-b.json'],
           unchanged: ['e2e-reconcile-a.json'],
+          adopted: [],
         });
         expect(await client.credentials.get('e2e-reconcile-other.json')).toBeDefined();
       } finally {
         await client.credentials.delete(['e2e-reconcile-a.json', 'e2e-reconcile-b.json', 'e2e-reconcile-other.json']).catch(() => {});
+      }
+    });
+
+    it('refuses an unmarked file and adopts it when asked', async () => {
+      const name = 'e2e-reconcile-legacy.json';
+      const owner = 'e2e-adopt';
+      const desired = (revision: string) => ({
+        name,
+        content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-new' },
+        revision,
+      });
+      try {
+        await client.credentials.upload({ name, content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-legacy' } });
+
+        const refused = (await client.credentials.reconcile({ owner, files: [desired('r1')] }).catch((e: unknown) => e)) as CpaReconcileError;
+        expect(refused).toBeInstanceOf(CpaReconcileError);
+        expect(refused).toMatchObject({ code: 'unmarked', file: name });
+        const untouched = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
+        expect(untouched).toMatchObject({ api_key: 'sk-legacy' });
+        expect(untouched['x-cpajs']).toBeUndefined();
+
+        const adopted = await client.credentials.reconcile({
+          owner,
+          files: [desired('r1')],
+          adopt: (file, body) => {
+            if (file !== name) return undefined;
+            expect(body).toMatchObject({ api_key: 'sk-legacy' });
+            return 'r1';
+          },
+        });
+        expect(adopted).toEqual({ uploaded: [], deleted: [], unchanged: [name], adopted: [name] });
+        const claimed = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
+        expect(claimed).toMatchObject({ api_key: 'sk-legacy', 'x-cpajs': { owner, revision: 'r1' } });
+
+        await expect(client.credentials.reconcile({ owner, files: [desired('r2')] })).resolves.toEqual({
+          uploaded: [name],
+          deleted: [],
+          unchanged: [],
+          adopted: [],
+        });
+        const replaced = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
+        expect(replaced).toMatchObject({ api_key: 'sk-new', 'x-cpajs': { owner, revision: 'r2' } });
+      } finally {
+        await client.credentials.delete(name).catch(() => {});
       }
     });
   });

@@ -256,6 +256,9 @@ export type CpaConfigPath<T = CpaConfig> = {
   [K in keyof T & string]-?: K | (ConfigObject<NonNullable<T[K]>> extends never ? never : `${K}/${CpaConfigPath<ConfigObject<NonNullable<T[K]>>>}`);
 }[keyof T & string];
 
+/** Providers under `api-keys`, e.g. for building `['api-keys', provider]` paths from a variable. */
+export type CpaApiKeyProvider = keyof NonNullable<CpaConfig['api-keys']>;
+
 /** The value stored at a {@link CpaConfigPath}, e.g. `CpaConfigValue<'api-keys'>`. */
 export type CpaConfigValue<P extends string, T = CpaConfig> = P extends `${infer K}/${infer Rest}`
   ? K extends keyof T

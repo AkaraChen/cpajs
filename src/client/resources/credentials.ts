@@ -1,3 +1,4 @@
+import { CpaReconcileError } from '../errors.ts';
 import type {
   CpaClaudeKey,
   CpaClaudeModel,
@@ -47,7 +48,8 @@ export interface CredentialFile {
 export interface ReconcileCredentialFile {
   /** File name in the auth directory; must end with `.json`. */
   name: string;
-  content: Record<string, unknown>;
+  /** A parsed JSON object, JSON text, or raw bytes; must resolve to a JSON object. */
+  content: CredentialContent;
   /** Opaque version. An unchanged revision leaves the file alone. */
   revision: string;
 }
@@ -58,12 +60,21 @@ export interface ReconcileCredentialsInput {
   files: readonly ReconcileCredentialFile[];
   /** Delete files owned by `owner` that are not in `files`. Defaults to true. */
   prune?: boolean;
+  /**
+   * Claims files without an `x-cpajs` marker. Return a revision to keep the
+   * file's existing content (tokens included) and add `x-cpajs: { owner, revision }`,
+   * or `undefined` to leave it unmanaged. Without this, an unmarked file with the
+   * same name makes reconcile throw instead of overwriting it.
+   */
+  adopt?: (name: string, body: Record<string, unknown>) => string | undefined | Promise<string | undefined>;
 }
 
 export interface ReconcileCredentialsResult {
   uploaded: string[];
   deleted: string[];
   unchanged: string[];
+  /** Files claimed through `adopt`; an adopted file is also `uploaded` or `unchanged`. */
+  adopted: string[];
 }
 
 /** Identifies a credential by auth ID / file name or by `auth_index`. */
@@ -304,40 +315,80 @@ export class CredentialsResource {
    * revision is compared, so a token refresh that rewrites a file does not cause
    * another upload. With `prune` (the default), owned files that are no longer in
    * `files` are deleted; files owned by anyone else are never touched.
+   *
+   * A file without the marker is never overwritten: reconcile throws
+   * {@link CpaReconcileError} with code `unmarked` unless `adopt` claims it. Content
+   * may be a parsed object, JSON text or raw bytes; it is normalized to an object
+   * before any request is sent.
    */
   async reconcile(input: ReconcileCredentialsInput, options: RequestOptions = {}): Promise<ReconcileCredentialsResult> {
     const { owner, files } = input;
     const prune = input.prune ?? true;
     if (owner.trim() === '') throw new TypeError('reconcile needs a non-empty owner.');
 
-    const desired = new Map<string, ReconcileCredentialFile>();
+    const desired = new Map<string, { name: string; content: Record<string, unknown>; revision: string }>();
     for (const file of files) {
       if (desired.has(file.name)) throw new TypeError(`reconcile received "${file.name}" more than once.`);
-      desired.set(file.name, file);
+      desired.set(file.name, { name: file.name, content: await reconcileContent(file.name, file.content), revision: file.revision });
     }
 
     const listed = await this.list({}, options);
     const existing = new Map<string, ReconcileMarker>();
     const claims = new Map<string, string>();
+    const unmarked = new Map<string, Record<string, unknown>>();
+    const unreadable = new Set<string>();
     for (const entry of listed.files) {
       if (entry.source !== 'file' || !entry.name.toLowerCase().endsWith('.json')) continue;
       if (!prune && !desired.has(entry.name)) continue;
-      const marker = await this.#readReconcileMarker(entry.name, options);
-      if (marker === undefined) continue;
+      const body = await this.#readCredentialBody(entry.name, options);
+      if (body === undefined) {
+        unreadable.add(entry.name);
+        continue;
+      }
+      const marker = reconcileMarker(body);
+      if (marker === undefined) {
+        unmarked.set(entry.name, body);
+        continue;
+      }
       claims.set(entry.name, marker.owner);
       if (marker.owner === owner) existing.set(entry.name, marker);
     }
 
-    for (const file of files) {
-      const claimed = claims.get(file.name);
+    for (const name of desired.keys()) {
+      const claimed = claims.get(name);
       if (claimed !== undefined && claimed !== owner) {
-        throw new Error(`Credential "${file.name}" belongs to owner "${claimed}", not "${owner}".`);
+        throw new CpaReconcileError('owned-by-other', name, `Credential "${name}" belongs to owner "${claimed}", not "${owner}".`);
       }
+    }
+
+    const adoptions = new Map<string, string>();
+    if (input.adopt !== undefined) {
+      for (const [name, body] of unmarked) {
+        const revision = await input.adopt(name, body);
+        if (revision !== undefined) adoptions.set(name, revision);
+      }
+    }
+
+    for (const name of desired.keys()) {
+      if (claims.has(name) || adoptions.has(name)) continue;
+      if (unmarked.has(name)) {
+        throw new CpaReconcileError('unmarked', name, `Credential "${name}" has no x-cpajs marker; pass adopt to claim it.`);
+      }
+      if (unreadable.has(name)) {
+        throw new CpaReconcileError('unmarked', name, `Credential "${name}" has no x-cpajs marker and is not a JSON object; refusing to overwrite it.`);
+      }
+    }
+
+    const adopted: string[] = [];
+    for (const [name, revision] of adoptions) {
+      await this.upload({ name, content: stampReconcileMarker(unmarked.get(name)!, owner, revision) }, options);
+      adopted.push(name);
+      existing.set(name, { owner, revision });
     }
 
     const uploaded: string[] = [];
     const unchanged: string[] = [];
-    for (const file of files) {
+    for (const file of desired.values()) {
       if (existing.get(file.name)?.revision === file.revision) {
         unchanged.push(file.name);
         continue;
@@ -355,7 +406,7 @@ export class CredentialsResource {
       }
     }
 
-    return { uploaded, deleted, unchanged };
+    return { uploaded, deleted, unchanged, adopted };
   }
 
   async #readConfig(options: RequestOptions): Promise<CpaConfig> {
@@ -427,21 +478,14 @@ export class CredentialsResource {
     );
   }
 
-  async #readReconcileMarker(name: string, options: RequestOptions): Promise<ReconcileMarker | undefined> {
+  async #readCredentialBody(name: string, options: RequestOptions): Promise<Record<string, unknown> | undefined> {
     const text = await (await this.download(name, options)).text();
-    let content: unknown;
     try {
-      content = JSON.parse(text);
+      const content: unknown = JSON.parse(text);
+      return isRecord(content) ? content : undefined;
     } catch {
       return undefined;
     }
-    if (!isRecord(content) || !isRecord(content[RECONCILE_MARKER])) return undefined;
-    const marker = content[RECONCILE_MARKER];
-    if (typeof marker.owner !== 'string') return undefined;
-    return {
-      owner: marker.owner,
-      ...(typeof marker.revision === 'string' ? { revision: marker.revision } : {}),
-    };
   }
 
   /** Enables or disables a credential. */
@@ -798,6 +842,37 @@ function matchWildcard(pattern: string, value: string): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function reconcileMarker(content: Record<string, unknown>): ReconcileMarker | undefined {
+  const marker = content[RECONCILE_MARKER];
+  if (!isRecord(marker) || typeof marker.owner !== 'string') return undefined;
+  return {
+    owner: marker.owner,
+    ...(typeof marker.revision === 'string' ? { revision: marker.revision } : {}),
+  };
+}
+
+/** Resolves reconcile content to a JSON object; strings and bytes must parse to one. */
+async function reconcileContent(name: string, content: CredentialContent): Promise<Record<string, unknown>> {
+  let value: unknown = content;
+  if (typeof content === 'string') {
+    value = parseCredentialJson(content);
+  } else if (content instanceof Blob) {
+    value = parseCredentialJson(await content.text());
+  } else if (content instanceof ArrayBuffer || content instanceof Uint8Array) {
+    value = parseCredentialJson(new TextDecoder().decode(content));
+  }
+  if (!isRecord(value)) throw new TypeError(`reconcile content for "${name}" must be a JSON object.`);
+  return value;
+}
+
+function parseCredentialJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Returns a new content object with the marker set; the caller's object is untouched. */

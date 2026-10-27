@@ -21,12 +21,58 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 - `credentials.listAll` marks a config key `disabled` when its own or its group's effective `excluded-models`
   contains `*`, matching what upstream `PATCH /credentials/status` writes (key-level `excluded-models`; see
   `internal/api/handlers/management/config_apikey_disable.go`).
+- `credentials.reconcile` returns `adopted: string[]` alongside `uploaded`, `deleted` and `unchanged`. `adopted`
+  lists files claimed through `adopt`, which may also appear in one of the other lists.
+- `files[].content` in `credentials.reconcile` accepts `CredentialContent` — a parsed object, JSON text, a
+  `Blob`, or raw bytes — like `credentials.upload`.
+- `config.set`, `config.patchPath` and `config.update` now type tuple paths by the value at that path, the
+  same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
+  JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
+  behaviour.
+- `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
+  and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
+  a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
+  `['api-keys', 'gemini']` needs no `as const`. Broad `string` and `string[]` paths still accept any
+  JSON-serialisable value. Runtime behaviour is unchanged.
+- `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
+  variable.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
+
+### Changed
+
+- `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
+  is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
+  string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
 
 ### Fixed
 
 - Config models no longer lose their static display name when `display-name` is unset. Only an explicit
   `display-name` overrides the channel's `model-definitions` value; a regression made `details: true` show the
   upstream model ID instead (for example `gpt-5` instead of `GPT-5`).
+- `credentials.reconcile` no longer overwrites an existing same-name file that has no `x-cpajs` marker.
+  It throws `CpaReconcileError` with code `unmarked` (files owned by another caller now use the same class with
+  code `owned-by-other`), so a legacy `chat-openai-*.json` that CPA has already refreshed is not replaced with a
+  seed token. Pass the new `adopt(name, body)` callback to claim such files in place: return a revision to keep
+  the stored content (tokens included) and write only the marker, or `undefined` to leave the file unmanaged.
+  The adopted revision then follows the normal comparison — equal leaves the file alone, different uploads the
+  desired content. `adopt` is also called for unmarked files in the prune range, so a recognized legacy file can
+  be claimed and deleted. Migration from a helper that stamped legacy fields itself:
+  ```ts
+  const revisions = new Map(files.map((file) => [file.name, file.revision]));
+  await client.credentials.reconcile({
+    owner: 'chat',
+    files,
+    // Returning the desired revision keeps the token CPA already rotated;
+    // returning a different revision uploads the desired content instead.
+    adopt: (name, body) => (name.startsWith('chat-openai-') && body.chat_seed !== undefined ? revisions.get(name) : undefined),
+  });
+  ```
+- `credentials.reconcile` no longer expands JSON string or byte content into `{"0":"{","1":"\n",…}`, which
+  produced a file CPA could not read and made the account disappear from its model list. Non-object content is
+  parsed and rejected with a `TypeError` before any request is sent.
 
 ## 0.1.0-rc.5
 

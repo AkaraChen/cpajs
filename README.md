@@ -140,8 +140,9 @@ await server.stop();
   prefixes). Output that does not match the format still arrives, with only `stream` and `line`.
 
   Pass `logs: { minLevel: 'warn' }` to drop lower-severity lines from `onLog`; `recentLogs` keeps everything,
-  because error messages often need the surrounding info lines. Lines without a parsed level always pass, so
-  unknown output is never hidden.
+  because error messages often need the surrounding info lines. Lines without a parsed level pass by default, so
+  unknown output is never hidden; `logs: { minLevel: 'warn', unleveled: 'stderr' }` keeps only those on stderr
+  (such as a Go panic) and drops CPA's stdout banner, and `unleveled: 'none'` drops them all.
 
   ```ts
   await startServer({ config, logs: { minLevel: 'warn' }, onLog: ({ level, message, line }) => {
@@ -264,11 +265,16 @@ await client.credentials.upload({ name: 'codex-me.json', content: credentialJson
 const all = await client.credentials.listAll();
 const models = await client.credentials.modelsFor(all[0]!, { details: true });
 
+const desired = [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }];
 const synced = await client.credentials.reconcile({
   owner: 'chat',
-  files: [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }],
+  files: desired,
+  // A legacy file without `x-cpajs` is claimed in place. Returning its desired
+  // revision keeps the tokens CPA already rotated; a different one uploads `desired`.
+  adopt: (name, body) =>
+    body.chat_seed === undefined ? undefined : desired.find((file) => file.name === name)?.revision,
 });
-console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [] }
+console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [], adopted: [] }
 
 const login = await client.oauth.start({ provider: 'claude' });
 console.log('open', login.url);
@@ -287,6 +293,15 @@ refresh does not cause another upload. With `prune` (the default), files owned b
 in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
 mutated.
 
+A same-name file without the marker is never overwritten. Reconcile throws `CpaReconcileError` with code
+`unmarked` (also for files owned by another caller, code `owned-by-other`) unless `adopt(name, body)` returns
+a revision. Adoption keeps the stored content, including tokens, writes only the marker, and then compares the
+returned revision with the desired one: equal leaves the file alone, different uploads the desired content.
+Returning `undefined` leaves the file unmanaged; a same-name unmarked file then still throws. `adopt` is also
+called for unmarked files in the prune range, so a recognized legacy file can be claimed and deleted.
+`files[].content` accepts an object, JSON text, bytes, or a `Blob`; strings and bytes are parsed and must
+resolve to a JSON object, which is checked before any request.
+
 `credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
 exposes as a runtime view. It returns a discriminated union: a file entry has `raw: AuthFileEntry` and its
 `name`, while a config entry has the provider key as `raw` and its group (without `keys`) as `group`. A config
@@ -303,7 +318,7 @@ for files.
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision, delete, download, status, fields, refresh, SIWC status |
+| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision (with adoption), delete, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |
@@ -312,8 +327,9 @@ for files.
 | `plugins` | list, delete, store, install, quota |
 | `server` | `/healthz`, version headers, latest release |
 
-`requests.apiCallJson()` is the throwing variant of `apiCall`: a JSON string body becomes `data`, a non-2xx
-upstream status throws `CpaUpstreamError`, and an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
+`requests.apiCallJson()` is the throwing variant of `apiCall` for JSON upstreams: the parsed body becomes `data`,
+a non-2xx upstream status throws `CpaUpstreamError`, a 2xx body that is not JSON throws `CpaResponseError`, and
+an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
 
 Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's transient
 `500 invalid_config` (a read landing while `config.yaml` is rewritten) up to three times after
@@ -325,6 +341,8 @@ Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's tr
   `status`, `headers`, and `body` (parsed when JSON).
 - `CpaCredentialTokenError` when `requests.apiCallJson` cannot resolve `$TOKEN$`. It carries `status` and
   `errorCode`.
+- `CpaReconcileError` when `credentials.reconcile` will not overwrite a file. It carries `code` (`unmarked` or
+  `owned-by-other`) and `file`.
 - `CpaNetworkError` when the request fails.
 - `CpaTimeoutError` when the request times out.
 - `CpaAbortError` when your `signal` aborts the request.
@@ -371,9 +389,12 @@ Nitro uses nft. Import the entry from the server code, and full-trace the platfo
 directory is copied too (`pkg*` copies every file, not only the traced ones):
 
 ```ts
+import { resolveBinary } from '@cpajs/cpa/server';
+
 export default defineNitroConfig({
-  // Replace linux-x64-gnu with the target you deploy to (see src/server/targets.ts).
-  traceDeps: ['@cpajs/cpa', '@cpajs/linux-x64-gnu*'],
+  // The platform package installed on the build machine, e.g. @cpajs/linux-x64-gnu.
+  // Build on the platform you deploy to, or write the package name out instead.
+  traceDeps: ['@cpajs/cpa', `${resolveBinary().packageName}*`],
 });
 ```
 
