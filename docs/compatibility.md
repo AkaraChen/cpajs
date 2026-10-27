@@ -7,7 +7,7 @@ The `@cpajs/cpa` version and the bundled CLIProxyAPI version are tracked separat
 | @cpajs/cpa | CLIProxyAPI | Commit | Go | Management API | Control panel |
 | --- | --- | --- | --- | --- | --- |
 | 0.0.x – 0.1.0-rc.3 | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` | not bundled (CPA downloads the latest) |
-| 0.1.0-rc.4 | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` | v1.26.7 |
+| 0.1.0-rc.4 – 0.1.0-rc.5 | v8.0.43 | `307803510bce87f986fcf7b1a84190f105c7b4aa` | 1.26.10 | `/v8/management` | v1.26.7 |
 
 The pinned release lives in [`src/server/cpa-version.ts`](../src/server/cpa-version.ts) and is exported at
 runtime as `CPA_RELEASE`. The client also works with other v8.x servers when the routes it calls exist there.
