@@ -174,6 +174,32 @@ function abortError(signal: AbortSignal, output: string, message = 'startServer 
   return new CpaStartError('aborted', message, { output, cause: signal.reason });
 }
 
+/**
+ * Copies the bundled panel into `stateDir` when the prepared config would serve
+ * it, and points CPA at that copy. Removes a path cpajs set on an earlier start
+ * once the config stops opting in, so CPA can fetch the panel it names instead.
+ */
+async function applyPinnedPanel(options: {
+  panelFile: string | undefined;
+  panelEligible: boolean;
+  pinnedPanel: boolean;
+  prepared: PreparedConfig;
+  stateDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const staticPath = join(options.stateDir, 'static', 'management.html');
+  if (options.pinnedPanel && options.panelFile !== undefined && options.prepared.management.servesPinnedPanel) {
+    // A copy in stateDir, so a later opt-in to auto-update (through the management
+    // API) makes CPA write there instead of into the installed package.
+    await mkdir(join(options.stateDir, 'static'), { recursive: true });
+    await copyFile(options.panelFile, staticPath);
+    options.env.MANAGEMENT_STATIC_PATH = staticPath;
+  } else if (options.panelEligible && options.env.MANAGEMENT_STATIC_PATH === staticPath) {
+    // Only cpajs can have set this path; a caller-provided value makes panelEligible false.
+    delete options.env.MANAGEMENT_STATIC_PATH;
+  }
+}
+
 interface LaunchOptions {
   /** Executable to spawn: cpa-launcher, or CPA itself. */
   binaryPath: string;
@@ -320,6 +346,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
     // instead of leaving a temporary directory behind.
     if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
+  // True when cpajs may serve its own panel for this stateDir; the config can
+  // still opt out by naming a panel repository on each evaluation.
+  const panelEligible =
+    panelFile !== undefined &&
+    options.management !== false &&
+    options.configPath === undefined &&
+    env.MANAGEMENT_STATIC_PATH === undefined;
 
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const deadline = Date.now() + startupTimeoutMs;
@@ -345,11 +378,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
         ? await options.config({ existing: await readManagedConfigObject(stateDir), reason: 'start' })
         : options.config;
     const pinnedPanel =
-      panelFile !== undefined &&
-      options.management !== false &&
-      options.configPath === undefined &&
-      env.MANAGEMENT_STATIC_PATH === undefined &&
-      initialConfig?.management?.['panel-github-repository'] === undefined;
+      panelEligible && initialConfig?.management?.['panel-github-repository'] === undefined;
 
     for (let attempt = 1; ; attempt++) {
       let prepared: PreparedConfig;
@@ -425,14 +454,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
         );
       }
 
-      if (pinnedPanel && prepared.management.servesPinnedPanel) {
-        // A copy in stateDir, so a later opt-in to auto-update (through the management
-        // API) makes CPA write there instead of into the installed package.
-        const staticDir = join(stateDir, 'static');
-        await mkdir(staticDir, { recursive: true });
-        await copyFile(panelFile!, join(staticDir, 'management.html'));
-        env.MANAGEMENT_STATIC_PATH = join(staticDir, 'management.html');
-      }
+      await applyPinnedPanel({ panelFile, panelEligible, pinnedPanel, prepared, stateDir, env });
 
       const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
       if (!dynamicPort && !(await isPortFree(host, port))) {
@@ -495,7 +517,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           afterStart: options.hooks?.afterStart,
           configFn,
           managedSecret,
-          pinnedPanel,
+          panelEligible,
           panelFile,
           cleanup,
         });
@@ -584,7 +606,7 @@ interface HandleInfo {
   /** Re-evaluated before each restart; `undefined` keeps the existing file. */
   configFn: ConfigFunction | undefined;
   managedSecret: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean } | undefined;
-  pinnedPanel: boolean;
+  panelEligible: boolean;
   panelFile: string | undefined;
   cleanup: () => Promise<void>;
 }
@@ -747,15 +769,19 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
           try {
             const existing = await readManagedConfigObject(info.stateDir);
             const next = await info.configFn({ existing, reason: 'restart' });
+            const pinnedPanel =
+              info.panelEligible && next.management?.['panel-github-repository'] === undefined;
             const prepared = await writeManagedConfig(next, info.stateDir, info.listen, info.managedSecret, {
-              pinnedPanel: info.pinnedPanel,
+              pinnedPanel,
             });
-            if (info.pinnedPanel && info.panelFile !== undefined && prepared.management.servesPinnedPanel) {
-              const staticDir = join(info.stateDir, 'static');
-              await mkdir(staticDir, { recursive: true });
-              await copyFile(info.panelFile, join(staticDir, 'management.html'));
-              info.env.MANAGEMENT_STATIC_PATH = join(staticDir, 'management.html');
-            }
+            await applyPinnedPanel({
+              panelFile: info.panelFile,
+              panelEligible: info.panelEligible,
+              pinnedPanel,
+              prepared,
+              stateDir: info.stateDir,
+              env: info.env,
+            });
             info.redact = createRedactor([
               info.managementKey,
               info.homeJwt,
