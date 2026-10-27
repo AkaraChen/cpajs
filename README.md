@@ -312,18 +312,23 @@ mutated.
 
 A same-name file without the marker is never overwritten. Reconcile throws `CpaReconcileError` with code
 `unmarked` (also for files owned by another caller, code `owned-by-other`) unless `adopt(name, body)` returns
-a revision. Adoption keeps the stored content, including tokens, writes only the marker, and then compares the
-returned revision with the desired one: equal leaves the file alone, different uploads the desired content.
-Returning `undefined` leaves the file unmanaged; a same-name unmarked file then still throws. `adopt` is also
-called for unmarked files in the prune range, so a recognized legacy file can be claimed and deleted.
+a revision or `{ revision, remove }`. Adoption keeps the stored content, including tokens, writes only the
+marker, and then compares the returned revision with the desired one: equal leaves the file alone, different
+uploads the desired content. Returning `{ revision, remove: ['chat_seed'] }` first deletes those top-level
+legacy fields from the kept content; listing `x-cpajs` in `remove` is ignored because reconcile always stamps
+its own marker. Returning `undefined` leaves the file unmanaged; a same-name unmarked file then still throws.
+`adopt` is also called for unmarked files in the prune range, so a recognized legacy file can be claimed and
+deleted.
 `files[].content` accepts an object, JSON text, bytes, or a `Blob`; strings and bytes are parsed and must
 resolve to a JSON object, which is checked before any request.
 
 `credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
 exposes as a runtime view. It returns a discriminated union: a file entry has `raw: AuthFileEntry` and its
 `name`, while a config entry has the provider key as `raw` and its group (without `keys`) as `group`. A config
-key is `disabled` when its own or its group's effective `excluded-models` contains `*`, which is what
-`PATCH /credentials/status` writes upstream.
+entry also carries `apiKey` when it has one: a native provider key or an OpenAI-compatible key entry. The field
+is **plaintext**, so treat a `listAll()` result as a secret; a keyless OpenAI-compatible group (itself the
+credential) and file entries have no `apiKey`. A config key is `disabled` when its own or its group's effective
+`excluded-models` contains `*`, which is what `PATCH /credentials/status` writes upstream.
 
 `credentials.setStatus` takes a file `name` or a config key's `auth_index`, and `credentials.delete` takes file
 names or one `{ auth_index }`. Upstream's status route can toggle native `api-keys` entries but requires the
@@ -334,7 +339,9 @@ the group are untouched, so a group-level `excluded-models: ["*"]` still disable
 key from its group, keeping an empty native-provider group. The last key of an `openai-compatibility` group
 removes the group, because a keyless compat group is itself a credential. OpenAI-compatible entries have no
 per-key switch (and disabling a keyless group clears its `auth_index`), so `setStatus` throws for them; use
-`delete({ auth_index })` instead.
+`delete({ auth_index })` instead. A `name` or `auth_index` that cpajs cannot resolve throws
+`CpaCredentialNotFoundError` from `setStatus`, `delete` and `modelsFor`; a 404 answered by upstream stays a
+`CpaHttpError` with its `errorCode`.
 
 `credentials.modelsFor` accepts either a selector (file `name` or `auth_index`) or a `listAll` entry; passing
 the entry skips the extra list/config requests. Config-key models follow CPA's own resolution (model aliases,
@@ -369,6 +376,9 @@ Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's tr
   `status`, `headers`, and `body` (parsed when JSON).
 - `CpaCredentialTokenError` when `requests.apiCallJson` cannot resolve `$TOKEN$`. It carries `status` and
   `errorCode`.
+- `CpaCredentialNotFoundError` when `credentials.setStatus`, `credentials.delete` or `credentials.modelsFor`
+  cannot resolve a `name` or `auth_index`. It carries `selector` (`{ name?, auth_index? }`). An upstream 404 is
+  still a `CpaHttpError`.
 - `CpaReconcileError` when `credentials.reconcile` will not overwrite a file. It carries `code` (`unmarked` or
   `owned-by-other`) and `file`.
 - `CpaNetworkError` when the request fails.

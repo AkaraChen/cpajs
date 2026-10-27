@@ -93,6 +93,39 @@ export class CpaCredentialTokenError extends CpaClientError {
   }
 }
 
+/** Identifies a credential that cpajs could not find. At least one field is normally set. */
+export interface CpaCredentialNotFoundSelector {
+  name?: string;
+  auth_index?: string;
+}
+
+/**
+ * cpajs resolved a credential selector to nothing.
+ *
+ * The client throws this from `credentials.setStatus`, `credentials.delete` and
+ * `credentials.modelsFor` when a `name` or `auth_index` lookup fails. A 404 from
+ * upstream is not wrapped: that stays a {@link CpaHttpError}, because the server
+ * answered the request and its `errorCode` carries the upstream reason.
+ */
+export class CpaCredentialNotFoundError extends CpaClientError {
+  override readonly name = 'CpaCredentialNotFoundError';
+  readonly selector: CpaCredentialNotFoundSelector;
+
+  constructor(selector: CpaCredentialNotFoundSelector, request: { method: string; url: string }) {
+    super(`${describeCredentialSelector(selector)} was not found.`, request);
+    this.selector = selector;
+  }
+}
+
+function describeCredentialSelector(selector: CpaCredentialNotFoundSelector): string {
+  if (selector.auth_index !== undefined && selector.name !== undefined) {
+    return `Credential with auth_index "${selector.auth_index}" and name "${selector.name}"`;
+  }
+  if (selector.auth_index !== undefined) return `Credential with auth_index "${selector.auth_index}"`;
+  if (selector.name !== undefined) return `Credential "${selector.name}"`;
+  return 'Credential';
+}
+
 export type CpaReconcileErrorCode =
   /** The file has no `x-cpajs` marker, so it may belong to someone else. */
   | 'unmarked'

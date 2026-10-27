@@ -1,5 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
+  type CpaClientError,
+  CpaCredentialNotFoundError,
   CpaCredentialTokenError,
   CpaHttpError,
   CpaReconcileError,
@@ -8,10 +10,14 @@ import {
   type AuthFileEntry,
   type ConfigCredentialGroup,
   type ConfigCredentialRaw,
+  type ConfigCredentialSummary,
   type CpaApiKeyProvider,
   type CpaConfig,
+  type CpaCredentialNotFoundSelector,
   type CredentialContent,
   type CredentialSummary,
+  type ReconcileAdoption,
+  type ReconcileAdoptionResult,
 } from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
@@ -515,6 +521,34 @@ describe('credentials', () => {
     expect(legacy).toEqual({ type: 'claude', chat_seed: 'seed-token', email: 'legacy@example.com' });
   });
 
+  it('removes legacy top-level fields when adopt returns an object', async () => {
+    const legacy = { type: 'claude', chat_seed: 'seed-token', access_token: 'token-1', email: 'legacy@example.com' };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({ observed_at: '', files: [{ name: 'chat-legacy.json', source: 'file' }] });
+      }
+      if (req.url.pathname.endsWith('/download')) return Response.json(legacy);
+      return Response.json({ status: 'ok' });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-legacy.json', content: { type: 'claude', api_key: 'new' }, revision: 'r1' }],
+      adopt: () => ({ revision: 'r1', remove: ['chat_seed', 'x-cpajs'] }),
+    });
+
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-legacy.json'], adopted: ['chat-legacy.json'] });
+    const posts = calls.filter((call) => call.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0]!.body)).toEqual({
+      type: 'claude',
+      access_token: 'token-1',
+      email: 'legacy@example.com',
+      'x-cpajs': { owner: 'chat', revision: 'r1' },
+    });
+    expect(legacy).toEqual({ type: 'claude', chat_seed: 'seed-token', access_token: 'token-1', email: 'legacy@example.com' });
+  });
+
   it('uploads the desired content after adoption when the revision differs', async () => {
     const legacy = { type: 'claude', chat_seed: 'seed-token' };
     const { client, calls } = mockClient((req) => {
@@ -631,6 +665,12 @@ describe('credentials', () => {
                 disabled: true,
                 models: [{ name: 'fake-model', alias: 'fake' }],
               },
+              {
+                name: 'fake-keys',
+                'base-url': 'https://fake-keys.test/v1',
+                keys: [{ 'api-key': 'compat-key', auth_index: 'cfg-compat' }],
+                models: [{ name: 'compat-model', alias: 'compat' }],
+              },
             ],
           },
         });
@@ -639,14 +679,20 @@ describe('credentials', () => {
     });
 
     const entries = await client.credentials.listAll();
-    expect(entries).toHaveLength(4);
+    expect(entries).toHaveLength(5);
     expect(entries[0]).toMatchObject({ source: 'file', name: 'claude-a.json', auth_index: 'file-1', provider: 'claude' });
     expect(entries[0]!.raw).toMatchObject({ name: 'claude-a.json', source: 'file' });
+    expect(entries[0]).not.toHaveProperty('apiKey');
     expect(entries[1]).toMatchObject({ source: 'config', provider: 'claude', label: 'team', auth_index: 'cfg-claude', disabled: false });
+    expect(entries[1]).toMatchObject({ apiKey: 'k' });
     expect('name' in entries[1]!).toBe(false);
     expect(entries[2]).toMatchObject({ source: 'config', provider: 'codex', label: 'codex group', auth_index: '', disabled: false });
+    expect(entries[2]).toMatchObject({ apiKey: 'k2' });
     expect(entries[3]).toMatchObject({ source: 'config', provider: 'fake', label: 'fake', auth_index: 'cfg-openai', disabled: true });
     expect(entries[3]!.raw).toMatchObject({ name: 'fake' });
+    expect(entries[3]).not.toHaveProperty('apiKey');
+    expect(entries[4]).toMatchObject({ source: 'config', provider: 'fake-keys', label: 'fake-keys', auth_index: 'cfg-compat' });
+    expect(entries[4]).toMatchObject({ apiKey: 'compat-key' });
     expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual(['GET /v8/management/credentials', 'GET /v8/management/config']);
   });
 
@@ -658,6 +704,7 @@ describe('credentials', () => {
       } else {
         expectTypeOf(summary.raw).toEqualTypeOf<ConfigCredentialRaw>();
         expectTypeOf(summary.group).toEqualTypeOf<ConfigCredentialGroup>();
+        expectTypeOf(summary.apiKey).toEqualTypeOf<string | undefined>();
         // @ts-expect-error only file summaries have a file name
         summary.name;
         // @ts-expect-error config groups never include their keys
@@ -665,6 +712,14 @@ describe('credentials', () => {
       }
     };
     expect(check).toBeTypeOf('function');
+  });
+
+  it('types the not-found error and adoption results', () => {
+    expectTypeOf<CpaCredentialNotFoundError['selector']>().toEqualTypeOf<CpaCredentialNotFoundSelector>();
+    expectTypeOf<CpaCredentialNotFoundError>().toMatchTypeOf<CpaClientError>();
+    expectTypeOf<ReconcileAdoption>().toMatchTypeOf<ReconcileAdoptionResult>();
+    expectTypeOf<string>().toMatchTypeOf<ReconcileAdoptionResult>();
+    expectTypeOf<ConfigCredentialSummary['apiKey']>().toEqualTypeOf<string | undefined>();
   });
 
   it('marks config keys disabled by key- or group-level excluded-models "*"', async () => {
@@ -1054,8 +1109,15 @@ describe('credentials', () => {
     const { client } = mockClient((req) =>
       req.url.pathname === '/v8/management/config' ? Response.json({ 'config-version': 8 }) : Response.json({ observed_at: '', files: [] }),
     );
-    await expect(client.credentials.modelsFor({ auth_index: 'missing' })).rejects.toThrow(/auth_index "missing" was not found/);
-    await expect(client.credentials.modelsFor({ name: 'missing.json' })).rejects.toThrow(/Credential "missing.json" was not found/);
+    const missingIndex = await client.credentials.modelsFor({ auth_index: 'missing' }).catch((error: unknown) => error);
+    expect(missingIndex).toBeInstanceOf(CpaCredentialNotFoundError);
+    expect(missingIndex).toMatchObject({ selector: { auth_index: 'missing' } });
+    expect(missingIndex).toHaveProperty('message', expect.stringMatching(/auth_index "missing" was not found/));
+
+    const missingName = await client.credentials.modelsFor({ name: 'missing.json' }).catch((error: unknown) => error);
+    expect(missingName).toBeInstanceOf(CpaCredentialNotFoundError);
+    expect(missingName).toMatchObject({ selector: { name: 'missing.json' } });
+    expect(missingName).toHaveProperty('message', expect.stringMatching(/Credential "missing.json" was not found/));
   });
 
   it('maps the remaining routes', async () => {
@@ -1240,8 +1302,15 @@ describe('credentials', () => {
     const { client, calls } = mockClient((req) =>
       req.url.pathname === '/v8/management/config' ? Response.json({ 'config-version': 8 }) : Response.json({ observed_at: '', files: [] }),
     );
-    await expect(client.credentials.setStatus({ auth_index: 'missing', disabled: true })).rejects.toThrow(/auth_index "missing" was not found/);
-    await expect(client.credentials.delete({ auth_index: 'missing' })).rejects.toThrow(/auth_index "missing" was not found/);
+    for (const run of [
+      () => client.credentials.setStatus({ auth_index: 'missing', disabled: true }),
+      () => client.credentials.delete({ auth_index: 'missing' }),
+    ]) {
+      const error = await run().catch((thrown: unknown) => thrown);
+      expect(error).toBeInstanceOf(CpaCredentialNotFoundError);
+      expect(error).toMatchObject({ selector: { auth_index: 'missing' } });
+      expect(error).toHaveProperty('message', expect.stringMatching(/auth_index "missing" was not found/));
+    }
     expect(calls.some((call) => call.method === 'PUT' || call.method === 'PATCH' || call.method === 'DELETE')).toBe(false);
   });
 });

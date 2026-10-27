@@ -12,6 +12,7 @@ import { Transport, type ClientOptions, type RawRequest, type TransportResponse 
 export {
   CpaAbortError,
   CpaClientError,
+  CpaCredentialNotFoundError,
   CpaCredentialTokenError,
   CpaHttpError,
   CpaNetworkError,
@@ -20,7 +21,7 @@ export {
   CpaTimeoutError,
   CpaUpstreamError,
 } from './errors.ts';
-export type { CpaReconcileErrorCode } from './errors.ts';
+export type { CpaCredentialNotFoundSelector, CpaReconcileErrorCode } from './errors.ts';
 export type { BaseUrl, ClientOptions, FetchLike, Query, QueryValue, RawRequest, RequestOptions, ResponseType, TransportResponse } from './transport.ts';
 export type {
   ConfigMutationOptions,
@@ -44,6 +45,8 @@ export type {
   CredentialSummary,
   FileCredentialSummary,
   ModelsForOptions,
+  ReconcileAdoption,
+  ReconcileAdoptionResult,
   ReconcileCredentialFile,
   ReconcileCredentialsInput,
   ReconcileCredentialsResult,
