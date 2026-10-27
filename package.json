@@ -31,10 +31,14 @@
       "types": "./dist/server/index.d.ts",
       "default": "./dist/server/index.js"
     },
+    "./binary": {
+      "types": "./dist/binary.d.ts",
+      "default": "./dist/binary.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node -e \"const fs=require('node:fs'); for (const f of ['binary-packages.cjs','binary-packages.d.cts']) fs.copyFileSync('src/'+f, 'dist/'+f)\"",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "biome lint .",
     "format": "biome format --write .",
@@ -46,6 +50,8 @@
     "cpa:build": "node scripts/build-binary.ts",
     "cpa:verify": "node scripts/verify-binary.ts",
     "panel:fetch": "node scripts/fetch-panel.ts",
+    "binary:generate": "node scripts/generate-binary-table.ts",
+    "binary:check": "node scripts/generate-binary-table.ts --check",
     "packages:assemble": "node scripts/assemble-packages.ts",
     "prepack": "pnpm run build",
     "packages:pack": "node scripts/pack.ts",

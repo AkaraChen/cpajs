@@ -1,8 +1,11 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
+import { generateBinaryTable } from '../../scripts/generate-binary-table.ts';
+import { PLATFORM_PACKAGES, resolvePlatformPackage } from '../../src/binary.ts';
 import { candidateTargets, resolveBinary } from '../../src/server/binary.ts';
 import {
   configSecrets,
@@ -17,7 +20,7 @@ import { buildArgs } from '../../src/server/args.ts';
 import { CpaBinaryError, CpaStartError, startServer } from '../../src/server/index.ts';
 import { connectHost, formatOrigin, isLoopbackHost } from '../../src/server/readiness.ts';
 import { createRedactor } from '../../src/server/redact.ts';
-import { TARGETS } from '../../src/server/targets.ts';
+import { TARGETS, packageName } from '../../src/server/targets.ts';
 
 let dir: string;
 beforeEach(async () => {
@@ -51,6 +54,27 @@ describe('targets', () => {
     expect(candidateTargets({ os: 'openbsd', cpu: 'arm64' }).map((t) => t.id)).toEqual(['openbsd-arm64']);
     // If libc is undetectable on Linux, only the static portable build can be offered.
     expect(candidateTargets({ os: 'linux', cpu: 'x64' }).map((t) => t.id)).toEqual(['linux-x64-musl']);
+  });
+});
+
+describe('binary entry', () => {
+  it('lists every target with its package name', () => {
+    expect(Object.keys(PLATFORM_PACKAGES)).toEqual(TARGETS.map((t) => t.id));
+    for (const target of TARGETS) {
+      expect(PLATFORM_PACKAGES[target.id as keyof typeof PLATFORM_PACKAGES]).toBe(packageName(target));
+    }
+  });
+
+  it('is generated from TARGETS without drift', async () => {
+    const generated = generateBinaryTable();
+    const source = fileURLToPath(new URL('../../src/binary-packages.cjs', import.meta.url));
+    const types = fileURLToPath(new URL('../../src/binary-packages.d.cts', import.meta.url));
+    expect(await readFile(source, 'utf8')).toBe(generated.source);
+    expect(await readFile(types, 'utf8')).toBe(generated.types);
+  });
+
+  it('returns undefined for unknown or uninstalled packages', () => {
+    expect(resolvePlatformPackage('not-a-target')).toBeUndefined();
   });
 });
 

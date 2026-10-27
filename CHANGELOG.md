@@ -4,6 +4,18 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `@cpajs/cpa/binary`: a static entry that lets bundlers trace the platform packages. Every target gets a literal
+  `require.resolve('@cpajs/<target>/package.json')` in a try/catch, generated from `TARGETS` by
+  `scripts/generate-binary-table.ts` and checked for drift by a unit test. The table is CommonJS so nft follows
+  it under its default settings. `resolveBinary` and `resolveLauncher` reuse the same table, without changing
+  how a target is chosen at runtime.
+- README: a "Bundling and deploying" section with Nitro (`traceDeps`), Vite SSR (`ssr.external`) and Next.js
+  (`serverExternalPackages`) examples, plus how to drop the extra gnu/musl package that Bun installs.
+
 ## 0.1.0-rc.4
 
 ### Added
