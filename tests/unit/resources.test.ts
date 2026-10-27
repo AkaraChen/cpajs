@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   CpaCredentialTokenError,
   CpaHttpError,
+  CpaResponseError,
   CpaUpstreamError,
   type CpaApiKeyProvider,
   type CpaConfig,
@@ -907,9 +908,14 @@ describe('apiCallJson', () => {
     expect(error).not.toBeInstanceOf(CpaCredentialTokenError);
   });
 
-  it('keeps a non-JSON body as text and returns undefined for an empty one', async () => {
+  it('throws CpaResponseError for a non-JSON 2xx body and returns undefined for an empty one', async () => {
     const plain = mockClient(() => Response.json({ status_code: 200, header: {}, body: 'pong' }));
-    await expect(plain.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: 'pong' });
+    const error = (await plain.client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaResponseError;
+    expect(error).toBeInstanceOf(CpaResponseError);
+    expect(error.status).toBe(200);
+    expect(error.body).toBe('pong');
+    const quoted = mockClient(() => Response.json({ status_code: 200, header: {}, body: '"pong"' }));
+    await expect(quoted.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: 'pong' });
     const empty = mockClient(() => Response.json({ status_code: 200, header: {}, body: '' }));
     await expect(empty.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: undefined });
   });
