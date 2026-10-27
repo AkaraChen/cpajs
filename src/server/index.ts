@@ -4,7 +4,14 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { buildArgs } from './args.ts';
 import { resolveBinary, resolveLauncher } from './binary.ts';
-import { inspectConfigFile, readManagedConfig, updateManagedSecret, writeManagedConfig, type PreparedConfig } from './config.ts';
+import {
+  inspectConfigFile,
+  readManagedConfig,
+  readManagedConfigObject,
+  updateManagedSecret,
+  writeManagedConfig,
+  type PreparedConfig,
+} from './config.ts';
 import { CpaStartError } from './errors.ts';
 import { isLogLevel } from './logs.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
@@ -15,8 +22,10 @@ import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import { createWarner } from './warnings.ts';
 import type {
+  AfterStartContext,
   CpaServer,
   CpaServerEvents,
+  ConfigContext,
   ExitResult,
   LogLine,
   LogMinLevel,
@@ -29,6 +38,7 @@ import type {
   StopOptions,
 } from './types.ts';
 import { createClient } from '../client/index.ts';
+import type { CpaConfig } from '../client/types/config.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
 export type { HostPlatform, Libc, ResolvedBinary } from './binary.ts';
@@ -52,7 +62,10 @@ const DEFAULT_STABLE_AFTER_MS = 60_000;
 // e.g. by a dev server that reloads modules without restarting the process.
 const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
+type ConfigFunction = (ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>;
+
 function validate(options: StartServerOptions): void {
+  const config = typeof options.config === 'function' ? undefined : options.config;
   if (options.singleton === true && options.configPath === undefined && options.stateDir === undefined) {
     throw new CpaStartError(
       'invalid-options',
@@ -61,6 +74,12 @@ function validate(options: StartServerOptions): void {
   }
   if (options.config !== undefined && options.configPath !== undefined) {
     throw new CpaStartError('invalid-options', 'config and configPath are mutually exclusive.');
+  }
+  if (typeof options.config === 'function' && options.overwriteConfig === true) {
+    throw new CpaStartError(
+      'invalid-options',
+      'config as a function always replaces the managed config; remove overwriteConfig (or pass a config object).',
+    );
   }
   if (options.configPath !== undefined && (options.host !== undefined || options.port !== undefined)) {
     throw new CpaStartError('invalid-options', 'host and port cannot be combined with configPath; set them in the file.');
@@ -129,7 +148,7 @@ function validate(options: StartServerOptions): void {
     }
     return;
   }
-  const configuredSecret = options.config?.management?.['secret-key'];
+  const configuredSecret = config?.management?.['secret-key'];
   if (typeof configuredSecret === 'string' && configuredSecret.trim() !== '') {
     throw new CpaStartError(
       'invalid-options',
@@ -153,8 +172,8 @@ function buildEnv(options: StartServerOptions, management: ResolvedManagement): 
   return env;
 }
 
-function configListen(options: StartWithConfigOptions): { host: string; port: number } {
-  const server = (options.config?.server ?? {}) as { host?: unknown; port?: unknown };
+function configListen(options: StartWithConfigOptions, config: CpaConfig | undefined): { host: string; port: number } {
+  const server = (config?.server ?? {}) as { host?: unknown; port?: unknown };
   const host = options.host ?? (typeof server.host === 'string' ? server.host : '127.0.0.1');
   const port = options.port ?? (typeof server.port === 'number' ? server.port : 0);
   return { host, port };
@@ -162,6 +181,32 @@ function configListen(options: StartWithConfigOptions): { host: string; port: nu
 
 function abortError(signal: AbortSignal, output: string, message = 'startServer was aborted.'): CpaStartError {
   return new CpaStartError('aborted', message, { output, cause: signal.reason });
+}
+
+/**
+ * Copies the bundled panel into `stateDir` when the prepared config would serve
+ * it, and points CPA at that copy. Removes a path cpajs set on an earlier start
+ * once the config stops opting in, so CPA can fetch the panel it names instead.
+ */
+async function applyPinnedPanel(options: {
+  panelFile: string | undefined;
+  panelEligible: boolean;
+  pinnedPanel: boolean;
+  prepared: PreparedConfig;
+  stateDir: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const staticPath = join(options.stateDir, 'static', 'management.html');
+  if (options.pinnedPanel && options.panelFile !== undefined && options.prepared.management.servesPinnedPanel) {
+    // A copy in stateDir, so a later opt-in to auto-update (through the management
+    // API) makes CPA write there instead of into the installed package.
+    await mkdir(join(options.stateDir, 'static'), { recursive: true });
+    await copyFile(options.panelFile, staticPath);
+    options.env.MANAGEMENT_STATIC_PATH = staticPath;
+  } else if (options.panelEligible && options.env.MANAGEMENT_STATIC_PATH === staticPath) {
+    // Only cpajs can have set this path; a caller-provided value makes panelEligible false.
+    delete options.env.MANAGEMENT_STATIC_PATH;
+  }
 }
 
 interface LaunchOptions {
@@ -301,7 +346,12 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
   const { signal } = options;
   if (signal?.aborted) throw abortError(signal, '');
 
-  const management = await resolveManagement(options);
+  const management = await resolveManagement({
+    management: options.management,
+    managementKey: options.managementKey,
+    configPath: options.configPath,
+    config: typeof options.config === 'function' ? undefined : options.config,
+  });
   const command = (options as { [internalCommand]?: InternalCommand })[internalCommand];
   const binary =
     command === undefined
@@ -327,12 +377,6 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
   // The pinned control panel (see panel.ts) is used only in a config cpajs manages,
   // when the caller has not chosen another panel source.
   const panelFile = command !== undefined ? command.panel : bundledPanel();
-  const pinnedPanel =
-    panelFile !== undefined &&
-    options.management !== false &&
-    options.configPath === undefined &&
-    env.MANAGEMENT_STATIC_PATH === undefined &&
-    options.config?.management?.['panel-github-repository'] === undefined;
   const warn = createWarner(options);
   if (management.generated) {
     warn(
@@ -348,6 +392,13 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
     // instead of leaving a temporary directory behind.
     if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
+  // True when cpajs may serve its own panel for this stateDir; the config can
+  // still opt out by naming a panel repository on each evaluation.
+  const panelEligible =
+    panelFile !== undefined &&
+    options.management !== false &&
+    options.configPath === undefined &&
+    env.MANAGEMENT_STATIC_PATH === undefined;
 
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const deadline = Date.now() + startupTimeoutMs;
@@ -364,6 +415,17 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
   let reservation: PortReservation | undefined;
   let wroteConfig = false;
   try {
+    // A config function is evaluated once per start, before the first launch,
+    // and again before every restart.
+    const configFn: ConfigFunction | undefined =
+      typeof options.config === 'function' ? options.config : undefined;
+    const initialConfig: CpaConfig | undefined =
+      typeof options.config === 'function'
+        ? await options.config({ existing: await readManagedConfigObject(stateDir), reason: 'start' })
+        : options.config;
+    const pinnedPanel =
+      panelEligible && initialConfig?.management?.['panel-github-repository'] === undefined;
+
     for (let attempt = 1; ; attempt++) {
       let prepared: PreparedConfig;
       let dynamicPort = false;
@@ -375,6 +437,17 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
             'management.key conflicts with the management.secret-key in configPath. Keep one key: remove management.key or remove secret-key from the file.',
           );
         }
+      } else if (configFn !== undefined) {
+        // The function ran once before the loop; a dynamic-port retry only
+        // writes the same result again with a fresh port.
+        const listen = configListen(options, initialConfig);
+        if (listen.port === 0) {
+          reservation = await findFreePort(listen.host);
+          listen.port = reservation.port;
+          dynamicPort = true;
+        }
+        prepared = await writeManagedConfig(initialConfig ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
+        wroteConfig = true;
       } else {
         // The file belongs to CPA after the first start: management API writes and
         // CPA's own normalisation must survive later starts.
@@ -400,13 +473,13 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
             `Kept the existing config at ${existing.configPath}; this start's config, host and port were not applied. Pass overwriteConfig: true to replace it.`,
           );
         } else {
-          const listen = configListen(options);
+          const listen = configListen(options, initialConfig);
           if (listen.port === 0) {
             reservation = await findFreePort(listen.host);
             listen.port = reservation.port;
             dynamicPort = true;
           }
-          prepared = await writeManagedConfig(options.config ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
+          prepared = await writeManagedConfig(initialConfig ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
           wroteConfig = true;
         }
       }
@@ -427,14 +500,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
         );
       }
 
-      if (pinnedPanel && prepared.management.servesPinnedPanel) {
-        // A copy in stateDir, so a later opt-in to auto-update (through the management
-        // API) makes CPA write there instead of into the installed package.
-        const staticDir = join(stateDir, 'static');
-        await mkdir(staticDir, { recursive: true });
-        await copyFile(panelFile!, join(staticDir, 'management.html'));
-        env.MANAGEMENT_STATIC_PATH = join(staticDir, 'management.html');
-      }
+      await applyPinnedPanel({ panelFile, panelEligible, pinnedPanel, prepared, stateDir, env });
 
       const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
       if (!dynamicPort && !(await isPortFree(host, port))) {
@@ -468,7 +534,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
       });
 
       if (result.kind === 'ready') {
-        return createHandle(result.proc, {
+        const handle = createHandle(result.proc, {
           binaryPath: binary.path,
           managementKey: management.key,
           noClientReason:
@@ -487,14 +553,49 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           env,
           extraArgs,
           redact,
+          redactExtras: options.redact ?? [],
+          homeJwt: options.home?.jwt,
           onLog: options.onLog,
           minLevel: options.logs?.minLevel,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           restart: options.restart,
+          afterStart: options.hooks?.afterStart,
+          configFn,
+          managedSecret,
+          panelEligible,
+          panelFile,
           cleanup,
           onSettled,
         });
+        if (options.hooks?.afterStart !== undefined) {
+          let hookError: unknown;
+          let hookFailed = false;
+          try {
+            await options.hooks.afterStart({
+              server: handle,
+              client: management.key === undefined ? undefined : handle.client(),
+              reason: 'start',
+            });
+          } catch (cause) {
+            hookError = cause;
+            hookFailed = true;
+          }
+          if (signal?.aborted) {
+            const output = handle.recentLogs.map((log) => log.line).join('\n');
+            await handle.stop();
+            throw abortError(signal, output);
+          }
+          if (hookFailed) {
+            await handle.stop();
+            throw new CpaStartError(
+              'hook-failed',
+              `afterStart hook failed: ${redact((hookError as Error)?.message ?? String(hookError))}`,
+              { cause: hookError },
+            );
+          }
+        }
+        return handle;
       }
       if (result.kind === 'retry') continue;
       throw result.error;
@@ -552,11 +653,19 @@ interface HandleInfo {
   env: NodeJS.ProcessEnv;
   extraArgs: readonly string[];
   redact: (text: string) => string;
+  redactExtras: readonly string[];
+  homeJwt: string | undefined;
   onLog?: ((log: LogLine) => void) | undefined;
   minLevel: LogMinLevel | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   restart: RestartPolicy | undefined;
+  afterStart: ((ctx: AfterStartContext) => void | Promise<void>) | undefined;
+  /** Re-evaluated before each restart; `undefined` keeps the existing file. */
+  configFn: ConfigFunction | undefined;
+  managedSecret: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean } | undefined;
+  panelEligible: boolean;
+  panelFile: string | undefined;
   cleanup: () => Promise<void>;
   /** Removes the singleton entry once this handle has stopped. */
   onSettled?: (() => void) | undefined;
@@ -717,6 +826,38 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
           throw error;
         }
 
+        if (info.configFn !== undefined) {
+          try {
+            const existing = await readManagedConfigObject(info.stateDir);
+            const next = await info.configFn({ existing, reason: 'restart' });
+            const pinnedPanel =
+              info.panelEligible && next.management?.['panel-github-repository'] === undefined;
+            const prepared = await writeManagedConfig(next, info.stateDir, info.listen, info.managedSecret, {
+              pinnedPanel,
+            });
+            await applyPinnedPanel({
+              panelFile: info.panelFile,
+              panelEligible: info.panelEligible,
+              pinnedPanel,
+              prepared,
+              stateDir: info.stateDir,
+              env: info.env,
+            });
+            info.redact = createRedactor([
+              info.managementKey,
+              info.homeJwt,
+              ...prepared.secrets,
+              ...info.redactExtras,
+            ]);
+          } catch (error) {
+            const retry = willRetry();
+            emit('restart-failed', { error, attempt, willRetry: retry });
+            if (retry && state === 'restarting') state = 'backoff';
+            else await settle(previousExit);
+            throw error;
+          }
+        }
+
         // Reuse the config file as CPA left it. Rewriting it here would discard
         // changes made through the management API during the previous run (#13).
         const result = await launchProcess({
@@ -750,6 +891,46 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
 
         currentProc = result.proc;
         currentReadyAt = Date.now();
+
+        if (info.afterStart !== undefined) {
+          let hookError: unknown;
+          let hookFailed = false;
+          try {
+            await info.afterStart({
+              server: handle,
+              client: info.managementKey === undefined ? undefined : handle.client(),
+              reason: 'restart',
+            });
+          } catch (cause) {
+            hookError = cause;
+            hookFailed = true;
+          }
+
+          // stop() aborts the restart and waits for this task, so a hook that
+          // finishes after stop() must not put the handle back into 'running'.
+          if (signal.aborted) {
+            const exit = await result.proc.stop(info.stopTimeoutMs);
+            const error = abortError(signal, result.proc.output(), 'restart was aborted.');
+            emit('restart-failed', { error, attempt, willRetry: false });
+            await settle(exit);
+            throw error;
+          }
+
+          if (hookFailed) {
+            const hookExit = await result.proc.stop(info.stopTimeoutMs);
+            const error = new CpaStartError(
+              'hook-failed',
+              `afterStart hook failed: ${info.redact((hookError as Error)?.message ?? String(hookError))}`,
+              { cause: hookError },
+            );
+            const retry = willRetry();
+            emit('restart-failed', { error, attempt, willRetry: retry });
+            if (retry && state === 'restarting') state = 'backoff';
+            else await settle(hookExit);
+            throw error;
+          }
+        }
+
         watch(result.proc);
         state = 'running';
         emit('restarted', { reason, attempt, originChanged: false });

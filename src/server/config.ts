@@ -235,6 +235,27 @@ export async function readManagedConfig(stateDir: string): Promise<PreparedConfi
 }
 
 /**
+ * Reads the managed config file in `stateDir` as a plain object, without the
+ * listener validation of {@link readManagedConfig}. Used to show a config
+ * function what is currently on disk; an absent file returns `undefined`.
+ */
+export async function readManagedConfigObject(stateDir: string): Promise<CpaConfig | undefined> {
+  const configPath = join(stateDir, MANAGED_CONFIG_FILE);
+  let text: string;
+  try {
+    text = await readFile(configPath, 'utf8');
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw new CpaStartError('invalid-options', `Cannot read ${configPath}.`, { cause });
+  }
+  try {
+    return parseYaml(text, { merge: true }) as CpaConfig;
+  } catch (cause) {
+    throw new CpaStartError('invalid-options', `${configPath} is not valid YAML.`, { cause });
+  }
+}
+
+/**
  * Sets `management.secret-key` and `management.allow-remote` in a reused
  * managed config, leaving every other key and comment as CPA left them.
  * The legacy `remote-management` section is dropped so it cannot shadow them.

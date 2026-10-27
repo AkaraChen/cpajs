@@ -35,6 +35,16 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   each returning an unsubscribe function. `exit` reports `code`, `signal`, `recentLogs` and `willRestart`;
   restart events carry `reason` and `attempt`, and `restarted` also has `originChanged` (currently always
   `false`). Listener errors are reported through `process.emitWarning`.
+- `config` accepts a function as well as an object. It is called before the first start and before every restart
+  with `{ existing, reason: 'start' | 'restart' }`, where `existing` is the parsed current
+  `<stateDir>/config.yaml` (or `undefined`), and its result replaces the file while cpajs still fills in the
+  listener, management secret and panel fields. It cannot be combined with `overwriteConfig` and never emits the
+  `configReused` warning; the object form keeps its previous behaviour. The management key is resolved before the
+  function runs, so a `management['secret-key']` it returns does not choose the key behind `server.client()`.
+- `hooks.afterStart({ server, client, reason })` runs after each process is ready, on the first start and on
+  every restart (manual or automatic). `client` is `server.client()` when cpajs knows the plaintext management
+  key, else `undefined`. A throw fails `startServer` with `CpaStartError` code `hook-failed` after stopping the
+  process, or counts as a failed restart (`restart-failed`, then backoff or rejection).
 - `@cpajs/cpa/binary`: a static entry that lets bundlers trace the platform packages. Every target gets a literal
   `require.resolve('@cpajs/<target>/package.json')` in a try/catch, generated from `TARGETS` by
   `scripts/generate-binary-table.ts` and checked for drift by a unit test. The table is CommonJS so nft follows

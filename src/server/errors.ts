@@ -24,6 +24,8 @@ export type CpaStartErrorCode =
   | 'timeout'
   /** The `signal` passed to `startServer` was aborted. */
   | 'aborted'
+  /** An `afterStart` hook threw. */
+  | 'hook-failed'
   /** `restart` was called after the server stopped. */
   | 'stopped';
 

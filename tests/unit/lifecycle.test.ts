@@ -13,6 +13,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   CpaStartError,
   startServer,
+  type CpaConfig,
   type CpaServer,
   type ExitEvent,
   type LogLine,
@@ -804,6 +805,297 @@ describe('server lifecycle (fake binary)', () => {
         process.off('warning', capture);
         await server.stop();
       }
+    });
+  });
+
+  describe('config function and afterStart hook', () => {
+    interface ConfigCall {
+      reason: 'start' | 'restart';
+      existing: CpaConfig | undefined;
+    }
+
+    it('passes the existing managed config to a config function and rewrites it on every start', async () => {
+      const calls: ConfigCall[] = [];
+      const config = (ctx: ConfigCall): CpaConfig => {
+        calls.push({ reason: ctx.reason, existing: ctx.existing });
+        return { routing: { strategy: calls.length === 1 ? 'fill-first' : 'round-robin' } };
+      };
+
+      const first = await startFake({ stateDir: dir, config });
+      expect(calls.map((c) => c.reason)).toEqual(['start']);
+      expect(calls[0]!.existing).toBeUndefined();
+      expect(parseYaml(await readFile(first.configPath, 'utf8')).routing).toEqual({ strategy: 'fill-first' });
+      await first.stop();
+
+      // A value CPA or the management API persisted must be visible to the next call.
+      const file = join(dir, 'config.yaml');
+      const runtime = parseYaml(await readFile(file, 'utf8'));
+      runtime.routing = { strategy: 'auto' };
+      await writeFile(file, stringifyYaml(runtime));
+
+      const warnings: CpaWarning[] = [];
+      const second = await startFake({ stateDir: dir, config, onWarning: (w) => warnings.push(w) });
+      expect(calls.map((c) => c.reason)).toEqual(['start', 'start']);
+      expect(calls[1]!.existing?.routing).toEqual({ strategy: 'auto' });
+      expect(warnings.map((w) => w.code)).not.toContain('configReused');
+      expect(parseYaml(await readFile(second.configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+      await second.stop();
+    });
+
+    it('re-evaluates a config function before a manual restart and keeps the original listener', async () => {
+      const calls: ConfigCall[] = [];
+      const server = await startFake({
+        stateDir: dir,
+        config: (ctx) => {
+          calls.push({ reason: ctx.reason, existing: ctx.existing });
+          return { routing: { strategy: calls.length === 1 ? 'fill-first' : 'round-robin' } };
+        },
+      });
+      const origin = server.origin;
+      const port = server.port;
+      const file = server.configPath;
+
+      const runtime = parseYaml(await readFile(file, 'utf8'));
+      runtime.routing = { strategy: 'auto' };
+      await writeFile(file, stringifyYaml(runtime));
+      await server.restart();
+
+      expect(calls.map((c) => c.reason)).toEqual(['start', 'restart']);
+      expect(calls[1]!.existing?.routing).toEqual({ strategy: 'auto' });
+      expect(server.origin).toBe(origin);
+      expect(server.port).toBe(port);
+      expect(parseYaml(await readFile(file, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+      await server.stop();
+    });
+
+    it('re-evaluates a config function on an auto restart', async () => {
+      const calls: ConfigCall[] = [];
+      const server = await startFake({
+        config: (ctx) => {
+          calls.push({ reason: ctx.reason, existing: ctx.existing });
+          return { routing: { strategy: calls.length === 1 ? 'fill-first' : 'round-robin' } };
+        },
+        restart: { onUnexpectedExit: true, backoffMs: [10] },
+      });
+      const oldPid = server.pid;
+      const restarted = new Promise<RestartedEvent>((resolve) => server.on('restarted', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      await restarted;
+
+      expect(server.pid).not.toBe(oldPid);
+      expect(calls.map((c) => c.reason)).toEqual(['start', 'restart']);
+      expect(calls[1]!.existing?.routing).toEqual({ strategy: 'fill-first' });
+      expect(parseYaml(await readFile(server.configPath, 'utf8')).routing).toEqual({ strategy: 'round-robin' });
+      await server.stop();
+    });
+
+    it('calls afterStart after the first start and every restart with a ready server and client', async () => {
+      const calls: { reason: 'start' | 'restart'; client: boolean; healthy: boolean }[] = [];
+      const server = await startFake({
+        stateDir: dir,
+        management: { key: 'hook-management-key' },
+        hooks: {
+          afterStart: async (ctx) => {
+            const health = await fetch(`${ctx.server.origin}/healthz`);
+            calls.push({ reason: ctx.reason, client: ctx.client !== undefined, healthy: health.ok });
+          },
+        },
+      });
+
+      expect(calls).toEqual([{ reason: 'start', client: true, healthy: true }]);
+      await server.restart();
+      expect(calls.map((c) => c.reason)).toEqual(['start', 'restart']);
+      expect(calls.every((c) => c.client && c.healthy)).toBe(true);
+      await server.stop();
+    });
+
+    it('sees the new process from afterStart during a restart', async () => {
+      const pids: number[] = [];
+      const processes: CpaServer['process'][] = [];
+      const server = await startFake({
+        hooks: {
+          afterStart: (ctx) => {
+            pids.push(ctx.server.pid);
+            processes.push(ctx.server.process);
+          },
+        },
+      });
+      const firstPid = server.pid;
+      const firstProcess = server.process;
+
+      await server.restart();
+
+      expect(pids).toEqual([firstPid, server.pid]);
+      expect(pids[1]).not.toBe(firstPid);
+      expect(processes[1]).toBe(server.process);
+      expect(processes[1]).not.toBe(firstProcess);
+      await server.stop();
+    });
+
+    it('stops a restart whose afterStart is still running when stop() is called', async () => {
+      let releaseHook!: () => void;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      let hookEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        hookEntered = resolve;
+      });
+      let calls = 0;
+      const server = await startFake({
+        hooks: {
+          afterStart: async () => {
+            calls++;
+            if (calls === 2) {
+              hookEntered();
+              await hookGate;
+            }
+          },
+        },
+      });
+      const restarted: RestartedEvent[] = [];
+      server.on('restarted', (event) => restarted.push(event));
+
+      const restarting = startError(server.restart());
+      await entered;
+      const stopping = server.stop();
+      releaseHook();
+
+      const [error, exit] = await Promise.all([restarting, stopping]);
+      expect(error.code).toBe('aborted');
+      expect(error.message).toContain('restart was aborted');
+      expect(restarted).toHaveLength(0);
+      expect(await server.exited).toEqual(exit);
+      expect(existsSync(server.stateDir)).toBe(false);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('stops the handle when the first start is aborted during afterStart', async () => {
+      const controller = new AbortController();
+      let stateDir: string | undefined;
+      let releaseHook!: () => void;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      let hookEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        hookEntered = resolve;
+      });
+
+      const starting = startError(
+        startFake({
+          signal: controller.signal,
+          hooks: {
+            afterStart: async (ctx) => {
+              stateDir = ctx.server.stateDir;
+              hookEntered();
+              await hookGate;
+            },
+          },
+        }),
+      );
+      await entered;
+      controller.abort(new Error('stop it'));
+      releaseHook();
+
+      const error = await starting;
+      expect(error.code).toBe('aborted');
+      expect(error.cause).toEqual(new Error('stop it'));
+      expect(existsSync(stateDir!)).toBe(false);
+    });
+
+    it('passes client undefined when cpajs does not know the plaintext key', async () => {
+      let seen: unknown = 'unset';
+      const server = await startFake({
+        management: false,
+        hooks: {
+          afterStart: (ctx) => {
+            seen = ctx.client;
+          },
+        },
+      });
+      expect(seen).toBeUndefined();
+      await server.stop();
+    });
+
+    it('fails startServer, stops the process and removes the temp dir when afterStart throws on the first start', async () => {
+      let stateDir: string | undefined;
+      let pid: number | undefined;
+      const error = await startError(
+        startFake({
+          hooks: {
+            afterStart: (ctx) => {
+              stateDir = ctx.server.stateDir;
+              pid = ctx.server.pid;
+              throw new Error('hook boom');
+            },
+          },
+        }),
+      );
+
+      expect(error.code).toBe('hook-failed');
+      expect(error.cause).toEqual(new Error('hook boom'));
+      expect(existsSync(stateDir!)).toBe(false);
+      expect(() => process.kill(pid!, 0)).toThrow();
+    });
+
+    it('treats an afterStart failure on a manual restart as a failed restart', async () => {
+      let calls = 0;
+      const failures: RestartFailedEvent[] = [];
+      const server = await startFake({
+        hooks: {
+          afterStart: () => {
+            calls++;
+            if (calls === 2) throw new Error('restart hook boom');
+          },
+        },
+      });
+      const stateDir = server.stateDir;
+      server.on('restart-failed', (event) => failures.push(event));
+
+      const error = await startError(server.restart());
+      expect(error.code).toBe('hook-failed');
+      expect(error.cause).toEqual(new Error('restart hook boom'));
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: false });
+      expect(failures[0]!.error).toBe(error);
+      expect(existsSync(stateDir)).toBe(false);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('backs off and gives up when afterStart keeps failing during auto restart', async () => {
+      const counter = join(dir, 'runs');
+      let calls = 0;
+      const failures: RestartFailedEvent[] = [];
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter },
+        restart: { onUnexpectedExit: true, backoffMs: [10], maxAttempts: 2 },
+        hooks: {
+          afterStart: () => {
+            calls++;
+            if (calls > 1) throw new Error('auto hook boom');
+          },
+        },
+      });
+      server.on('restart-failed', (event) => failures.push(event));
+
+      process.kill(server.pid, 'SIGKILL');
+      await server.exited;
+
+      expect(failures.map((f) => f.willRetry)).toEqual([true, false]);
+      expect(
+        failures.every((f) => f.error instanceof CpaStartError && f.error.code === 'hook-failed'),
+      ).toBe(true);
+      expect(await readFile(counter, 'utf8')).toBe('3');
+      expect(existsSync(server.stateDir)).toBe(false);
+      await server.stop();
+    });
+
+    it('rejects a function config together with overwriteConfig', async () => {
+      const error = await startError(startFake({ config: () => ({}), overwriteConfig: true }));
+      expect(error.code).toBe('invalid-options');
+      expect(error.message).toContain('overwriteConfig');
     });
   });
 });
