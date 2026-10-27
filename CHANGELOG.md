@@ -4,6 +4,21 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `scripts/wait-for-packages.ts` polls the npm registry until every `@cpajs/<target>@<version>` resolves.
+  Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds) fails
+  the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
+
+### Changed
+
+- The release workflow publishes the platform packages, waits for all of them to resolve, and only then
+  publishes `@cpajs/cpa`. A platform package can still return a cached 404 minutes after its publish;
+  publishing the main package during that window lets package managers silently skip the optional
+  dependency and write an incomplete lockfile.
+
 ## 0.1.0-rc.5
 
 ### Added

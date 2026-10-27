@@ -420,9 +420,10 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | `assemble-packages.ts` | Create the `@cpajs/*` platform packages. |
 | `pack.ts` | Produce the tarballs. |
 | `install-test.ts` | Install the tarballs through a local registry with npm, pnpm or bun, and run them. |
+| `wait-for-packages.ts` | Poll the npm registry until every platform package resolves at a version; run it before publishing the main package. |
 | `trust-publishers.ts` | Configure npm trusted publishing for all packages (run locally after the first publish). |
 
-`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). There is no npm token; `trust-publishers.ts` configures the trusted publisher for every package. A newly added platform package has to exist on npm before it can be trusted.
+`.github/workflows/release.yml` runs these steps across the whole platform matrix and publishes on `v*` tags through npm trusted publishing (OIDC). Prerelease versions such as `0.0.1-alpha-1` go to a matching dist-tag (`alpha`). There is no npm token; `trust-publishers.ts` configures the trusted publisher for every package. A newly added platform package has to exist on npm before it can be trusted. The publish job runs `wait-for-packages.ts --version <version>` after publishing the platform packages and before the main package, so `@cpajs/cpa` is not published while one of its optional dependencies still 404s (registry metadata is CDN-cached). It can be run locally against an already published release, e.g. `node scripts/wait-for-packages.ts --version 0.1.0-rc.5`; `--timeout` and `--interval` take seconds.
 
 ## License
 
