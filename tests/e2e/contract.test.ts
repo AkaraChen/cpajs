@@ -9,15 +9,7 @@ import { crc32 } from 'node:zlib';
 import { compareSync } from 'bcryptjs';
 import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import {
-  CpaCredentialNotFoundError,
-  CpaCredentialTokenError,
-  CpaHttpError,
-  CpaReconcileError,
-  CpaUpstreamError,
-  createClient,
-  type CpaClient,
-} from '../../src/client/index.ts';
+import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
 import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './helpers.ts';
@@ -168,33 +160,6 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.errorCode).toBe('precondition_failed');
     });
 
-    it('updates a node with If-Match and reconciles changed sections wholesale', async () => {
-      const apiKeys = await client.config.getPath('api-keys');
-      expect(JSON.stringify(apiKeys.data)).toContain('auth_index');
-
-      // Writing the read value back succeeds only because update strips auth_index.
-      const updated = await client.config.update('api-keys', (current) => current);
-      expect(updated.written).toBe(true);
-      expect(updated.etag).toMatch(/^"[0-9a-f]{64}"$/);
-
-      const current = await client.config.get();
-      await expect(client.config.reconcile(current.data)).resolves.toEqual({ written: false, changed: [], etag: current.etag });
-
-      const changed = await client.config.reconcile({ routing: { strategy: 'fill-first', 'session-affinity-ttl': '1h' } });
-      expect(changed.written).toBe(true);
-      expect(changed.changed).toEqual(['routing']);
-      expect((await client.config.getPath('routing/session-affinity-ttl')).data).toBe('1h');
-
-      // Sections are replaced wholesale: dropping the key removes it, and the next run converges.
-      const removed = await client.config.reconcile({ routing: { strategy: 'fill-first' } });
-      expect(removed.changed).toEqual(['routing']);
-      await expect(client.config.getPath('routing/session-affinity-ttl')).rejects.toMatchObject({ status: 404 });
-      await expect(client.config.reconcile({ routing: { strategy: 'fill-first' } })).resolves.toMatchObject({
-        written: false,
-        changed: [],
-      });
-    });
-
     it('rejects invalid documents with the native error', async () => {
       const error = (await client.config.patch({ bogus: 1 } as never).catch((e: unknown) => e)) as CpaHttpError;
       expect(error.status).toBe(400);
@@ -331,123 +296,6 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.errorCode).toBe('file not found');
     });
 
-    it('reports an unresolved selector with CpaCredentialNotFoundError', async () => {
-      const missing = 'ffffffffffffffff';
-      for (const run of [
-        () => client.credentials.modelsFor({ auth_index: missing }),
-        () => client.credentials.setStatus({ auth_index: missing, disabled: true }),
-        () => client.credentials.delete({ auth_index: missing }),
-      ]) {
-        const error = await run().catch((e: unknown) => e);
-        expect(error).toBeInstanceOf(CpaCredentialNotFoundError);
-        expect(error).toMatchObject({ selector: { auth_index: missing } });
-      }
-
-      const byName = await client.credentials.modelsFor({ name: 'e2e-missing.json' }).catch((e: unknown) => e);
-      expect(byName).toBeInstanceOf(CpaCredentialNotFoundError);
-      expect(byName).toMatchObject({ selector: { name: 'e2e-missing.json' } });
-    });
-
-    it('lists files and config keys, and resolves models for both', async () => {
-      await client.credentials.upload({ name: 'e2e-list-all.json', content: { type: 'claude', email: 'list-all@example.com', api_key: 'sk-list' } });
-      try {
-        const entries = await client.credentials.listAll();
-        const file = entries.find((entry) => entry.source === 'file' && entry.name === 'e2e-list-all.json');
-        expect(file).toMatchObject({ source: 'file', provider: 'claude', disabled: false });
-        expect(file).not.toHaveProperty('apiKey');
-        expect(file!.auth_index).not.toBe('');
-
-        const config = entries.find((entry) => entry.source === 'config' && entry.provider === 'fake');
-        expect(config).toMatchObject({ source: 'config', label: 'fake', disabled: false, apiKey: 'upstream-key' });
-        expect(config!.auth_index).not.toBe('');
-
-        await expect(client.credentials.modelsFor({ name: 'e2e-list-all.json' })).resolves.toBeInstanceOf(Array);
-        await expect(client.credentials.modelsFor({ auth_index: config!.auth_index })).resolves.toContainEqual(
-          expect.objectContaining({ id: 'fake-model' }),
-        );
-        await expect(client.credentials.modelsFor({ auth_index: config!.auth_index }, { details: true })).resolves.toContainEqual(
-          expect.objectContaining({ id: 'fake-model' }),
-        );
-        await expect(client.credentials.modelsFor(file!)).resolves.toBeInstanceOf(Array);
-        await expect(client.credentials.modelsFor(config!)).resolves.toContainEqual(expect.objectContaining({ id: 'fake-model' }));
-      } finally {
-        await client.credentials.delete('e2e-list-all.json').catch(() => {});
-      }
-    });
-
-    it('disables, enables and deletes a config key by auth_index', async () => {
-      const name = 'e2e-config-status';
-      const model = 'e2e-config-model';
-      const group = {
-        name,
-        'base-url': `${upstream.url}/v1`,
-        models: [{ name: model, alias: model }],
-        keys: [{ 'api-key': 'e2e-config-key' }],
-      };
-      const modelIds = async (): Promise<string[]> => {
-        const res = await fetch(`${server.baseUrl}/models`, { headers: { Authorization: `Bearer ${MODEL_KEY}` } });
-        expect(res.status).toBe(200);
-        return ((await res.json()) as { data: { id: string }[] }).data.map((item) => item.id);
-      };
-      const findEntry = async () =>
-        (await client.credentials.listAll()).find(
-          (entry) => entry.source === 'config' && entry.provider === 'claude' && entry.label === name,
-        );
-      const removeGroup = async () => {
-        await client.config
-          .update('api-keys', (current) => {
-            const claude = current?.claude;
-            if (!Array.isArray(claude)) return current;
-            return { ...current, claude: claude.filter((item) => item.name !== name) };
-          })
-          .catch(() => {});
-      };
-
-      try {
-        await client.config.update('api-keys', (current) => ({
-          ...(current ?? {}),
-          claude: [...(current?.claude ?? []), group],
-        }));
-        await eventually(async () => (await modelIds()).includes(model));
-        await eventually(async () => (await findEntry()) !== undefined);
-
-        const added = await findEntry();
-        expect(added).toMatchObject({ source: 'config', provider: 'claude', disabled: false });
-        const authIndex = added!.auth_index;
-        expect(authIndex).not.toBe('');
-
-        await expect(client.credentials.setStatus({ auth_index: authIndex, disabled: true })).resolves.toMatchObject({
-          status: 'ok',
-          disabled: true,
-          via: 'config:excluded-models',
-        });
-        await eventually(async () => {
-          const entry = (await client.credentials.listAll()).find((item) => item.source === 'config' && item.auth_index === authIndex);
-          return entry?.disabled === true;
-        });
-        await eventually(async () => !(await modelIds()).includes(model));
-
-        await expect(client.credentials.setStatus({ auth_index: authIndex, disabled: false })).resolves.toMatchObject({
-          status: 'ok',
-          disabled: false,
-        });
-        await eventually(async () => {
-          const entry = (await client.credentials.listAll()).find((item) => item.source === 'config' && item.auth_index === authIndex);
-          return entry?.disabled === false;
-        });
-        await eventually(async () => (await modelIds()).includes(model));
-
-        await expect(client.credentials.delete({ auth_index: authIndex })).resolves.toEqual({ status: 'ok' });
-        await eventually(
-          async () =>
-            !(await client.credentials.listAll()).some((item) => item.source === 'config' && item.auth_index === authIndex),
-        );
-        await eventually(async () => !(await modelIds()).includes(model));
-      } finally {
-        await removeGroup();
-      }
-    });
-
     it('refreshes an API-key credential and reports a missing file', async () => {
       // A refresh token would call the real provider. An API key has nothing to rotate,
       // so the executor returns the credential unchanged and 200 proves the response shape.
@@ -462,96 +310,6 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(missing.errorCode).toBe('auth file not found');
     });
 
-    it('reconciles by owner and revision across a CPA rewrite', async () => {
-      const owner = 'e2e-reconcile';
-      const files = [
-        { name: 'e2e-reconcile-a.json', content: { type: 'claude', email: 'reconcile-a@example.com', api_key: 'sk-a' }, revision: 'r1' },
-        { name: 'e2e-reconcile-b.json', content: { type: 'claude', email: 'reconcile-b@example.com', api_key: 'sk-b' }, revision: 'r1' },
-      ];
-      try {
-        await expect(client.credentials.reconcile({ owner, files })).resolves.toEqual({
-          uploaded: ['e2e-reconcile-a.json', 'e2e-reconcile-b.json'],
-          deleted: [],
-          unchanged: [],
-          adopted: [],
-        });
-        await client.credentials.upload({
-          name: 'e2e-reconcile-other.json',
-          content: { type: 'claude', email: 'other@example.com', api_key: 'sk-other', 'x-cpajs': { owner: 'someone-else', revision: 'r1' } },
-        });
-
-        // A management write makes CPA rewrite the file. The unknown marker must survive.
-        await client.credentials.patchFields({ name: 'e2e-reconcile-a.json', priority: 9 });
-        const rewritten = JSON.parse(await (await client.credentials.download('e2e-reconcile-a.json')).text()) as Record<string, unknown>;
-        expect(rewritten['x-cpajs']).toEqual({ owner, revision: 'r1' });
-
-        await expect(
-          client.credentials.reconcile({ owner, files: [files[0]!, { ...files[1]!, revision: 'r2' }] }),
-        ).resolves.toEqual({ uploaded: ['e2e-reconcile-b.json'], deleted: [], unchanged: ['e2e-reconcile-a.json'], adopted: [] });
-
-        await expect(client.credentials.reconcile({ owner, files: [files[0]!] })).resolves.toEqual({
-          uploaded: [],
-          deleted: ['e2e-reconcile-b.json'],
-          unchanged: ['e2e-reconcile-a.json'],
-          adopted: [],
-        });
-        expect(await client.credentials.get('e2e-reconcile-other.json')).toBeDefined();
-      } finally {
-        await client.credentials.delete(['e2e-reconcile-a.json', 'e2e-reconcile-b.json', 'e2e-reconcile-other.json']).catch(() => {});
-      }
-    });
-
-    it('refuses an unmarked file and adopts it when asked', async () => {
-      const name = 'e2e-reconcile-legacy.json';
-      const owner = 'e2e-adopt';
-      const desired = (revision: string) => ({
-        name,
-        content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-new' },
-        revision,
-      });
-      try {
-        await client.credentials.upload({
-          name,
-          content: { type: 'claude', email: 'legacy@example.com', api_key: 'sk-legacy', chat_seed: 'seed-token', access_token: 'token-legacy-1' },
-        });
-
-        const refused = (await client.credentials.reconcile({ owner, files: [desired('r1')] }).catch((e: unknown) => e)) as CpaReconcileError;
-        expect(refused).toBeInstanceOf(CpaReconcileError);
-        expect(refused).toMatchObject({ code: 'unmarked', file: name });
-        const untouched = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
-        expect(untouched).toMatchObject({ api_key: 'sk-legacy', chat_seed: 'seed-token' });
-        expect(untouched['x-cpajs']).toBeUndefined();
-
-        const adopted = await client.credentials.reconcile({
-          owner,
-          files: [desired('r1')],
-          adopt: (file, body) => {
-            if (file !== name) return undefined;
-            expect(body).toMatchObject({ api_key: 'sk-legacy', chat_seed: 'seed-token' });
-            return { revision: 'r1', remove: ['chat_seed'] };
-          },
-        });
-        expect(adopted).toEqual({ uploaded: [], deleted: [], unchanged: [name], adopted: [name] });
-        const claimed = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
-        expect(claimed).toMatchObject({
-          api_key: 'sk-legacy',
-          access_token: 'token-legacy-1',
-          'x-cpajs': { owner, revision: 'r1' },
-        });
-        expect(claimed).not.toHaveProperty('chat_seed');
-
-        await expect(client.credentials.reconcile({ owner, files: [desired('r2')] })).resolves.toEqual({
-          uploaded: [name],
-          deleted: [],
-          unchanged: [],
-          adopted: [],
-        });
-        const replaced = JSON.parse(await (await client.credentials.download(name)).text()) as Record<string, unknown>;
-        expect(replaced).toMatchObject({ api_key: 'sk-new', 'x-cpajs': { owner, revision: 'r2' } });
-      } finally {
-        await client.credentials.delete(name).catch(() => {});
-      }
-    });
   });
 
   describe('oauth', () => {
@@ -674,27 +432,6 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(res.status_code).toBe(201);
       expect(res.header['X-Echo']).toEqual(['yes']);
       expect(JSON.parse(res.body)).toEqual({ method: 'POST', auth: 'Bearer abc', body: '{"x":1}' });
-
-      const parsed = await client.requests.apiCallJson<{ method: string; auth: string; body: string }>({
-        method: 'post',
-        url: `${upstream.url}/echo`,
-        header: { Authorization: 'Bearer abc' },
-        data: '{"x":1}',
-      });
-      expect(parsed).toMatchObject({ status: 201, data: { method: 'POST', auth: 'Bearer abc', body: '{"x":1}' } });
-
-      const missingToken = (await client.requests
-        .apiCallJson({ auth_index: '0000000000000000', method: 'GET', url: `${upstream.url}/echo`, header: { Authorization: 'Bearer $TOKEN$' } })
-        .catch((e: unknown) => e)) as CpaCredentialTokenError;
-      expect(missingToken).toBeInstanceOf(CpaCredentialTokenError);
-      expect(missingToken.status).toBe(400);
-      expect(missingToken.errorCode).toBe('auth credential not found for auth_index');
-
-      const upstreamError = (await client.requests
-        .apiCallJson({ method: 'GET', url: `${upstream.url}/missing` })
-        .catch((e: unknown) => e)) as CpaUpstreamError;
-      expect(upstreamError).toBeInstanceOf(CpaUpstreamError);
-      expect(upstreamError.status).toBe(404);
     });
 
     it('lists plugins', async () => {

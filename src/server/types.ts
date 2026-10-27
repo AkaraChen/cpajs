@@ -6,21 +6,6 @@ import type { CpaWarning, SuppressWarnings } from './warnings.ts';
 /** Severity names used by CPA's logrus formatter. */
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
-/** Levels accepted by `logs.minLevel`; `fatal` is always delivered. */
-export type LogMinLevel = Exclude<LogLevel, 'fatal'>;
-
-/** Log filtering for `onLog`; `recentLogs` always keeps every line. */
-export interface LogOptions {
-  /** Drop parsed lines below this level. Default: no filtering. */
-  minLevel?: LogMinLevel;
-  /**
-   * Which lines without a parseable level still reach `onLog` when `minLevel` is
-   * set: `'all'` (default), `'stderr'` (e.g. Go panics, but not CPA's stdout
-   * banner) or `'none'`.
-   */
-  unleveled?: 'all' | 'stderr' | 'none';
-}
-
 export interface LogLine {
   stream: 'stdout' | 'stderr';
   /** One line of output with secrets redacted and the trailing newline removed. */
@@ -144,37 +129,10 @@ interface CommonServerOptions {
    * and `message` when the line uses CPA's log format.
    */
   onLog?: (log: LogLine) => void;
-  /**
-   * Structured log filtering for `onLog`. `minLevel` drops lower-severity lines
-   * (default: no filtering); `unleveled` picks which lines without a parseable
-   * level still pass. `recentLogs` still keeps every line.
-   */
-  logs?: LogOptions;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
-  /**
-   * Listeners registered before the first process is watched, so they also see
-   * an immediate exit. With `singleton: true`, only the first call's listeners
-   * are registered; later calls return the existing handle and ignore theirs.
-   */
-  on?: Partial<ServerEventListeners>;
   /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
   stopTimeoutMs?: number;
-  /**
-   * Restart CPA by itself when it exits unexpectedly. Goes through the same path
-   * as `restart()`, so `origin`, `port`, the handle, its config file and existing
-   * clients stay valid. Disabled by default.
-   */
-  restart?: RestartPolicy;
-  /**
-   * Reuse one server per process for the same state directory (the absolute
-   * `configPath` in `configPath` mode). A handle that has not stopped yet is
-   * returned as-is, and a start still in progress shares its promise, so two
-   * module copies or concurrent callers cannot start CPA twice. Once the handle
-   * stops, the next call starts a new process. Requires an explicit `stateDir`
-   * or `configPath`; options from the first call win. Default `false`.
-   */
-  singleton?: boolean;
 }
 
 /** Why cpajs is preparing to launch CPA: the first start, or a restart. */
@@ -186,87 +144,7 @@ export interface ConfigContext {
   reason: ConfigReason;
 }
 
-/** Runs once when the process that `afterStart` observed has exited, before its restart or after the final stop. */
-export type AfterStartCleanup = () => void | Promise<void>;
-
-export type AfterStartResult = undefined | AfterStartCleanup;
-
-export interface AfterStartContext<Client extends CpaClient | undefined = CpaClient | undefined> {
-  /** The server handle, already bound to the new process and ready. */
-  server: CpaServer;
-  /**
-   * `server.client()` when cpajs knows the plaintext management key, otherwise
-   * `undefined`. `startServer` narrows this to `CpaClient` only when the key is
-   * provably known: `management: false` and `configPath` are absent, and
-   * `config` is omitted, a function, or an object whose type has no
-   * `management['secret-key']`. A wide `CpaConfig` variable stays
-   * `CpaClient | undefined`, so use `requireClient()` when the key may come
-   * from a config the type cannot prove.
-   */
-  client: Client;
-  reason: ConfigReason;
-  /** Returns `client`, or throws a clear error with the reason it is unavailable. */
-  requireClient(): CpaClient;
-}
-
-export interface ServerHooks<Client extends CpaClient | undefined = CpaClient | undefined> {
-  /**
-   * Called after each process is ready: the first start and every restart
-   * (manual or automatic). A failure fails `startServer` and stops the process;
-   * on a restart it is reported as `restart-failed`.
-   *
-   * It may return a cleanup function, which cpajs calls once when that process
-   * exits: before the next process starts on a restart, or on the final stop.
-   * A failing cleanup is reported as a `CpaWarning` and never changes the
-   * lifecycle outcome.
-   */
-  afterStart?: (ctx: AfterStartContext<Client>) => AfterStartResult | Promise<AfterStartResult>;
-}
-
-export interface RestartPolicy {
-  /** Start CPA again after an unexpected exit. Default `false`. */
-  onUnexpectedExit?: boolean;
-  /**
-   * Retry a first start that fails before becoming ready (`exited`, `timeout`,
-   * `port-in-use`), as well as a failing `afterStart` or config function. Uses
-   * `backoffMs` and `maxAttempts`; `invalid-options`, aborted starts and a
-   * missing binary still reject right away. The retries are reported as
-   * `restart-failed` events registered through `on`. Default `false`.
-   */
-  onStartFailure?: boolean;
-  /**
-   * Backoff before each restart attempt, in milliseconds; the last value is
-   * reused. Default `[500, 1000, 5000, 30_000]`.
-   */
-  backoffMs?: readonly number[];
-  /**
-   * How long a restarted process must stay up before it counts as healthy.
-   * A process that exits before this window continues the crash loop: the next
-   * restart keeps the backoff position and counts toward `maxAttempts`. A
-   * process still running at this point resets the count when it later exits.
-   * Default 60 000 ms.
-   */
-  stableAfterMs?: number;
-  /**
-   * Give up after this many consecutive restarts without a stable run: the
-   * handle enters `stopped` and `exited` settles. With `onStartFailure`, it is
-   * the maximum number of retries after the first attempt. Default `Infinity`.
-   */
-  maxAttempts?: number;
-  /**
-   * When a restart finds the original dynamic port taken, pick a new free port
-   * instead of failing. Only applies when cpajs chose the port (no explicit
-   * `port` or `configPath`); a fixed port is never changed. `origin`,
-   * `baseUrl`, `port`, the managed config and existing `server.client()`
-   * instances follow the new port. Default `false`.
-   */
-  allowNewPort?: boolean;
-}
-
-export interface StartWithConfigOptions<Client extends CpaClient | undefined = CpaClient | undefined>
-  extends CommonServerOptions {
-  /** Lifecycle hooks that run after each process becomes ready. */
-  hooks?: ServerHooks<Client>;
+export interface StartWithConfigOptions extends CommonServerOptions {
   /**
    * Native CPA configuration, or a function that returns one.
    *
@@ -275,10 +153,11 @@ export interface StartWithConfigOptions<Client extends CpaClient | undefined = C
    * through the management API (or by CPA itself) survive a `stop()` /
    * `startServer()` cycle. Set `overwriteConfig: true` to replace it.
    *
-   * A function is called before the first start and before every restart, with
-   * the current file as `existing` and `reason` set to `'start'` or `'restart'`.
-   * Its return value replaces the file each time, like `overwriteConfig: true`,
-   * but cpajs still owns the listener, management secret and panel fields.
+   * A function is called before the first start and before every manual
+   * `restart()`, with the current file as `existing` and `reason` set to
+   * `'start'` or `'restart'`. Its return value replaces the file each time, like
+   * `overwriteConfig: true`, but cpajs still owns the listener, management
+   * secret and panel fields.
    *
    * The management key is resolved before the function runs, so
    * `management['secret-key']` in its result does not choose the key behind
@@ -300,10 +179,7 @@ export interface StartWithConfigOptions<Client extends CpaClient | undefined = C
   port?: number;
 }
 
-export interface StartWithConfigPathOptions<Client extends CpaClient | undefined = CpaClient | undefined>
-  extends CommonServerOptions {
-  /** Lifecycle hooks that run after each process becomes ready. */
-  hooks?: ServerHooks<Client>;
+export interface StartWithConfigPathOptions extends CommonServerOptions {
   /**
    * Existing CPA config file, handed to CPA as-is. CPA may rewrite it on
    * startup: it hashes a plaintext `management.secret-key`, removes legacy
@@ -317,9 +193,7 @@ export interface StartWithConfigPathOptions<Client extends CpaClient | undefined
   port?: never;
 }
 
-export type StartServerOptions<Client extends CpaClient | undefined = CpaClient | undefined> =
-  | StartWithConfigOptions<Client>
-  | StartWithConfigPathOptions<Client>;
+export type StartServerOptions = StartWithConfigOptions | StartWithConfigPathOptions;
 
 export interface ExitResult {
   code: number | null;
@@ -341,8 +215,6 @@ export interface RestartOptions {
   signal?: AbortSignal;
 }
 
-export type RestartReason = 'unexpected-exit' | 'manual';
-
 /** Why a process exited: `stop()` asked, a restart replaced it, or it died on its own. */
 export type ExitReason = 'stop' | 'restart' | 'unexpected';
 
@@ -351,51 +223,22 @@ export interface ExitEvent {
   signal: NodeJS.Signals | null;
   /** Output the exited process had produced, oldest first. */
   recentLogs: readonly LogLine[];
-  /** Whether a new process will be started (a manual restart or auto-restart). */
+  /** Whether a new process will be started (a manual restart). */
   willRestart: boolean;
   /** `stop` for `stop()`, `restart` while a restart stops the old process, else `unexpected`. */
   reason: ExitReason;
 }
 
-export interface RestartEvent {
-  reason: RestartReason;
-  /** 1-based attempt number; consecutive failed attempts increase it. */
-  attempt: number;
-}
-
-export interface RestartedEvent extends RestartEvent {
-  /** True when `allowNewPort` moved the server to a new origin. */
-  originChanged: boolean;
-}
-
-export interface RestartFailedEvent {
-  error: unknown;
-  attempt: number;
-  /** Whether another attempt follows. `false` means the server stopped. */
-  willRetry: boolean;
-}
-
 export interface CpaServerEvents {
   exit: ExitEvent;
-  restart: RestartEvent;
-  restarted: RestartedEvent;
-  'restart-failed': RestartFailedEvent;
 }
 
-export type ServerEventListeners = {
-  [K in keyof CpaServerEvents]: (event: CpaServerEvents[K]) => void;
-};
-
 export interface CpaServer {
-  /**
-   * e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. Changes when
-   * `restart.allowNewPort` moves a dynamic port.
-   */
+  /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */
   readonly origin: string;
   /** Model API base URL (`<origin>/v1`) for OpenAI-compatible SDKs. */
   readonly baseUrl: string;
   readonly host: string;
-  /** The current listen port; changes when `allowNewPort` picks a new one. */
   readonly port: number;
   readonly pid: number;
   readonly binaryPath: string;
@@ -405,9 +248,8 @@ export interface CpaServer {
   /** Recent output lines (redacted), oldest first. */
   readonly recentLogs: readonly LogLine[];
   /**
-   * Settles when the process exits for good: on `stop()`, an unexpected exit
-   * when auto-restart is off, or after its restart attempts are exhausted. A
-   * restart stops one process and starts another, so it does not settle this.
+   * Settles when the process exits for good: on `stop()` or an unexpected exit.
+   * A restart stops one process and starts another, so it does not settle this.
    */
   readonly exited: Promise<ExitResult>;
   /**
@@ -433,9 +275,10 @@ export interface CpaServer {
   /**
    * Restarts CPA with the original options, reusing `origin`, `baseUrl`, `host`,
    * `port`, `stateDir` and the existing config file. Concurrent calls share one
-   * operation. During an auto-restart backoff the wait is skipped and the
-   * restart happens immediately. A failed or cancelled restart leaves the
-   * server stopped.
+   * operation. A failed or cancelled restart leaves the server stopped. With a
+   * function `config`, the function runs again before the new process starts.
+   * A handle that has already stopped (including after an unexpected exit)
+   * rejects with `CpaStartError` code `stopped`.
    */
   restart(options?: RestartOptions): Promise<void>;
 }

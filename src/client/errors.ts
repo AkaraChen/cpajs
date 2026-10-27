@@ -53,103 +53,6 @@ export class CpaHttpError extends CpaClientError {
   }
 }
 
-/**
- * The upstream call made through `requests.apiCallJson` returned a non-2xx status.
- *
- * `headers` and `body` are the upstream response's; `body` is parsed when it is
- * JSON, the raw text when it is not, and `undefined` when it is empty.
- */
-export class CpaUpstreamError extends CpaClientError {
-  override readonly name = 'CpaUpstreamError';
-  readonly status: number;
-  readonly headers: Record<string, string[]>;
-  readonly body: unknown;
-
-  constructor(request: { method: string; url: string }, response: { status: number; headers: Record<string, string[]>; body: string }) {
-    const body = parseApiCallBody(response.body);
-    const detail = describeErrorBody(body);
-    super(`${request.method} ${request.url} failed with upstream ${response.status}${detail ? `: ${detail}` : ''}`, request);
-    this.status = response.status;
-    this.headers = response.headers;
-    this.body = body;
-  }
-}
-
-/**
- * CPA answered 400 because it could not resolve the credential token behind
- * `$TOKEN$`. `errorCode` is CPA's error, e.g. `"auth token not found"`;
- * `cause` is the original `CpaHttpError`.
- */
-export class CpaCredentialTokenError extends CpaClientError {
-  override readonly name = 'CpaCredentialTokenError';
-  readonly status: number;
-  readonly errorCode: string;
-
-  constructor(error: CpaHttpError) {
-    const code = error.errorCode ?? 'unknown error';
-    super(`${error.method} ${error.url} could not resolve a credential token: ${code}`, error, { cause: error });
-    this.status = error.status;
-    this.errorCode = code;
-  }
-}
-
-/** Identifies a credential that cpajs could not find. At least one field is normally set. */
-export interface CpaCredentialNotFoundSelector {
-  name?: string;
-  auth_index?: string;
-}
-
-/**
- * cpajs resolved a credential selector to nothing.
- *
- * The client throws this from `credentials.setStatus`, `credentials.delete` and
- * `credentials.modelsFor` when a `name` or `auth_index` lookup fails. A 404 from
- * upstream is not wrapped: that stays a {@link CpaHttpError}, because the server
- * answered the request and its `errorCode` carries the upstream reason.
- */
-export class CpaCredentialNotFoundError extends CpaClientError {
-  override readonly name = 'CpaCredentialNotFoundError';
-  readonly selector: CpaCredentialNotFoundSelector;
-
-  constructor(selector: CpaCredentialNotFoundSelector, request: { method: string; url: string }) {
-    super(`${describeCredentialSelector(selector)} was not found.`, request);
-    this.selector = selector;
-  }
-}
-
-function describeCredentialSelector(selector: CpaCredentialNotFoundSelector): string {
-  if (selector.auth_index !== undefined && selector.name !== undefined) {
-    return `Credential with auth_index "${selector.auth_index}" and name "${selector.name}"`;
-  }
-  if (selector.auth_index !== undefined) return `Credential with auth_index "${selector.auth_index}"`;
-  if (selector.name !== undefined) return `Credential "${selector.name}"`;
-  return 'Credential';
-}
-
-export type CpaReconcileErrorCode =
-  /** The file has no `x-cpajs` marker, so it may belong to someone else. */
-  | 'unmarked'
-  /** The file carries another caller's `x-cpajs` marker. */
-  | 'owned-by-other';
-
-/**
- * `credentials.reconcile` found an existing file it must not overwrite.
- *
- * `unmarked` files can be claimed by passing `adopt`; `owned-by-other` files
- * are never overwritten. `file` is the auth directory file name.
- */
-export class CpaReconcileError extends Error {
-  override readonly name = 'CpaReconcileError';
-  readonly code: CpaReconcileErrorCode;
-  readonly file: string;
-
-  constructor(code: CpaReconcileErrorCode, file: string, message: string) {
-    super(message);
-    this.code = code;
-    this.file = file;
-  }
-}
-
 /** The request could not be sent or the response could not be read. */
 export class CpaNetworkError extends CpaClientError {
   override readonly name = 'CpaNetworkError';
@@ -190,16 +93,6 @@ function parseJsonOrUndefined(text: string): unknown {
     return JSON.parse(text);
   } catch {
     return undefined;
-  }
-}
-
-/** Parses an `api-call` body: JSON when possible, raw text otherwise, `undefined` when empty. */
-export function parseApiCallBody(text: string): unknown {
-  if (text === '') return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
   }
 }
 

@@ -49,15 +49,10 @@ v8 and hot-reload it.
 Transient read failure: CPA rewrites `config.yaml` non-atomically. It truncates and then writes
 (`os.WriteFile` in `internal/config/config_yaml.go:138` when the watcher hashes a plaintext secret, `O_TRUNC` in
 `WriteConfig`), and every config read goes to disk. A read that lands inside that window answers
-`500 {"error":"invalid_config","message":"empty config"}`. GET requests retry that specific error up to three
-times after 100/200/400 ms; writes do not retry, because other 500s are real failures. Pass
-`retryInvalidConfig: false` to `createClient` to turn the retry off.
-
-`config.update` and `config.reconcile` compose these routes: they read (stripping the injected `auth_index`),
-write with `If-Match`, and re-read on 412. `reconcile` compares top-level sections with a deep equality and
-replaces only the changed ones wholesale with PUT `/config/<key>` (chaining the returned ETags), so nested
-keys absent from the target are removed. It never replaces the whole document, because `GET /config` strips
-TURN `username`/`credential`.
+`500 {"error":"invalid_config","message":"empty config"}`. The client reports it like any other error; retry
+yourself if a transient read failure is acceptable. Read a node with `config.getPath`, change it, and write it
+back with `config.set` / `config.patchPath` plus the ETag as `ifMatch`. Note that `GET /config` strips TURN
+`username`/`credential`, so read and write a node rather than the whole document when those matter.
 
 Path rules: segments are dash-case YAML keys. List indices cannot be addressed, so lists are replaced whole.
 `%2F` is split, which means a key that contains `/` cannot be addressed. `encodePath` rejects such segments
@@ -106,10 +101,10 @@ rewrite the file with its bcrypt hash a few seconds later, which changes the ETa
 | GET | `/credentials` | auth_files.go:106 (`name`, `auth_index`, `page`, `page_size`) | `credentials.list(query)`, `credentials.get(name)` | U E | ✅ |
 | POST | `/credentials` (raw) | auth_files_crud.go:116, via oauth_siwc_mutations.go:17 | `credentials.upload({name, content})` | U E | ✅ |
 | POST | `/credentials` (multipart) | auth_files_crud.go:231 | `credentials.uploadMany(files)` | U E | ✅ |
-| DELETE | `/credentials` | auth_files_crud.go:142 via oauth_siwc_mutations.go:23 | `credentials.delete(name or names)`, `credentials.delete({auth_index})` for config keys, `credentials.deleteAll()` | U E | ✅ |
+| DELETE | `/credentials` | auth_files_crud.go:142 via oauth_siwc_mutations.go:23 | `credentials.delete(name or names)`, `credentials.deleteAll()` | U E | ✅ |
 | GET | `/credentials/models` | auth_files.go:336 | `credentials.models(name)` | U E | ✅ |
 | GET | `/credentials/download` | auth_files_crud.go:28 (attachment) | `credentials.download(name)` → `Blob` | U E | ✅ |
-| PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})`; `{auth_index}` targets a config key | U E | ✅ |
+| PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})` | U E | ✅ |
 | PATCH | `/credentials/fields` | auth_files_fields.go:262 | `credentials.patchFields({name, ...fields})` | U E | ✅ |
 | POST | `/credentials/refresh` | auth_files_refresh.go:15 | `credentials.refresh(selector)`, `credentials.refreshAll()` | U E | ✅ |
 | GET | `/credentials/siwc/status` | oauth_siwc.go:140 | `credentials.siwcStatus(selector)` | U | ✅ |

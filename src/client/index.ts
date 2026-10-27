@@ -12,46 +12,21 @@ import { Transport, type ClientOptions, type RawRequest, type TransportResponse 
 export {
   CpaAbortError,
   CpaClientError,
-  CpaCredentialNotFoundError,
-  CpaCredentialTokenError,
   CpaHttpError,
   CpaNetworkError,
-  CpaReconcileError,
   CpaResponseError,
   CpaTimeoutError,
-  CpaUpstreamError,
 } from './errors.ts';
-export type { CpaCredentialNotFoundSelector, CpaReconcileErrorCode } from './errors.ts';
-export type { BaseUrl, ClientOptions, FetchLike, Query, QueryValue, RawRequest, RequestOptions, ResponseType, TransportResponse } from './transport.ts';
+export type { ClientOptions, FetchLike, Query, QueryValue, RawRequest, RequestOptions, ResponseType, TransportResponse } from './transport.ts';
 export type {
-  ConfigMutationOptions,
   ConfigPath,
   ConfigPathValue,
-  ConfigReconcileResult,
-  ConfigUpdateResult,
   ConfigWriteOptions,
   ConfigWriteResult,
   JsonInput,
   Versioned,
 } from './resources/config.ts';
-export type {
-  ConfigCredentialGroup,
-  ConfigCredentialRaw,
-  ConfigCredentialSummary,
-  CredentialContent,
-  CredentialDeleteTarget,
-  CredentialFile,
-  CredentialSelector,
-  CredentialSummary,
-  FileCredentialSummary,
-  ModelsForOptions,
-  ReconcileAdoption,
-  ReconcileAdoptionResult,
-  ReconcileCredentialFile,
-  ReconcileCredentialsInput,
-  ReconcileCredentialsResult,
-  SetCredentialStatusRequest,
-} from './resources/credentials.ts';
+export type { CredentialContent, CredentialFile, CredentialSelector } from './resources/credentials.ts';
 export type { DownloadedFile } from './resources/download.ts';
 export type { WaitForOAuthOptions } from './resources/oauth.ts';
 export {
@@ -83,7 +58,7 @@ export class CpaClient {
   constructor(options: ClientOptions) {
     this.#transport = new Transport(options);
     this.config = new ConfigResource(this.#transport);
-    this.credentials = new CredentialsResource(this.#transport, this.config);
+    this.credentials = new CredentialsResource(this.#transport);
     this.oauth = new OAuthResource(this.#transport);
     this.logs = new LogsResource(this.#transport);
     this.usage = new UsageResource(this.#transport);

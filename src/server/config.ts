@@ -271,16 +271,6 @@ export async function updateManagedSecret(
   await writeFile(configPath, document.toString(), { mode: 0o600 });
 }
 
-/**
- * Sets `server.port` in a managed config, leaving every other key and comment
- * as CPA left them. Used when `allowNewPort` moves a restart to a new port.
- */
-export async function updateManagedPort(configPath: string, port: number): Promise<void> {
-  const document = parseDocument(await readFile(configPath, 'utf8'), { merge: true });
-  document.setIn(['server', 'port'], port);
-  await writeFile(configPath, document.toString(), { mode: 0o600 });
-}
-
 /** Reads an existing config file without modifying it. */
 export async function inspectConfigFile(configPath: string): Promise<PreparedConfig> {
   const absolute = resolve(configPath);

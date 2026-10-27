@@ -15,6 +15,7 @@ Bundled CLIProxyAPI: **v8.0.43**.
 - Upgrading: [CHANGELOG.md](CHANGELOG.md) and [docs/migration.md](docs/migration.md).
 - Platforms, versions and the versioning policy: [docs/compatibility.md](docs/compatibility.md).
 - Every management API route: [docs/api-coverage.md](docs/api-coverage.md).
+- What cpajs does and does not do: [docs/scope.md](docs/scope.md).
 
 ```sh
 npm install @cpajs/cpa
@@ -51,7 +52,7 @@ await server.stop();
       `stop()` and `startServer()`. Pass `overwriteConfig: true` to replace it; when a file is kept, `config`, `host`
       and `port` are not applied and a `configReused` warning is emitted. Credentials go to `<stateDir>/auths`
       unless `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
-    - A function is called before the first start and again before every restart. It receives
+    - A function is called before the first start and again before every manual `restart()`. It receives
       `{ existing, reason }`: the parsed current `<stateDir>/config.yaml` (or `undefined`) and `'start'` or
       `'restart'`. Its result replaces the file each time, like `overwriteConfig: true`, while cpajs still fills in
       the listener, management secret and panel fields. It cannot be combined with `overwriteConfig`, and a
@@ -68,11 +69,8 @@ await server.stop();
   `tls.enable`. When cpajs writes the file and no port is given, it picks a free port first; a reused file keeps
   the port it already has.
 - `startServer` resolves only once `/healthz` answers. It rejects with `CpaStartError` on early exit, port
-  conflict, timeout (`startupTimeoutMs`, default 30 s), `signal` abort, or an `afterStart` hook failure. In every
-  failure case the process is stopped and the temporary directory removed. With `restart.onStartFailure`, the
-  retryable failures (early exit, timeout, port conflict, a failing `afterStart`, or a config function that
-  throws) are retried with `restart.backoffMs`/`restart.maxAttempts` before the last error is thrown; invalid
-  options, an aborted signal and a missing binary still reject immediately.
+  conflict, timeout (`startupTimeoutMs`, default 30 s), `signal` abort, or an invalid config function. In every
+  failure case the process is stopped and the temporary directory removed.
 - `stop()` is idempotent: on POSIX it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On
   Windows Node cannot deliver a graceful shutdown signal, so `stop()` terminates the process forcefully (equivalent
   to SIGKILL), `stopTimeoutMs` has no effect, and CPA gets no chance to flush state or update auth files. The same
@@ -81,51 +79,18 @@ await server.stop();
   (`timeoutMs` defaults to `stopTimeoutMs`) and starts it again with the original options. The handle keeps
   `origin`, `baseUrl`, `host`, `port`, `stateDir` and `configPath`; `pid`, `process` and `recentLogs` point at the
   new process. With an object `config`, the existing `config.yaml` is reused and never rewritten, so changes made
-  through the management API survive. A function `config` is evaluated again before each restart and its result
-  replaces the file. A dynamic port is reused too; if another process took it meanwhile, restart fails with
-  `CpaStartError` code `port-in-use` instead of changing `origin`, unless `restart.allowNewPort` is set: then a
-  new free port is picked, `origin`, `baseUrl` and `port` move, the managed config's `server.port` follows, and
-  existing `server.client()` instances use the new origin. A fixed port is never changed. Concurrent `restart()`
-  calls share one operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A
-  failed restart leaves the handle stopped and cleans up a temporary state directory like `startServer` does.
-- `restart: { onUnexpectedExit, onStartFailure, backoffMs, stableAfterMs, maxAttempts, allowNewPort }` restarts
-  CPA by itself after an unexpected exit. It goes through the same path as `restart()`, so `origin`, `port`, the
-  handle, the existing config file and already-created `server.client()` instances keep working. `backoffMs`
-  defaults to `[500, 1000, 5000, 30_000]` and its last value repeats. A restarted process must stay up for
-  `stableAfterMs` (default 60 s) to count as healthy; one that exits before it keeps the backoff position, so a
-  crash loop escalates instead of restarting every 500 ms. `maxAttempts` consecutive restarts without a stable
-  run stop the server and settle `exited` (default `Infinity`); a manual `restart()` resets the count.
-  `onStartFailure` applies the same backoff/attempt policy to failures of the first start. `stop()` cancels a
-  pending wait, and `restart()` during one tries immediately. A port taken by another process makes that attempt
-  fail and retries after the next backoff, unless `allowNewPort` moves a dynamic port as described above.
-- `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
-  so a dev server that evaluates a module more than once cannot start CPA twice. Concurrent calls share the
-  in-flight start and its promise; a handle that has not stopped yet is returned as-is, including while it is
-  backing off or restarting. Once the handle stops, the next call starts a new process. It requires an explicit
-  `stateDir` or `configPath`, and the options of the first call win: options on later calls are not compared.
-  The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
-  in the same process share it.
-- Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
-  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs`, `willRestart` and `reason`:
-  `'stop'` when `stop()` stopped the process, `'restart'` when a manual or automatic restart replaced it, and
-  `'unexpected'` when the process exited by itself. `restart` and `restarted` carry `reason`
-  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (`true` when
-  `allowNewPort` moved the server); `restart-failed` has `error`, `attempt` and `willRetry`. A failed first
-  start retried by `onStartFailure` is also reported as `restart-failed`, with `attempt` counting failed start
-  attempts. A listener that throws is reported through `process.emitWarning` and never disturbs the server. Pass
-  `on` to `startServer` to subscribe before the first process is watched; with `singleton: true` only the first
-  call's listeners are registered.
-- `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
-  start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
-  `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`
-  narrows `client` to `CpaClient` only when the key is provably known: no `management: false` or `configPath`,
-  and `config` omitted, a function, or an object whose type has no `management['secret-key']`. A wide
-  `CpaConfig` variable stays `CpaClient | undefined`; `requireClient()` returns the client or throws with the
-  reason it is unavailable. The hook may return a cleanup function (or a promise of one), which cpajs calls once
-  when that process exits: before the replacement starts on a restart, or after the final stop. A cleanup that
-  throws is reported through `process.emitWarning` and does not change the lifecycle. If the hook throws, the
-  first start rejects with `CpaStartError` code `hook-failed` after stopping the process, while a restart fails
-  like any other (`restart-failed`, then backoff or a rejected `restart()`).
+  through the management API survive. A function `config` is evaluated again before the restart and its result
+  replaces the file. The original port is reused; if another process took it meanwhile, restart fails with
+  `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
+  operation, `stop()` during a restart aborts it, and `restart()` after the handle stopped (including after an
+  unexpected exit) rejects with code `stopped`. A failed restart leaves the handle stopped and cleans up a
+  temporary state directory like `startServer` does.
+- There is no automatic restart. Use `server.exited` to observe an unexpected exit and call `startServer()`
+  again, or call `restart()` from your own supervisor.
+- Lifecycle events: `server.on('exit', listener)` returns an unsubscribe function. An `exit` payload has
+  `code`, `signal`, `recentLogs`, `willRestart` and `reason`: `'stop'` when `stop()` stopped the process,
+  `'restart'` when a manual `restart()` replaced it, and `'unexpected'` when the process exited by itself. A
+  listener that throws is reported through `process.emitWarning` and never disturbs the server.
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:
@@ -156,16 +121,8 @@ await server.stop();
   for CPA's `--------` placeholder) and `message` (the text after CPA's timestamp, request-id, level and caller
   prefixes). Output that does not match the format still arrives, with only `stream` and `line`.
 
-  Pass `logs: { minLevel: 'warn' }` to drop lower-severity lines from `onLog`; `recentLogs` keeps everything,
-  because error messages often need the surrounding info lines. Lines without a parsed level pass by default, so
-  unknown output is never hidden; `logs: { minLevel: 'warn', unleveled: 'stderr' }` keeps only those on stderr
-  (such as a Go panic) and drops CPA's stdout banner, and `unleveled: 'none'` drops them all.
-
-  ```ts
-  await startServer({ config, logs: { minLevel: 'warn' }, onLog: ({ level, message, line }) => {
-    console.log(`[${level ?? 'raw'}] ${message ?? line}`);
-  } });
-  ```
+  `onLog` receives every redacted line. Filter on `level` yourself when you only want some severities;
+  `recentLogs` always keeps everything.
 - Management key: you usually don't need one. Without `management`, cpajs generates a random key for each start,
   writes only its bcrypt hash into the managed config (remote management off), keeps the plaintext in memory,
   and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
@@ -266,32 +223,13 @@ const { data: config, etag } = await client.config.get();
 await client.config.patch({ routing: { strategy: 'round-robin' } }, { ifMatch: etag });
 await client.config.set('routing/retry/request-retry', 2); // value typed by path: number
 
-// Read → change → write with If-Match. `auth_index` (injected on reads) is removed,
-// a 412 re-reads and retries, and returning undefined skips the write.
-await client.config.update('routing/strategy', (current) => current ?? 'fill-first');
-
-// Deep-compares each top-level section and replaces only the ones that differ.
-// A listed section is written wholesale, so nested keys absent from it are removed;
-// sections not listed are untouched.
-await client.config.reconcile({ routing: { strategy: 'fill-first' } });
+// Read one node with its ETag, then write it back conditionally.
+const read = await client.config.getPath('routing/strategy');
+await client.config.set('routing/strategy', 'fill-first', { ifMatch: read.etag });
 
 const { files } = await client.credentials.list();
+// Upload a credential file. CPA returns the credential list, models and downloads as-is.
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
-
-// Files and config `api-keys` entries in one list, with the runtime auth_index.
-const all = await client.credentials.listAll();
-const models = await client.credentials.modelsFor(all[0]!, { details: true });
-
-const desired = [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }];
-const synced = await client.credentials.reconcile({
-  owner: 'chat',
-  files: desired,
-  // A legacy file without `x-cpajs` is claimed in place. Returning its desired
-  // revision keeps the tokens CPA already rotated; a different one uploads `desired`.
-  adopt: (name, body) =>
-    body.chat_seed === undefined ? undefined : desired.find((file) => file.name === name)?.revision,
-});
-console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [], adopted: [] }
 
 const login = await client.oauth.start({ provider: 'claude' });
 console.log('open', login.url);
@@ -304,83 +242,26 @@ try {
 }
 ```
 
-`credentials.reconcile` keeps a set of files owned by one caller in sync. Uploads carry a reserved
-`x-cpajs: { owner, revision }` field. Only `revision` is compared, so CPA rewriting a file during a token
-refresh does not cause another upload. With `prune` (the default), files owned by `owner` that are no longer
-in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
-mutated.
-
-A same-name file without the marker is never overwritten. Reconcile throws `CpaReconcileError` with code
-`unmarked` (also for files owned by another caller, code `owned-by-other`) unless `adopt(name, body)` returns
-a revision or `{ revision, remove }`. Adoption keeps the stored content, including tokens, writes only the
-marker, and then compares the returned revision with the desired one: equal leaves the file alone, different
-uploads the desired content. Returning `{ revision, remove: ['chat_seed'] }` first deletes those top-level
-legacy fields from the kept content; listing `x-cpajs` in `remove` is ignored because reconcile always stamps
-its own marker. Returning `undefined` leaves the file unmanaged; a same-name unmarked file then still throws.
-`adopt` is also called for unmarked files in the prune range, so a recognized legacy file can be claimed and
-deleted.
-`files[].content` accepts an object, JSON text, bytes, or a `Blob`; strings and bytes are parsed and must
-resolve to a JSON object, which is checked before any request.
-
-`credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
-exposes as a runtime view. It returns a discriminated union: a file entry has `raw: AuthFileEntry` and its
-`name`, while a config entry has the provider key as `raw` and its group (without `keys`) as `group`. A config
-entry also carries `apiKey` when it has one: a native provider key or an OpenAI-compatible key entry. The field
-is **plaintext**, so treat a `listAll()` result as a secret; a keyless OpenAI-compatible group (itself the
-credential) and file entries have no `apiKey`. A config key is `disabled` when its own or its group's effective
-`excluded-models` contains `*`, which is what `PATCH /credentials/status` writes upstream.
-
-`credentials.setStatus` takes a file `name` or a config key's `auth_index`, and `credentials.delete` takes file
-names or one `{ auth_index }`. Upstream's status route can toggle native `api-keys` entries but requires the
-runtime auth ID as `name`, which `GET /credentials` does not expose for config keys; its delete route only
-handles files. For config keys cpajs therefore edits the config through `config.update` (ETag / 412 retry,
-`auth_index` stripped): disable adds `*` to the key's `excluded-models`, enable removes it (other patterns and
-the group are untouched, so a group-level `excluded-models: ["*"]` still disables it), and delete removes the
-key from its group, keeping an empty native-provider group. The last key of an `openai-compatibility` group
-removes the group, because a keyless compat group is itself a credential. OpenAI-compatible entries have no
-per-key switch (and disabling a keyless group clears its `auth_index`), so `setStatus` throws for them; use
-`delete({ auth_index })` instead. A `name` or `auth_index` that cpajs cannot resolve throws
-`CpaCredentialNotFoundError` from `setStatus`, `delete` and `modelsFor`; a 404 answered by upstream stays a
-`CpaHttpError` with its `errorCode`.
-
-`credentials.modelsFor` accepts either a selector (file `name` or `auth_index`) or a `listAll` entry; passing
-the entry skips the extra list/config requests. Config-key models follow CPA's own resolution (model aliases,
-`excluded-models` with `*` wildcards, and per-key overrides); `details: true` adds the channel's static model
-definitions, which are cached for the client's lifetime. Pass `refreshDefinitions: true` or call
-`clearModelDefinitionsCache()` after the CPA binary changes. Runtime state such as cooldowns is only available
-for files.
+`credentials.list`, `upload`, `uploadMany`, `download`, `delete`, `setStatus` and the other methods pass
+through the matching upstream routes. `setStatus` and `delete` take file names (and arrays of names) only; config
+`api-keys` entries are managed through `client.config` like any other config node.
 
 | Group | Routes |
 | --- | --- |
-| `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision (with adoption), delete / status (files or config keys by `auth_index`), download, fields, refresh, SIWC status |
+| `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match` |
+| `credentials` | list, models, upload (raw or multipart), delete, status, download, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |
 | `routing` | cooldown reset, model definitions |
-| `requests` | server-side `api-call` (`apiCall`, `apiCallJson`) |
+| `requests` | server-side `api-call` (`apiCall`) |
 | `plugins` | list, delete, store, install, quota |
 | `server` | `/healthz`, version headers, latest release |
 
-`requests.apiCallJson()` is the throwing variant of `apiCall` for JSON upstreams: the parsed body becomes `data`,
-a non-2xx upstream status throws `CpaUpstreamError`, a 2xx body that is not JSON throws `CpaResponseError`, and
-an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
-
-Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's transient
-`500 invalid_config` (a read landing while `config.yaml` is rewritten) up to three times after
-100/200/400 ms; writes never retry. Pass `retryInvalidConfig: false` to `createClient` to disable it. Errors:
+Every method takes `{ signal, timeoutMs, headers }`. Errors:
 
 - `CpaHttpError` for a non-2xx response. It carries `status`, the raw `body`, parsed `data`, and `errorCode` /
   `errorMessage`.
-- `CpaUpstreamError` when `requests.apiCallJson` gets a non-2xx upstream status. It carries the upstream
-  `status`, `headers`, and `body` (parsed when JSON).
-- `CpaCredentialTokenError` when `requests.apiCallJson` cannot resolve `$TOKEN$`. It carries `status` and
-  `errorCode`.
-- `CpaCredentialNotFoundError` when `credentials.setStatus`, `credentials.delete` or `credentials.modelsFor`
-  cannot resolve a `name` or `auth_index`. It carries `selector` (`{ name?, auth_index? }`). An upstream 404 is
-  still a `CpaHttpError`.
-- `CpaReconcileError` when `credentials.reconcile` will not overwrite a file. It carries `code` (`unmarked` or
-  `owned-by-other`) and `file`.
 - `CpaNetworkError` when the request fails.
 - `CpaTimeoutError` when the request times out.
 - `CpaAbortError` when your `signal` aborts the request.

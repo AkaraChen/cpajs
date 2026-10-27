@@ -85,63 +85,6 @@ describe('transport', () => {
     await expect(client.credentials.uploadMany([{ name: 'a.json', content: {} }])).resolves.toEqual(body);
   });
 
-  it('retries a GET that hits the transient 500 invalid_config', async () => {
-    let attempts = 0;
-    const client = createClient({
-      baseUrl: 'http://cpa.test',
-      managementKey: 'k',
-      fetch: async () => {
-        attempts++;
-        return attempts === 1
-          ? Response.json({ error: 'invalid_config', message: 'empty config' }, { status: 500 })
-          : Response.json({ ok: true });
-      },
-    });
-    await expect(client.plugins.list()).resolves.toEqual({ ok: true });
-    expect(attempts).toBe(2);
-  });
-
-  it('gives up after three invalid_config retries and never retries a write', async () => {
-    let reads = 0;
-    const readClient = createClient({
-      baseUrl: 'http://cpa.test',
-      managementKey: 'k',
-      fetch: async () => {
-        reads++;
-        return Response.json({ error: 'invalid_config', message: 'empty config' }, { status: 500 });
-      },
-    });
-    await expect(readClient.config.get()).rejects.toBeInstanceOf(CpaHttpError);
-    expect(reads).toBe(4);
-
-    let writes = 0;
-    const writeClient = createClient({
-      baseUrl: 'http://cpa.test',
-      managementKey: 'k',
-      fetch: async () => {
-        writes++;
-        return Response.json({ error: 'invalid_config', message: 'empty config' }, { status: 500 });
-      },
-    });
-    await expect(writeClient.config.patch({})).rejects.toBeInstanceOf(CpaHttpError);
-    expect(writes).toBe(1);
-  });
-
-  it('can disable invalid_config retries', async () => {
-    let attempts = 0;
-    const client = createClient({
-      baseUrl: 'http://cpa.test',
-      managementKey: 'k',
-      retryInvalidConfig: false,
-      fetch: async () => {
-        attempts++;
-        return Response.json({ error: 'invalid_config', message: 'empty config' }, { status: 500 });
-      },
-    });
-    await expect(client.config.get()).rejects.toBeInstanceOf(CpaHttpError);
-    expect(attempts).toBe(1);
-  });
-
   it('rejects invalid JSON in a 2xx response with CpaResponseError', async () => {
     const { client } = mockClient(() => new Response('{nope', { status: 200 }));
     await expect(client.plugins.list()).rejects.toBeInstanceOf(CpaResponseError);
