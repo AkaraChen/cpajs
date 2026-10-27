@@ -13,6 +13,7 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`
   (`auth token not found`, `auth credential not found for auth_index`, or `auth token refresh failed`).
   `apiCall` is unchanged and still returns the raw result.
+
 ### Changed
 
 - A generated management key is hashed at bcrypt cost 4 (upstream's `bcrypt.MinCost`) instead of 10. CPA
