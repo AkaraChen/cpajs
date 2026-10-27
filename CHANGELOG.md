@@ -4,6 +4,30 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Breaking
+
+- `CredentialSummary` is now discriminated by `source`: `FileCredentialSummary` carries the file `name` and
+  `raw: AuthFileEntry`, while `ConfigCredentialSummary` carries the provider-specific key as `raw` and the
+  enclosing group (without `keys`) as `group`. `raw` is no longer `unknown`, so callers can stop casting.
+
+### Added
+
+- `credentials.modelsFor` also accepts a `listAll()` entry, skipping the `GET /credentials` and `GET /config`
+  lookups for config keys. Its `details: true` model definitions are cached for the lifetime of the
+  `CredentialsResource`; concurrent calls share one request, `refreshDefinitions: true` fetches them again,
+  and `clearModelDefinitionsCache()` drops the cache.
+- `credentials.listAll` marks a config key `disabled` when its own or its group's effective `excluded-models`
+  contains `*`, matching what upstream `PATCH /credentials/status` writes (key-level `excluded-models`; see
+  `internal/api/handlers/management/config_apikey_disable.go`).
+
+### Fixed
+
+- Config models no longer lose their static display name when `display-name` is unset. Only an explicit
+  `display-name` overrides the channel's `model-definitions` value; a regression made `details: true` show the
+  upstream model ID instead (for example `gpt-5` instead of `GPT-5`).
+
 ## 0.1.0-rc.5
 
 ### Added

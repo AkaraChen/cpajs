@@ -262,7 +262,7 @@ await client.credentials.upload({ name: 'codex-me.json', content: credentialJson
 
 // Files and config `api-keys` entries in one list, with the runtime auth_index.
 const all = await client.credentials.listAll();
-const models = await client.credentials.modelsFor({ auth_index: all[0]!.auth_index }, { details: true });
+const models = await client.credentials.modelsFor(all[0]!, { details: true });
 
 const synced = await client.credentials.reconcile({
   owner: 'chat',
@@ -288,10 +288,17 @@ in `files` are deleted; files owned by anyone else are never touched. The caller
 mutated.
 
 `credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
-exposes as a runtime view. Select either a file by `name` or any credential by `auth_index` with
-`credentials.modelsFor`. Config-key models follow CPA's own resolution (model aliases, `excluded-models` with
-`*` wildcards, and per-key overrides); `details: true` adds the channel's static model definitions. Runtime
-state such as cooldowns is only available for files.
+exposes as a runtime view. It returns a discriminated union: a file entry has `raw: AuthFileEntry` and its
+`name`, while a config entry has the provider key as `raw` and its group (without `keys`) as `group`. A config
+key is `disabled` when its own or its group's effective `excluded-models` contains `*`, which is what
+`PATCH /credentials/status` writes upstream.
+
+`credentials.modelsFor` accepts either a selector (file `name` or `auth_index`) or a `listAll` entry; passing
+the entry skips the extra list/config requests. Config-key models follow CPA's own resolution (model aliases,
+`excluded-models` with `*` wildcards, and per-key overrides); `details: true` adds the channel's static model
+definitions, which are cached for the client's lifetime. Pass `refreshDefinitions: true` or call
+`clearModelDefinitionsCache()` after the CPA binary changes. Runtime state such as cooldowns is only available
+for files.
 
 | Group | Routes |
 | --- | --- |

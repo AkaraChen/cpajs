@@ -327,7 +327,7 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       await client.credentials.upload({ name: 'e2e-list-all.json', content: { type: 'claude', email: 'list-all@example.com', api_key: 'sk-list' } });
       try {
         const entries = await client.credentials.listAll();
-        const file = entries.find((entry) => entry.name === 'e2e-list-all.json');
+        const file = entries.find((entry) => entry.source === 'file' && entry.name === 'e2e-list-all.json');
         expect(file).toMatchObject({ source: 'file', provider: 'claude', disabled: false });
         expect(file!.auth_index).not.toBe('');
 
@@ -342,6 +342,8 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
         await expect(client.credentials.modelsFor({ auth_index: config!.auth_index }, { details: true })).resolves.toContainEqual(
           expect.objectContaining({ id: 'fake-model' }),
         );
+        await expect(client.credentials.modelsFor(file!)).resolves.toBeInstanceOf(Array);
+        await expect(client.credentials.modelsFor(config!)).resolves.toContainEqual(expect.objectContaining({ id: 'fake-model' }));
       } finally {
         await client.credentials.delete('e2e-list-all.json').catch(() => {});
       }

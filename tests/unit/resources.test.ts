@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import {
+  CpaCredentialTokenError,
+  CpaHttpError,
+  CpaUpstreamError,
+  type AuthFileEntry,
+  type ConfigCredentialGroup,
+  type ConfigCredentialRaw,
+  type CpaConfig,
+  type CredentialSummary,
+} from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -450,11 +459,208 @@ describe('credentials', () => {
     expect(entries[0]).toMatchObject({ source: 'file', name: 'claude-a.json', auth_index: 'file-1', provider: 'claude' });
     expect(entries[0]!.raw).toMatchObject({ name: 'claude-a.json', source: 'file' });
     expect(entries[1]).toMatchObject({ source: 'config', provider: 'claude', label: 'team', auth_index: 'cfg-claude', disabled: false });
-    expect(entries[1]!.name).toBeUndefined();
+    expect('name' in entries[1]!).toBe(false);
     expect(entries[2]).toMatchObject({ source: 'config', provider: 'codex', label: 'codex group', auth_index: '', disabled: false });
     expect(entries[3]).toMatchObject({ source: 'config', provider: 'fake', label: 'fake', auth_index: 'cfg-openai', disabled: true });
     expect(entries[3]!.raw).toMatchObject({ name: 'fake' });
     expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual(['GET /v8/management/credentials', 'GET /v8/management/config']);
+  });
+
+  it('types credential summaries by source', () => {
+    const check = (summary: CredentialSummary): void => {
+      if (summary.source === 'file') {
+        expectTypeOf(summary.raw).toEqualTypeOf<AuthFileEntry>();
+        expectTypeOf(summary.name).toEqualTypeOf<string>();
+      } else {
+        expectTypeOf(summary.raw).toEqualTypeOf<ConfigCredentialRaw>();
+        expectTypeOf(summary.group).toEqualTypeOf<ConfigCredentialGroup>();
+        // @ts-expect-error only file summaries have a file name
+        summary.name;
+        // @ts-expect-error config groups never include their keys
+        summary.group.keys;
+      }
+    };
+    expect(check).toBeTypeOf('function');
+  });
+
+  it('marks config keys disabled by key- or group-level excluded-models "*"', async () => {
+    const { client } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [
+              { name: 'key', keys: [{ 'api-key': 'k1', auth_index: 'key-disabled', 'excluded-models': ['*'] }] },
+              { name: 'group', 'excluded-models': ['*'], keys: [{ 'api-key': 'k2', auth_index: 'group-disabled' }] },
+              { name: 'enabled', keys: [{ 'api-key': 'k3', auth_index: 'enabled', 'excluded-models': ['claude-*'] }] },
+              { name: 'override', 'excluded-models': ['*'], keys: [{ 'api-key': 'k4', auth_index: 'override', 'excluded-models': [] }] },
+            ],
+          },
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const entries = await client.credentials.listAll();
+    expect(Object.fromEntries(entries.map((entry) => [entry.auth_index, entry.disabled]))).toEqual({
+      'key-disabled': true,
+      'group-disabled': true,
+      enabled: false,
+      override: false,
+    });
+    const group = entries[1];
+    expect(group!.source).toBe('config');
+    if (group!.source === 'config') {
+      expect(group!.group).toMatchObject({ name: 'group' });
+      expect(group!.group).not.toHaveProperty('keys');
+    }
+  });
+
+  it('does not list or read config when modelsFor receives a summary', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [
+              {
+                name: 'team',
+                keys: [{ 'api-key': 'k', auth_index: 'cfg-claude', models: [{ name: 'claude-sonnet', alias: 'sonnet' }] }],
+              },
+            ],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/credentials/models') {
+        return Response.json({ models: [{ id: 'file-model' }] });
+      }
+      return Response.json({
+        observed_at: '',
+        files: [{ name: 'a.json', auth_index: 'file-1', provider: 'claude', type: 'claude', disabled: false, source: 'file' }],
+      });
+    });
+
+    const entries = await client.credentials.listAll();
+    const file = entries.find((entry) => entry.source === 'file')!;
+    const config = entries.find((entry) => entry.source === 'config')!;
+
+    const beforeFile = calls.length;
+    await client.credentials.modelsFor(file);
+    expect(calls.slice(beforeFile).map((call) => call.url.pathname)).toEqual(['/v8/management/credentials/models']);
+
+    const beforeConfig = calls.length;
+    await client.credentials.modelsFor(config);
+    expect(calls.slice(beforeConfig)).toEqual([]);
+  });
+
+  it('keeps definition display names unless the config sets one', async () => {
+    const { client } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [
+              {
+                name: 'team',
+                keys: [
+                  {
+                    'api-key': 'k',
+                    auth_index: 'cfg-claude',
+                    models: [
+                      { name: 'claude-upstream', alias: 'friendly' },
+                      { name: 'other-upstream', alias: 'other', 'display-name': 'Configured Other' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/claude') {
+        return Response.json({
+          channel: 'claude',
+          models: [
+            { id: 'claude-upstream', object: 'model', created: 1, owned_by: 'anthropic', type: 'claude', display_name: 'Claude Upstream' },
+            { id: 'other-upstream', object: 'model', created: 1, owned_by: 'anthropic', type: 'claude', display_name: 'Definition Other' },
+          ],
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const models = await client.credentials.modelsFor({ auth_index: 'cfg-claude' }, { details: true });
+    expect(models).toEqual([
+      expect.objectContaining({ id: 'friendly', display_name: 'Claude Upstream' }),
+      expect.objectContaining({ id: 'other', display_name: 'Configured Other' }),
+    ]);
+  });
+
+  it('caches model definitions until refreshed or cleared', async () => {
+    let definitions = 0;
+    const { client } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [{ name: 'team', keys: [{ 'api-key': 'k', auth_index: 'cfg-claude', models: [{ name: 'upstream', alias: 'friendly' }] }] }],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/claude') {
+        definitions++;
+        return Response.json({
+          channel: 'claude',
+          models: [
+            { id: 'upstream', object: 'model', created: 1, owned_by: 'anthropic', type: 'claude', display_name: `Definition ${definitions}` },
+          ],
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const [entry] = await client.credentials.listAll();
+    const first = await client.credentials.modelsFor(entry!, { details: true });
+    const cached = await client.credentials.modelsFor(entry!, { details: true });
+    expect(definitions).toBe(1);
+    expect(first[0]!.display_name).toBe('Definition 1');
+    expect(cached[0]!.display_name).toBe('Definition 1');
+
+    await client.credentials.modelsFor(entry!, { details: true, refreshDefinitions: true });
+    expect(definitions).toBe(2);
+
+    client.credentials.clearModelDefinitionsCache();
+    await client.credentials.modelsFor(entry!, { details: true });
+    expect(definitions).toBe(3);
+  });
+
+  it('shares one model-definitions request between concurrent calls', async () => {
+    let definitions = 0;
+    const { client } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [{ name: 'team', keys: [{ 'api-key': 'k', auth_index: 'cfg-claude', models: [{ name: 'upstream', alias: 'friendly' }] }] }],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/claude') {
+        definitions++;
+        return Response.json({
+          channel: 'claude',
+          models: [{ id: 'upstream', object: 'model', created: 1, owned_by: 'anthropic', type: 'claude', display_name: 'Upstream' }],
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const [entry] = await client.credentials.listAll();
+    await Promise.all([
+      client.credentials.modelsFor(entry!, { details: true }),
+      client.credentials.modelsFor(entry!, { details: true }),
+    ]);
+    expect(definitions).toBe(1);
   });
 
   it('resolves config models with alias, key exclusions and overrides', async () => {
