@@ -233,10 +233,6 @@ export interface CpaServerEvents {
   exit: ExitEvent;
 }
 
-export type ServerEventListeners = {
-  [K in keyof CpaServerEvents]: (event: CpaServerEvents[K]) => void;
-};
-
 export interface CpaServer {
   /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */
   readonly origin: string;
