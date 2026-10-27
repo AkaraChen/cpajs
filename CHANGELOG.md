@@ -6,6 +6,14 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ## Unreleased
 
+### Added
+
+- `requests.apiCallJson(request, options)` wraps `apiCall` for JSON upstreams: a JSON string body is parsed,
+  a non-2xx upstream status throws `CpaUpstreamError` (upstream `status`, `headers`, parsed `body`), and a CPA
+  400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`
+  (`auth token not found`, `auth credential not found for auth_index`, or `auth token refresh failed`).
+  `apiCall` is unchanged and still returns the raw result.
+
 ### Changed
 
 - A generated management key is hashed at bcrypt cost 4 (upstream's `bcrypt.MinCost`) instead of 10. CPA
