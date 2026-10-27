@@ -32,7 +32,7 @@ import type {
   ExitReason,
   ExitResult,
   LogLine,
-  LogMinLevel,
+  LogOptions,
   ManagementOptions,
   RestartOptions,
   RestartPolicy,
@@ -69,6 +69,14 @@ const DEFAULT_STABLE_AFTER_MS = 60_000;
 const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
 type ConfigFunction = (ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>;
+
+/**
+ * Config values whose type proves that cpajs knows the management key: omitted,
+ * a function (whose `secret-key` never chooses the key), or an object whose type
+ * rules out `management['secret-key']`. A wide `CpaConfig` variable falls back
+ * to the general overload and keeps `client: CpaClient | undefined`.
+ */
+type KnownClientConfig = ConfigFunction | (CpaConfig & { management?: { 'secret-key'?: undefined } });
 
 function validate(options: StartServerOptions): void {
   const config = typeof options.config === 'function' ? undefined : options.config;
@@ -142,6 +150,10 @@ function validate(options: StartServerOptions): void {
   const minLevel: string | undefined = options.logs?.minLevel;
   if (minLevel !== undefined && (!isLogLevel(minLevel) || minLevel === 'fatal')) {
     throw new CpaStartError('invalid-options', `Invalid logs.minLevel ${JSON.stringify(minLevel)}; expected debug, info, warn or error.`);
+  }
+  const unleveled: string | undefined = options.logs?.unleveled;
+  if (unleveled !== undefined && unleveled !== 'all' && unleveled !== 'stderr' && unleveled !== 'none') {
+    throw new CpaStartError('invalid-options', `Invalid logs.unleveled ${JSON.stringify(unleveled)}; expected all, stderr or none.`);
   }
   const requestedKey = (options.management === false ? undefined : options.management?.key) ?? options.managementKey;
   if (requestedKey === undefined) return;
@@ -225,7 +237,7 @@ interface LaunchOptions {
   env: NodeJS.ProcessEnv;
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
-  minLevel?: LogMinLevel | undefined;
+  logs?: LogOptions | undefined;
   host: string;
   port: number;
   origin: string;
@@ -254,7 +266,7 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
       env: options.env,
       redact: options.redact,
       onLog: options.onLog,
-      minLevel: options.minLevel,
+      logs: options.logs,
     });
   } catch (cause) {
     // Node reports spawn failures through the 'error' event; Bun throws synchronously.
@@ -314,12 +326,18 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
  * `configPath`) share one handle or one in-flight start. The entry is removed
  * once the handle stops, so a later call starts a new process.
  */
+// Overload order matters: a visible secret-key keeps the client optional, then
+// a known key narrows it, and the general overload stays last so it keeps
+// reporting invalid options.
 export function startServer(
   options: StartWithConfigOptions & { config: { management: { 'secret-key': string } } },
 ): Promise<CpaServer>;
 export function startServer(options: StartServerOptions<undefined> & { management: false }): Promise<CpaServer>;
 export function startServer(
-  options: StartWithConfigOptions<CpaClient> & { management?: ManagementOptions },
+  options: Omit<StartWithConfigOptions<CpaClient>, 'config'> & {
+    management?: ManagementOptions;
+    config?: KnownClientConfig;
+  },
 ): Promise<CpaServer>;
 export function startServer(options?: StartServerOptions): Promise<CpaServer>;
 export async function startServer(
@@ -538,7 +556,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
         env,
         redact,
         onLog: options.onLog,
-        minLevel: options.logs?.minLevel,
+        logs: options.logs,
         host,
         port,
         origin,
@@ -574,7 +592,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           redactExtras: options.redact ?? [],
           homeJwt: options.home?.jwt,
           onLog: options.onLog,
-          minLevel: options.logs?.minLevel,
+          logs: options.logs,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           restart: options.restart,
@@ -680,7 +698,7 @@ interface HandleInfo {
   redactExtras: readonly string[];
   homeJwt: string | undefined;
   onLog?: ((log: LogLine) => void) | undefined;
-  minLevel: LogMinLevel | undefined;
+  logs: LogOptions | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   restart: RestartPolicy | undefined;
@@ -948,7 +966,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
           env: info.env,
           redact: info.redact,
           onLog: info.onLog,
-          minLevel: info.minLevel,
+          logs: info.logs,
           host,
           port,
           origin: info.origin,

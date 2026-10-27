@@ -110,8 +110,9 @@ await server.stop();
 - `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
   start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
   `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`
-  narrows `client` to `CpaClient` unless `management: false` or `configPath` is used, or an object `config`
-  sets `management['secret-key']` in a way its type can see; `requireClient()` returns it or throws with the
+  narrows `client` to `CpaClient` only when the key is provably known: no `management: false` or `configPath`,
+  and `config` omitted, a function, or an object whose type has no `management['secret-key']`. A wide
+  `CpaConfig` variable stays `CpaClient | undefined`; `requireClient()` returns the client or throws with the
   reason it is unavailable. The hook may return a cleanup function (or a promise of one), which cpajs calls once
   when that process exits: before the replacement starts on a restart, or after the final stop. A cleanup that
   throws is reported through `process.emitWarning` and does not change the lifecycle. If the hook throws, the
@@ -148,8 +149,9 @@ await server.stop();
   prefixes). Output that does not match the format still arrives, with only `stream` and `line`.
 
   Pass `logs: { minLevel: 'warn' }` to drop lower-severity lines from `onLog`; `recentLogs` keeps everything,
-  because error messages often need the surrounding info lines. Lines without a parsed level always pass, so
-  unknown output is never hidden.
+  because error messages often need the surrounding info lines. Lines without a parsed level pass by default, so
+  unknown output is never hidden; `logs: { minLevel: 'warn', unleveled: 'stderr' }` keeps only those on stderr
+  (such as a Go panic) and drops CPA's stdout banner, and `unleveled: 'none'` drops them all.
 
   ```ts
   await startServer({ config, logs: { minLevel: 'warn' }, onLog: ({ level, message, line }) => {
@@ -313,8 +315,9 @@ state such as cooldowns is only available for files.
 | `plugins` | list, delete, store, install, quota |
 | `server` | `/healthz`, version headers, latest release |
 
-`requests.apiCallJson()` is the throwing variant of `apiCall`: a JSON string body becomes `data`, a non-2xx
-upstream status throws `CpaUpstreamError`, and an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
+`requests.apiCallJson()` is the throwing variant of `apiCall` for JSON upstreams: the parsed body becomes `data`,
+a non-2xx upstream status throws `CpaUpstreamError`, a 2xx body that is not JSON throws `CpaResponseError`, and
+an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
 
 Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's transient
 `500 invalid_config` (a read landing while `config.yaml` is rewritten) up to three times after
@@ -372,9 +375,12 @@ Nitro uses nft. Import the entry from the server code, and full-trace the platfo
 directory is copied too (`pkg*` copies every file, not only the traced ones):
 
 ```ts
+import { resolveBinary } from '@cpajs/cpa/server';
+
 export default defineNitroConfig({
-  // Replace linux-x64-gnu with the target you deploy to (see src/server/targets.ts).
-  traceDeps: ['@cpajs/cpa', '@cpajs/linux-x64-gnu*'],
+  // The platform package installed on the build machine, e.g. @cpajs/linux-x64-gnu.
+  // Build on the platform you deploy to, or write the package name out instead.
+  traceDeps: ['@cpajs/cpa', `${resolveBinary().packageName}*`],
 });
 ```
 

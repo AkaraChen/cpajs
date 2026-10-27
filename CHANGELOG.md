@@ -6,8 +6,26 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ## Unreleased
 
+### Breaking
+
+- `config.set`, `config.patchPath` and `config.update` now type tuple paths by the value at that path, the
+  same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
+  JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
+  behaviour.
+
 ### Added
 
+- `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
+  and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
+  a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
+  `['api-keys', 'gemini']` needs no `as const`. Broad `string` and `string[]` paths still accept any
+  JSON-serialisable value. Runtime behaviour is unchanged.
+- `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
+  variable.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
 - `exit` events now include `reason: 'stop' | 'restart' | 'unexpected'`: `stop` when `stop()` stopped the
   process, `restart` when a manual or automatic restart replaced it, and `unexpected` when the process exited
   by itself. `willRestart` is unchanged.
@@ -17,9 +35,16 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 - `startServer({ on })` registers lifecycle listeners as soon as the handle is created, so they also see an
   immediate exit. With `singleton: true` only the first call's listeners are registered, like `hooks`.
 - `AfterStartContext.requireClient()` returns the management client or throws a clear error explaining why it
-  is unavailable. `startServer` types `ctx.client` as `CpaClient` when neither `management: false` nor
-  `configPath` is used (and no visible object `config.management['secret-key']`), while the other cases keep
-  `CpaClient | undefined`.
+  is unavailable. `startServer` types `ctx.client` as `CpaClient` only when the key is provably known: no
+  `management: false` or `configPath`, and `config` omitted, a function, or an object whose type rules out
+  `management['secret-key']`. A wide `CpaConfig` variable keeps `CpaClient | undefined`; `requireClient()` is
+  the runtime fallback.
+
+### Changed
+
+- `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
+  is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
+  string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
 
 ## 0.1.0-rc.5
 

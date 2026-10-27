@@ -9,6 +9,18 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 /** Levels accepted by `logs.minLevel`; `fatal` is always delivered. */
 export type LogMinLevel = Exclude<LogLevel, 'fatal'>;
 
+/** Log filtering for `onLog`; `recentLogs` always keeps every line. */
+export interface LogOptions {
+  /** Drop parsed lines below this level. Default: no filtering. */
+  minLevel?: LogMinLevel;
+  /**
+   * Which lines without a parseable level still reach `onLog` when `minLevel` is
+   * set: `'all'` (default), `'stderr'` (e.g. Go panics, but not CPA's stdout
+   * banner) or `'none'`.
+   */
+  unleveled?: 'all' | 'stderr' | 'none';
+}
+
 export interface LogLine {
   stream: 'stdout' | 'stderr';
   /** One line of output with secrets redacted and the trailing newline removed. */
@@ -134,10 +146,10 @@ interface CommonServerOptions {
   onLog?: (log: LogLine) => void;
   /**
    * Structured log filtering for `onLog`. `minLevel` drops lower-severity lines
-   * (default: no filtering). `recentLogs` still keeps every line, and lines whose
-   * level cannot be parsed are always delivered.
+   * (default: no filtering); `unleveled` picks which lines without a parseable
+   * level still pass. `recentLogs` still keeps every line.
    */
-  logs?: { minLevel?: LogMinLevel };
+  logs?: LogOptions;
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
   /**
@@ -184,10 +196,12 @@ export interface AfterStartContext<Client extends CpaClient | undefined = CpaCli
   server: CpaServer;
   /**
    * `server.client()` when cpajs knows the plaintext management key, otherwise
-   * `undefined`. `startServer` narrows this to `CpaClient` when the options
-   * cannot disable it (`management: false` or `configPath`). A `secret-key` in an
-   * object `config` is only recognised when its literal type is visible, so use
-   * `requireClient()` when the key may come from the config.
+   * `undefined`. `startServer` narrows this to `CpaClient` only when the key is
+   * provably known: `management: false` and `configPath` are absent, and
+   * `config` is omitted, a function, or an object whose type has no
+   * `management['secret-key']`. A wide `CpaConfig` variable stays
+   * `CpaClient | undefined`, so use `requireClient()` when the key may come
+   * from a config the type cannot prove.
    */
   client: Client;
   reason: ConfigReason;
