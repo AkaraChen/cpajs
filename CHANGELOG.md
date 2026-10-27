@@ -14,6 +14,13 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `credentials.setStatus({ auth_index, disabled })` and `credentials.delete({ auth_index })` also target config
+  keys. Upstream's status route needs a runtime auth ID that config keys do not expose, and its delete route only
+  handles files, so cpajs edits the key through `config.update` (ETag / 412 retry, `auth_index` stripped):
+  disable adds `*` to the key's `excluded-models`, enable removes it, and delete removes the key from its group
+  while keeping an empty native-provider group. The last key of an `openai-compatibility` group removes the
+  group. OpenAI-compatible entries have no per-key switch, and disabling a keyless group clears its
+  `auth_index`, so `setStatus` throws for them; `delete({ auth_index })` still works.
 - `credentials.modelsFor` also accepts a `listAll()` entry, skipping the `GET /credentials` and `GET /config`
   lookups for config keys. Its `details: true` model definitions are cached for the lifetime of the
   `CredentialsResource`; concurrent calls share one request, `refreshDefinitions: true` fetches them again,
