@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CpaHttpError, type CpaConfig } from '../../src/client/index.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -262,5 +262,61 @@ describe('ops resources', () => {
     expect(calls[0]!.url.pathname).toBe('/prefix/healthz');
     expect(calls[0]!.headers.get('authorization')).toBeNull();
     expect(calls[1]!.url.pathname).toBe('/prefix/v8/management/server/latest-version');
+  });
+});
+
+describe('apiCallJson', () => {
+  const call = { method: 'GET', url: 'https://upstream.test/data', auth_index: 'abc' };
+
+  it('returns status, headers and a parsed JSON body', async () => {
+    const { client, calls } = mockClient(() =>
+      Response.json({ status_code: 200, header: { 'X-Upstream': ['yes'] }, body: '{"ok":true,"value":1}' }),
+    );
+    const result = await client.requests.apiCallJson<{ ok: boolean; value: number }>(call);
+    expect(result).toEqual({ status: 200, headers: { 'X-Upstream': ['yes'] }, data: { ok: true, value: 1 } });
+    expect(calls[0]!.url.pathname).toBe('/v8/management/requests/api-call');
+    expect(JSON.parse(calls[0]!.body)).toEqual(call);
+  });
+
+  it('throws CpaUpstreamError with the upstream status, headers and parsed body', async () => {
+    const { client } = mockClient(() =>
+      Response.json({ status_code: 401, header: { 'WWW-Authenticate': ['Bearer'] }, body: '{"error":"unauthorized"}' }),
+    );
+    const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaUpstreamError;
+    expect(error).toBeInstanceOf(CpaUpstreamError);
+    expect(error.status).toBe(401);
+    expect(error.headers).toEqual({ 'WWW-Authenticate': ['Bearer'] });
+    expect(error.body).toEqual({ error: 'unauthorized' });
+    expect(error.message).toContain('upstream 401');
+  });
+
+  it('throws CpaCredentialTokenError for CPA token-resolution failures', async () => {
+    for (const code of ['auth token not found', 'auth credential not found for auth_index', 'auth token refresh failed']) {
+      const { client } = mockClient(() => Response.json({ error: code }, { status: 400 }));
+      const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaCredentialTokenError;
+      expect(error).toBeInstanceOf(CpaCredentialTokenError);
+      expect(error.status).toBe(400);
+      expect(error.errorCode).toBe(code);
+      expect(error.cause).toBeInstanceOf(CpaHttpError);
+    }
+  });
+
+  it('keeps other CPA errors as CpaHttpError', async () => {
+    const { client } = mockClient(() => Response.json({ error: 'invalid url' }, { status: 400 }));
+    const error = await client.requests.apiCallJson(call).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect(error).not.toBeInstanceOf(CpaCredentialTokenError);
+  });
+
+  it('keeps a non-JSON body as text and returns undefined for an empty one', async () => {
+    const plain = mockClient(() => Response.json({ status_code: 200, header: {}, body: 'pong' }));
+    await expect(plain.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: 'pong' });
+    const empty = mockClient(() => Response.json({ status_code: 200, header: {}, body: '' }));
+    await expect(empty.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: undefined });
+  });
+
+  it('leaves apiCall resolving on an upstream error', async () => {
+    const { client } = mockClient(() => Response.json({ status_code: 401, header: {}, body: 'no' }));
+    await expect(client.requests.apiCall(call)).resolves.toEqual({ status_code: 401, header: {}, body: 'no' });
   });
 });

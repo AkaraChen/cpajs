@@ -4,6 +4,16 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `requests.apiCallJson(request, options)` wraps `apiCall` for JSON upstreams: a JSON string body is parsed,
+  a non-2xx upstream status throws `CpaUpstreamError` (upstream `status`, `headers`, parsed `body`), and a CPA
+  400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`
+  (`auth token not found`, `auth credential not found for auth_index`, or `auth token refresh failed`).
+  `apiCall` is unchanged and still returns the raw result.
+
 ## 0.1.0-rc.4
 
 ### Added
