@@ -325,6 +325,17 @@ exposes as a runtime view. It returns a discriminated union: a file entry has `r
 key is `disabled` when its own or its group's effective `excluded-models` contains `*`, which is what
 `PATCH /credentials/status` writes upstream.
 
+`credentials.setStatus` takes a file `name` or a config key's `auth_index`, and `credentials.delete` takes file
+names or one `{ auth_index }`. Upstream's status route can toggle native `api-keys` entries but requires the
+runtime auth ID as `name`, which `GET /credentials` does not expose for config keys; its delete route only
+handles files. For config keys cpajs therefore edits the config through `config.update` (ETag / 412 retry,
+`auth_index` stripped): disable adds `*` to the key's `excluded-models`, enable removes it (other patterns and
+the group are untouched, so a group-level `excluded-models: ["*"]` still disables it), and delete removes the
+key from its group, keeping an empty native-provider group. The last key of an `openai-compatibility` group
+removes the group, because a keyless compat group is itself a credential. OpenAI-compatible entries have no
+per-key switch (and disabling a keyless group clears its `auth_index`), so `setStatus` throws for them; use
+`delete({ auth_index })` instead.
+
 `credentials.modelsFor` accepts either a selector (file `name` or `auth_index`) or a `listAll` entry; passing
 the entry skips the extra list/config requests. Config-key models follow CPA's own resolution (model aliases,
 `excluded-models` with `*` wildcards, and per-key overrides); `details: true` adds the channel's static model
@@ -335,7 +346,7 @@ for files.
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision (with adoption), delete, download, status, fields, refresh, SIWC status |
+| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision (with adoption), delete / status (files or config keys by `auth_index`), download, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |

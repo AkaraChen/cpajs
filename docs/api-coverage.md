@@ -106,10 +106,10 @@ rewrite the file with its bcrypt hash a few seconds later, which changes the ETa
 | GET | `/credentials` | auth_files.go:106 (`name`, `auth_index`, `page`, `page_size`) | `credentials.list(query)`, `credentials.get(name)` | U E | ✅ |
 | POST | `/credentials` (raw) | auth_files_crud.go:116, via oauth_siwc_mutations.go:17 | `credentials.upload({name, content})` | U E | ✅ |
 | POST | `/credentials` (multipart) | auth_files_crud.go:231 | `credentials.uploadMany(files)` | U E | ✅ |
-| DELETE | `/credentials` | auth_files_crud.go:142 via oauth_siwc_mutations.go:23 | `credentials.delete(name or names)`, `credentials.deleteAll()` | U E | ✅ |
+| DELETE | `/credentials` | auth_files_crud.go:142 via oauth_siwc_mutations.go:23 | `credentials.delete(name or names)`, `credentials.delete({auth_index})` for config keys, `credentials.deleteAll()` | U E | ✅ |
 | GET | `/credentials/models` | auth_files.go:336 | `credentials.models(name)` | U E | ✅ |
 | GET | `/credentials/download` | auth_files_crud.go:28 (attachment) | `credentials.download(name)` → `Blob` | U E | ✅ |
-| PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})` | U E | ✅ |
+| PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})`; `{auth_index}` targets a config key | U E | ✅ |
 | PATCH | `/credentials/fields` | auth_files_fields.go:262 | `credentials.patchFields({name, ...fields})` | U E | ✅ |
 | POST | `/credentials/refresh` | auth_files_refresh.go:15 | `credentials.refresh(selector)`, `credentials.refreshAll()` | U E | ✅ |
 | GET | `/credentials/siwc/status` | oauth_siwc.go:140 | `credentials.siwcStatus(selector)` | U | ✅ |
