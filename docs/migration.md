@@ -1,3 +1,37 @@
+# Migrating from 0.1.0-rc.5
+
+## `credentials.reconcile` no longer overwrites unmarked files
+
+A file with the same name as one of `files` but no `x-cpajs` marker (for example one uploaded before you
+adopted `reconcile`) now makes `reconcile` throw `CpaReconcileError` with code `unmarked` instead of being
+replaced. Replacing it could swap a token CPA had already refreshed for a stale one. Claim such files with
+`adopt`, which keeps their stored content and only adds the marker:
+
+```ts
+await client.credentials.reconcile({
+  owner: 'my-app',
+  files,
+  adopt: (name, body) => (isMine(name, body) ? currentRevisionFor(name) : undefined),
+});
+```
+
+Files owned by another caller now throw the same class with code `owned-by-other` (previously a plain `Error`).
+
+## `requests.apiCallJson` rejects text bodies
+
+A 2xx upstream body that is not JSON throws `CpaResponseError` (`status`, raw `body`) instead of resolving with
+the text as `data`. Use `requests.apiCall` for upstreams that answer with text.
+
+## `CredentialSummary` is a discriminated union
+
+Narrow on `source` before reading source-specific fields: `'file'` entries have `name` and `raw: AuthFileEntry`,
+`'config'` entries have `label`, `group` and the provider key as `raw`. Remove casts of `raw`.
+
+## Tuple config paths are typed
+
+`config.set` / `patchPath` / `update` with a known tuple path such as `['api-keys', 'gemini']` now require the
+value type at that path. Fix the value, or type the path as `readonly string[]` to opt out.
+
 # Migrating from 0.0.1-alpha-3
 
 Every item below is a breaking change in the next release. Most code needs only the first two.
