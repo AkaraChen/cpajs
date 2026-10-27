@@ -58,11 +58,20 @@ const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1_000, 5_000, 30_000];
 const DEFAULT_STABLE_AFTER_MS = 60_000;
+// Symbol.for keeps the registry shared when this module is evaluated twice,
+// e.g. by a dev server that reloads modules without restarting the process.
+const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
 type ConfigFunction = (ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>;
 
 function validate(options: StartServerOptions): void {
   const config = typeof options.config === 'function' ? undefined : options.config;
+  if (options.singleton === true && options.configPath === undefined && options.stateDir === undefined) {
+    throw new CpaStartError(
+      'invalid-options',
+      'singleton requires an explicit stateDir or configPath so other starts can find the same server.',
+    );
+  }
   if (options.config !== undefined && options.configPath !== undefined) {
     throw new CpaStartError('invalid-options', 'config and configPath are mutually exclusive.');
   }
@@ -294,8 +303,45 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
  *
  * On any failure the child process is stopped and resources created by this
  * call (the temporary state directory) are removed before the error is thrown.
+ *
+ * With `singleton: true`, concurrent starts for the same state directory (or
+ * `configPath`) share one handle or one in-flight start. The entry is removed
+ * once the handle stops, so a later call starts a new process.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<CpaServer> {
+  const key = singletonKey(options);
+  if (key === undefined) return startServerInstance(options);
+
+  const registry = singletonRegistry();
+  const existing = registry.get(key);
+  if (existing !== undefined) return existing;
+
+  let pending: Promise<CpaServer>;
+  const release = (): void => {
+    if (registry.get(key) === pending) registry.delete(key);
+  };
+  pending = startServerInstance(options, release).catch((error: unknown) => {
+    release();
+    throw error;
+  });
+  registry.set(key, pending);
+  return pending;
+}
+
+function singletonKey(options: StartServerOptions): string | undefined {
+  if (options.singleton !== true) return undefined;
+  if (options.configPath !== undefined) return `config:${resolve(options.configPath)}`;
+  // A missing stateDir is rejected by validate(); leave it to startServerInstance.
+  if (options.stateDir === undefined) return undefined;
+  return `state:${resolve(options.stateDir)}`;
+}
+
+function singletonRegistry(): Map<string, Promise<CpaServer>> {
+  const shared = globalThis as unknown as Record<symbol, Map<string, Promise<CpaServer>> | undefined>;
+  return (shared[SINGLETON_SERVERS] ??= new Map());
+}
+
+async function startServerInstance(options: StartServerOptions, onSettled?: () => void): Promise<CpaServer> {
   validate(options);
   const { signal } = options;
   if (signal?.aborted) throw abortError(signal, '');
@@ -520,8 +566,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           panelEligible,
           panelFile,
           cleanup,
+          onSettled,
         });
         if (options.hooks?.afterStart !== undefined) {
+          let hookError: unknown;
+          let hookFailed = false;
           try {
             await options.hooks.afterStart({
               server: handle,
@@ -529,11 +578,20 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
               reason: 'start',
             });
           } catch (cause) {
+            hookError = cause;
+            hookFailed = true;
+          }
+          if (signal?.aborted) {
+            const output = handle.recentLogs.map((log) => log.line).join('\n');
+            await handle.stop();
+            throw abortError(signal, output);
+          }
+          if (hookFailed) {
             await handle.stop();
             throw new CpaStartError(
               'hook-failed',
-              `afterStart hook failed: ${redact((cause as Error)?.message ?? String(cause))}`,
-              { cause },
+              `afterStart hook failed: ${redact((hookError as Error)?.message ?? String(hookError))}`,
+              { cause: hookError },
             );
           }
         }
@@ -609,6 +667,8 @@ interface HandleInfo {
   panelEligible: boolean;
   panelFile: string | undefined;
   cleanup: () => Promise<void>;
+  /** Removes the singleton entry once this handle has stopped. */
+  onSettled?: (() => void) | undefined;
 }
 
 function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
@@ -657,6 +717,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         await info.cleanup();
       } finally {
         resolveExited(result);
+        info.onSettled?.();
       }
     })();
     return finalizePromise;
@@ -828,7 +889,12 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
           throw failure.error;
         }
 
+        currentProc = result.proc;
+        currentReadyAt = Date.now();
+
         if (info.afterStart !== undefined) {
+          let hookError: unknown;
+          let hookFailed = false;
           try {
             await info.afterStart({
               server: handle,
@@ -836,11 +902,26 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
               reason: 'restart',
             });
           } catch (cause) {
+            hookError = cause;
+            hookFailed = true;
+          }
+
+          // stop() aborts the restart and waits for this task, so a hook that
+          // finishes after stop() must not put the handle back into 'running'.
+          if (signal.aborted) {
+            const exit = await result.proc.stop(info.stopTimeoutMs);
+            const error = abortError(signal, result.proc.output(), 'restart was aborted.');
+            emit('restart-failed', { error, attempt, willRetry: false });
+            await settle(exit);
+            throw error;
+          }
+
+          if (hookFailed) {
             const hookExit = await result.proc.stop(info.stopTimeoutMs);
             const error = new CpaStartError(
               'hook-failed',
-              `afterStart hook failed: ${info.redact((cause as Error)?.message ?? String(cause))}`,
-              { cause },
+              `afterStart hook failed: ${info.redact((hookError as Error)?.message ?? String(hookError))}`,
+              { cause: hookError },
             );
             const retry = willRetry();
             emit('restart-failed', { error, attempt, willRetry: retry });
@@ -850,8 +931,6 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
           }
         }
 
-        currentProc = result.proc;
-        currentReadyAt = Date.now();
         watch(result.proc);
         state = 'running';
         emit('restarted', { reason, attempt, originChanged: false });

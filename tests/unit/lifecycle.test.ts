@@ -399,6 +399,82 @@ describe('server lifecycle (fake binary)', () => {
     if (error.code === 'exited') expect(error.exitCode).toBe(127);
   });
 
+  describe('singleton', () => {
+    it('shares one process between concurrent starts for the same stateDir', async () => {
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter } } as const;
+
+      const [first, second] = await Promise.all([startFake(options), startFake(options)]);
+
+      expect(second).toBe(first);
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      await first.stop();
+    });
+
+    it('starts a new process after the shared handle stopped', async () => {
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter } } as const;
+
+      const first = await startFake(options);
+      await first.stop();
+      const second = await startFake(options);
+
+      expect(second).not.toBe(first);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      await second.stop();
+    });
+
+    it('shares one process between concurrent starts for the same configPath', async () => {
+      const probe = createServer();
+      await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as { port: number }).port;
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+      const configPath = join(dir, 'config.yaml');
+      await writeFile(configPath, `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\n`);
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, configPath, env: { FAKE_COUNTER: counter } } as const;
+
+      const [first, second] = await Promise.all([startFake(options), startFake(options)]);
+
+      expect(second).toBe(first);
+      expect(first.configPath).toBe(configPath);
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      await first.stop();
+    });
+
+    it('rejects singleton without an explicit stateDir or configPath', async () => {
+      const error = await startError(startFake({ singleton: true }));
+
+      expect(error.code).toBe('invalid-options');
+      expect(error.message).toContain('singleton');
+    });
+
+    it('retries after a failed start and reuses the handle during auto-restart backoff', async () => {
+      const counter = join(dir, 'runs');
+      const failed = await startError(
+        startFake({ singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter, FAKE_EXIT: '3' } }),
+      );
+      expect(failed.code).toBe('exited');
+
+      const options = {
+        singleton: true,
+        stateDir: dir,
+        env: { FAKE_COUNTER: counter },
+        restart: { onUnexpectedExit: true, backoffMs: [10_000] },
+      } as const;
+      const server = await startFake(options);
+      const exitedEvent = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      expect((await exitedEvent).willRestart).toBe(true);
+
+      const reused = await startFake(options);
+      expect(reused).toBe(server);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      await reused.stop();
+    });
+  });
+
   describe('restart', () => {
     it('keeps the handle and port, swaps process details, and preserves stateDir and config', async () => {
       const counter = join(dir, 'runs');
@@ -814,7 +890,8 @@ describe('server lifecycle (fake binary)', () => {
       await server.stop();
     });
 
-    it('calls afterStart after the first start and every restart with a ready server and client', async () => {      const calls: { reason: 'start' | 'restart'; client: boolean; healthy: boolean }[] = [];
+    it('calls afterStart after the first start and every restart with a ready server and client', async () => {
+      const calls: { reason: 'start' | 'restart'; client: boolean; healthy: boolean }[] = [];
       const server = await startFake({
         stateDir: dir,
         management: { key: 'hook-management-key' },
@@ -831,6 +908,101 @@ describe('server lifecycle (fake binary)', () => {
       expect(calls.map((c) => c.reason)).toEqual(['start', 'restart']);
       expect(calls.every((c) => c.client && c.healthy)).toBe(true);
       await server.stop();
+    });
+
+    it('sees the new process from afterStart during a restart', async () => {
+      const pids: number[] = [];
+      const processes: CpaServer['process'][] = [];
+      const server = await startFake({
+        hooks: {
+          afterStart: (ctx) => {
+            pids.push(ctx.server.pid);
+            processes.push(ctx.server.process);
+          },
+        },
+      });
+      const firstPid = server.pid;
+      const firstProcess = server.process;
+
+      await server.restart();
+
+      expect(pids).toEqual([firstPid, server.pid]);
+      expect(pids[1]).not.toBe(firstPid);
+      expect(processes[1]).toBe(server.process);
+      expect(processes[1]).not.toBe(firstProcess);
+      await server.stop();
+    });
+
+    it('stops a restart whose afterStart is still running when stop() is called', async () => {
+      let releaseHook!: () => void;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      let hookEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        hookEntered = resolve;
+      });
+      let calls = 0;
+      const server = await startFake({
+        hooks: {
+          afterStart: async () => {
+            calls++;
+            if (calls === 2) {
+              hookEntered();
+              await hookGate;
+            }
+          },
+        },
+      });
+      const restarted: RestartedEvent[] = [];
+      server.on('restarted', (event) => restarted.push(event));
+
+      const restarting = startError(server.restart());
+      await entered;
+      const stopping = server.stop();
+      releaseHook();
+
+      const [error, exit] = await Promise.all([restarting, stopping]);
+      expect(error.code).toBe('aborted');
+      expect(error.message).toContain('restart was aborted');
+      expect(restarted).toHaveLength(0);
+      expect(await server.exited).toEqual(exit);
+      expect(existsSync(server.stateDir)).toBe(false);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('stops the handle when the first start is aborted during afterStart', async () => {
+      const controller = new AbortController();
+      let stateDir: string | undefined;
+      let releaseHook!: () => void;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      let hookEntered!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        hookEntered = resolve;
+      });
+
+      const starting = startError(
+        startFake({
+          signal: controller.signal,
+          hooks: {
+            afterStart: async (ctx) => {
+              stateDir = ctx.server.stateDir;
+              hookEntered();
+              await hookGate;
+            },
+          },
+        }),
+      );
+      await entered;
+      controller.abort(new Error('stop it'));
+      releaseHook();
+
+      const error = await starting;
+      expect(error.code).toBe('aborted');
+      expect(error.cause).toEqual(new Error('stop it'));
+      expect(existsSync(stateDir!)).toBe(false);
     });
 
     it('passes client undefined when cpajs does not know the plaintext key', async () => {

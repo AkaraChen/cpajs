@@ -5,7 +5,7 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CpaStartError, startServer, stopAllServers, type CpaServer, type LogLine, type StartServerOptions } from '../../src/server/index.ts';
 import { internalCommand } from '../../src/server/internal.ts';
 import { MAX_LINE_LENGTH } from '../../src/server/process.ts';
@@ -104,6 +104,9 @@ describe('log memory bounds', () => {
     const lines: LogLine[] = [];
     const length = MAX_LINE_LENGTH * 3 + 123;
     const server = await startFake({ env: { FAKE_LONG_LINE: String(length) }, onLog: (l) => lines.push(l) });
+    // The fake writes the line at startup, but a slow pipe (macOS CI) may not have
+    // delivered all of it by the time the server is ready; stopping early cuts it short.
+    await vi.waitFor(() => expect(lines.some((l) => l.line === 'after long line')).toBe(true));
     await server.stop();
     const long = lines.find((l) => l.line.startsWith('xxxx'))!;
     expect(long.line.startsWith('x'.repeat(MAX_LINE_LENGTH))).toBe(true);

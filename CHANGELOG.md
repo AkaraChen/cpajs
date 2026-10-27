@@ -8,6 +8,21 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
+  so module reloads and concurrent callers cannot start CPA twice. Concurrent starts share one promise, a handle
+  that has not stopped is returned as-is (including during auto-restart backoff/restart), and a stopped or
+  failed start is removed so the next call starts a new process. Requires an explicit `stateDir` or
+  `configPath`; the first call's options win. The registry is stored on `globalThis` under
+  `Symbol.for('cpajs.servers')`, so duplicate module instances share it.
+- `credentials.listAll(options?)` returns credential files and config `api-keys` entries together, each with
+  its `auth_index`, `provider`, `source: 'file' | 'config'`, file `name` or config group `label`, `disabled`
+  and the raw entry. Config keys come from `GET /config` because `/credentials` only exposes a runtime view of
+  them; config-key cooldown state is not included.
+- `credentials.modelsFor(selector, { details? })` lists the models one file or config key can serve. Config
+  keys follow upstream resolution: a key's `models` replaces the channel defaults, `alias` becomes the
+  client-facing ID, a key's `excluded-models` overrides its group's and supports `*` wildcards, and
+  `display-name` / `max-context-length` / `thinking` override the defaults. With `details: true` the channel's
+  `GET /routing/model-definitions/:channel` is merged into each model, requesting each channel once per call.
 - Auto-restart: `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` starts CPA again after
   an unexpected exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and
   existing `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last
@@ -24,7 +39,8 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   with `{ existing, reason: 'start' | 'restart' }`, where `existing` is the parsed current
   `<stateDir>/config.yaml` (or `undefined`), and its result replaces the file while cpajs still fills in the
   listener, management secret and panel fields. It cannot be combined with `overwriteConfig` and never emits the
-  `configReused` warning; the object form keeps its previous behaviour.
+  `configReused` warning; the object form keeps its previous behaviour. The management key is resolved before the
+  function runs, so a `management['secret-key']` it returns does not choose the key behind `server.client()`.
 - `hooks.afterStart({ server, client, reason })` runs after each process is ready, on the first start and on
   every restart (manual or automatic). `client` is `server.client()` when cpajs knows the plaintext management
   key, else `undefined`. A throw fails `startServer` with `CpaStartError` code `hook-failed` after stopping the

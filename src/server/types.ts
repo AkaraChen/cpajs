@@ -150,6 +150,15 @@ interface CommonServerOptions {
    * clients stay valid. Disabled by default.
    */
   restart?: RestartPolicy;
+  /**
+   * Reuse one server per process for the same state directory (the absolute
+   * `configPath` in `configPath` mode). A handle that has not stopped yet is
+   * returned as-is, and a start still in progress shares its promise, so two
+   * module copies or concurrent callers cannot start CPA twice. Once the handle
+   * stops, the next call starts a new process. Requires an explicit `stateDir`
+   * or `configPath`; options from the first call win. Default `false`.
+   */
+  singleton?: boolean;
 }
 
 /** Why cpajs is preparing to launch CPA: the first start, or a restart. */
@@ -214,6 +223,11 @@ export interface StartWithConfigOptions extends CommonServerOptions {
    * the current file as `existing` and `reason` set to `'start'` or `'restart'`.
    * Its return value replaces the file each time, like `overwriteConfig: true`,
    * but cpajs still owns the listener, management secret and panel fields.
+   *
+   * The management key is resolved before the function runs, so
+   * `management['secret-key']` in its result does not choose the key behind
+   * `server.client()`; pass `management` for that (or keep using the generated
+   * key). cpajs writes its own secret when it manages one.
    */
   config?: CpaConfig | ((ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>);
   configPath?: never;

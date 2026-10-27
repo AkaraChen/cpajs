@@ -55,7 +55,9 @@ await server.stop();
       `{ existing, reason }`: the parsed current `<stateDir>/config.yaml` (or `undefined`) and `'start'` or
       `'restart'`. Its result replaces the file each time, like `overwriteConfig: true`, while cpajs still fills in
       the listener, management secret and panel fields. It cannot be combined with `overwriteConfig`, and a
-      `configReused` warning is never emitted.
+      `configReused` warning is never emitted. The management key is resolved before the function runs, so
+      `management['secret-key']` in its result does not choose the key behind `server.client()`; pass
+      `management` for that (or keep the generated key).
   - `configPath` hands an existing file to CPA unchanged. CPA may rewrite it on startup: it hashes a plaintext
     `management.secret-key`, removes legacy keys that conflict with their v8 equivalents, and normalizes the
     layout (`internal/config/config_load.go` and `NormalizeConfigLayout`).
@@ -90,6 +92,13 @@ await server.stop();
   server and settle `exited` (default `Infinity`); a manual `restart()` resets the count. `stop()` cancels a
   pending wait, and `restart()` during one tries immediately. A port taken by another process makes that attempt
   fail and retries after the next backoff instead of changing `origin`.
+- `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
+  so a dev server that evaluates a module more than once cannot start CPA twice. Concurrent calls share the
+  in-flight start and its promise; a handle that has not stopped yet is returned as-is, including while it is
+  backing off or restarting. Once the handle stops, the next call starts a new process. It requires an explicit
+  `stateDir` or `configPath`, and the options of the first call win: options on later calls are not compared.
+  The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
+  in the same process share it.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
   unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
   `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
@@ -251,6 +260,10 @@ await client.config.reconcile({ routing: { strategy: 'fill-first' } });
 const { files } = await client.credentials.list();
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
 
+// Files and config `api-keys` entries in one list, with the runtime auth_index.
+const all = await client.credentials.listAll();
+const models = await client.credentials.modelsFor({ auth_index: all[0]!.auth_index }, { details: true });
+
 const synced = await client.credentials.reconcile({
   owner: 'chat',
   files: [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }],
@@ -274,10 +287,16 @@ refresh does not cause another upload. With `prune` (the default), files owned b
 in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
 mutated.
 
+`credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
+exposes as a runtime view. Select either a file by `name` or any credential by `auth_index` with
+`credentials.modelsFor`. Config-key models follow CPA's own resolution (model aliases, `excluded-models` with
+`*` wildcards, and per-key overrides); `details: true` adds the channel's static model definitions. Runtime
+state such as cooldowns is only available for files.
+
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list, upload (raw or multipart), reconcile by owner/revision, delete, models, download, status, fields, refresh, SIWC status |
+| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision, delete, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |
