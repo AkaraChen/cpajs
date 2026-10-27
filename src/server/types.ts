@@ -140,6 +140,8 @@ interface CommonServerOptions {
   logs?: { minLevel?: LogMinLevel };
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
+  /** Lifecycle hooks that run after each process becomes ready. */
+  hooks?: ServerHooks;
   /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
   stopTimeoutMs?: number;
   /**
@@ -148,6 +150,32 @@ interface CommonServerOptions {
    * clients stay valid. Disabled by default.
    */
   restart?: RestartPolicy;
+}
+
+/** Why cpajs is preparing to launch CPA: the first start, or a restart. */
+export type ConfigReason = 'start' | 'restart';
+
+export interface ConfigContext {
+  /** The parsed `<stateDir>/config.yaml` before this launch, or `undefined` when it does not exist. */
+  existing: CpaConfig | undefined;
+  reason: ConfigReason;
+}
+
+export interface AfterStartContext {
+  /** The server handle, already bound to the new process and ready. */
+  server: CpaServer;
+  /** `server.client()` when cpajs knows the plaintext management key, otherwise `undefined`. */
+  client: CpaClient | undefined;
+  reason: ConfigReason;
+}
+
+export interface ServerHooks {
+  /**
+   * Called after each process is ready: the first start and every restart
+   * (manual or automatic). A failure fails `startServer` and stops the process;
+   * on a restart it is reported as `restart-failed`.
+   */
+  afterStart?: (ctx: AfterStartContext) => void | Promise<void>;
 }
 
 export interface RestartPolicy {
@@ -175,19 +203,25 @@ export interface RestartPolicy {
 
 export interface StartWithConfigOptions extends CommonServerOptions {
   /**
-   * Native CPA configuration.
+   * Native CPA configuration, or a function that returns one.
    *
-   * Written as YAML to `<stateDir>/config.yaml` only when that file does not
-   * exist. On later starts the existing file is reused, so changes made through
-   * the management API (or by CPA itself) survive a `stop()` / `startServer()`
-   * cycle. Set `overwriteConfig: true` to replace it with this object.
+   * An object is written as YAML to `<stateDir>/config.yaml` only when that file
+   * does not exist. On later starts the existing file is reused, so changes made
+   * through the management API (or by CPA itself) survive a `stop()` /
+   * `startServer()` cycle. Set `overwriteConfig: true` to replace it.
+   *
+   * A function is called before the first start and before every restart, with
+   * the current file as `existing` and `reason` set to `'start'` or `'restart'`.
+   * Its return value replaces the file each time, like `overwriteConfig: true`,
+   * but cpajs still owns the listener, management secret and panel fields.
    */
-  config?: CpaConfig;
+  config?: CpaConfig | ((ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>);
   configPath?: never;
   /**
    * Replace `<stateDir>/config.yaml` even when it already exists. Default
    * `false`. When the existing file is kept, `config`, `host` and `port` are not
-   * applied and a message is emitted through `onLog`.
+   * applied and a message is emitted through `onLog`. Cannot be combined with a
+   * function `config`, which always replaces the file.
    */
   overwriteConfig?: boolean;
   /** Bind host, when cpajs writes the managed file. Default `config.server.host`, else `127.0.0.1`. */

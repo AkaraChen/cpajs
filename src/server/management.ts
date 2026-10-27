@@ -37,10 +37,10 @@ export interface ResolvedManagement {
  * the old `MANAGEMENT_PASSWORD` behaviour.
  */
 export async function resolveManagement(options: {
-  management?: ManagementOptions | false;
-  managementKey?: string;
-  configPath?: string;
-  config?: { management?: { 'secret-key'?: unknown } };
+  management?: ManagementOptions | false | undefined;
+  managementKey?: string | undefined;
+  configPath?: string | undefined;
+  config?: { management?: { 'secret-key'?: unknown } | undefined } | undefined;
 }): Promise<ResolvedManagement> {
   const none: ResolvedManagement = { key: undefined, generated: false, viaEnvironment: false, allowRemote: false, secretKeyHash: undefined };
   if (options.management === false) return none;

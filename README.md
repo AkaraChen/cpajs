@@ -45,11 +45,17 @@ await server.stop();
 ```
 
 - `config` and `configPath` are mutually exclusive.
-  - `config` is written as YAML to `<stateDir>/config.yaml` only when that file does not exist yet. On later
-    starts the existing file is reused, so changes made through the management API (or by CPA itself) survive
-    `stop()` and `startServer()`. Pass `overwriteConfig: true` to replace it; when a file is kept, `config`, `host`
-    and `port` are not applied and a `configReused` warning is emitted. Credentials go to `<stateDir>/auths`
-    unless `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
+  - `config` is either a native config object or a function that returns one.
+    - An object is written as YAML to `<stateDir>/config.yaml` only when that file does not exist yet. On later
+      starts the existing file is reused, so changes made through the management API (or by CPA itself) survive
+      `stop()` and `startServer()`. Pass `overwriteConfig: true` to replace it; when a file is kept, `config`, `host`
+      and `port` are not applied and a `configReused` warning is emitted. Credentials go to `<stateDir>/auths`
+      unless `oauth.auth-dir` is set. The server binds `127.0.0.1` unless you pass `host` or set `server.host`.
+    - A function is called before the first start and again before every restart. It receives
+      `{ existing, reason }`: the parsed current `<stateDir>/config.yaml` (or `undefined`) and `'start'` or
+      `'restart'`. Its result replaces the file each time, like `overwriteConfig: true`, while cpajs still fills in
+      the listener, management secret and panel fields. It cannot be combined with `overwriteConfig`, and a
+      `configReused` warning is never emitted.
   - `configPath` hands an existing file to CPA unchanged. CPA may rewrite it on startup: it hashes a plaintext
     `management.secret-key`, removes legacy keys that conflict with their v8 equivalents, and normalizes the
     layout (`internal/config/config_load.go` and `NormalizeConfigLayout`).
@@ -60,8 +66,8 @@ await server.stop();
   `tls.enable`. When cpajs writes the file and no port is given, it picks a free port first; a reused file keeps
   the port it already has.
 - `startServer` resolves only once `/healthz` answers. It rejects with `CpaStartError` on early exit, port
-  conflict, timeout (`startupTimeoutMs`, default 30 s) or `signal` abort. In every failure case the process is
-  stopped and the temporary directory removed.
+  conflict, timeout (`startupTimeoutMs`, default 30 s), `signal` abort, or an `afterStart` hook failure. In every
+  failure case the process is stopped and the temporary directory removed.
 - `stop()` is idempotent: on POSIX it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On
   Windows Node cannot deliver a graceful shutdown signal, so `stop()` terminates the process forcefully (equivalent
   to SIGKILL), `stopTimeoutMs` has no effect, and CPA gets no chance to flush state or update auth files. The same
@@ -69,8 +75,9 @@ await server.stop();
 - `restart({ timeoutMs, signal })` stops the old process with the same SIGTERM → SIGKILL sequence
   (`timeoutMs` defaults to `stopTimeoutMs`) and starts it again with the original options. The handle keeps
   `origin`, `baseUrl`, `host`, `port`, `stateDir` and `configPath`; `pid`, `process` and `recentLogs` point at the
-  new process. The existing `config.yaml` is reused and never rewritten, so changes made through the management
-  API survive. A dynamic port is reused too; if another process took it meanwhile, restart fails with
+  new process. With an object `config`, the existing `config.yaml` is reused and never rewritten, so changes made
+  through the management API survive. A function `config` is evaluated again before each restart and its result
+  replaces the file. A dynamic port is reused too; if another process took it meanwhile, restart fails with
   `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
   operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
   the handle stopped and cleans up a temporary state directory like `startServer` does.
@@ -88,6 +95,11 @@ await server.stop();
   `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
   `originChanged` (currently always `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A
   listener that throws is reported through `process.emitWarning` and never disturbs the server.
+- `hooks.afterStart({ server, client, reason })` runs after each process is ready: the first start and every
+  restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is `server.client()` when cpajs
+  knows the plaintext management key and `undefined` otherwise. If it throws, the first start rejects with
+  `CpaStartError` code `hook-failed` after stopping the process, while a restart fails like any other
+  (`restart-failed`, then backoff or a rejected `restart()`).
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:
