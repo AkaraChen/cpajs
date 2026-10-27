@@ -1,5 +1,12 @@
-import { describe, expect, it } from 'vitest';
-import { CpaCredentialTokenError, CpaHttpError, CpaResponseError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import {
+  CpaCredentialTokenError,
+  CpaHttpError,
+  CpaResponseError,
+  CpaUpstreamError,
+  type CpaApiKeyProvider,
+  type CpaConfig,
+} from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -68,6 +75,51 @@ describe('config', () => {
       'routing/retry/request-retry',
       'routing',
     ]);
+  });
+
+  it('types tuple and union paths by the value at that path', async () => {
+    const { client } = mockClient(() => Response.json(ok));
+    type ApiKeys = NonNullable<CpaConfig['api-keys']>;
+    type Routing = NonNullable<CpaConfig['routing']>;
+
+    // A tuple path gets the same value type as its slash-separated form.
+    await client.config.set(['api-keys', 'gemini'], [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.patchPath(['routing', 'retry'], { 'request-retry': 2 });
+    await client.config.update(['routing', 'strategy'], (current) => {
+      expectTypeOf(current).toEqualTypeOf<Routing['strategy'] | undefined>();
+      return current;
+    });
+    const tuplePath = ['api-keys', 'claude'] as const;
+    await client.config.set(tuplePath, [{ keys: [{ 'api-key': 'k' }] }]);
+
+    // Template-literal unions take the union of the branches' value types.
+    const channel = 'gemini' as 'gemini' | 'claude';
+    await client.config.set(`api-keys/${channel}`, [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.update(`api-keys/${channel}`, (current) => {
+      expectTypeOf(current).toEqualTypeOf<ApiKeys['gemini' | 'claude'] | undefined>();
+      return current;
+    });
+
+    // Tuple unions resolve per branch too.
+    const provider = 'gemini' as CpaApiKeyProvider;
+    await client.config.set(['api-keys', provider], [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.update(['api-keys', provider], (current) => {
+      expectTypeOf(current).toEqualTypeOf<ApiKeys[CpaApiKeyProvider] | undefined>();
+      return current;
+    });
+
+    // Broad strings and arrays still accept any JSON-serialisable value.
+    const dynamic: string = 'routing/strategy';
+    const dynamicProvider: string = 'gemini';
+    const broad: readonly string[] = ['api-keys', 'gemini'];
+    await client.config.set(dynamic, 1);
+    await client.config.set(`api-keys/${dynamicProvider}`, { anything: true });
+    await client.config.set(broad, [1, 2, 3]);
+
+    // @ts-expect-error a known tuple path takes its own value type
+    await client.config.set(['routing', 'retry', 'request-retry'], 'two');
+    // @ts-expect-error a union of known paths takes the union of their value types
+    await client.config.set(['api-keys', channel], 'not-a-group');
   });
 
   it('maps every route', async () => {

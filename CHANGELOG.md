@@ -6,18 +6,32 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ## Unreleased
 
+### Breaking
+
+- `config.set`, `config.patchPath` and `config.update` now type tuple paths by the value at that path, the
+  same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
+  JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
+  behaviour.
+
+### Added
+
+- `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
+  and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
+  a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
+  `['api-keys', 'gemini']` needs no `as const`. Broad `string` and `string[]` paths still accept any
+  JSON-serialisable value. Runtime behaviour is unchanged.
+- `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
+  variable.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
+
 ### Changed
 
 - `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
   is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
   string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
-
-### Added
-
-- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
-  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
-- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
-  hard-coded target.
 
 ## 0.1.0-rc.5
 
