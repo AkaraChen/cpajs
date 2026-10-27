@@ -8,6 +8,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- Structured log lines: `LogLine` now carries `level`, `requestId` and `message` when CPA's logrus format could
+  be parsed, while `line` and `stream` stay unchanged. Pass `logs: { minLevel: 'warn' }` to drop lower-severity
+  lines from `onLog` instead of re-parsing text; `recentLogs` still keeps every line, and lines without a parsed
+  level always pass. No new runtime dependencies.
 - `requests.apiCallJson(request, options)` wraps `apiCall` for JSON upstreams: a JSON string body is parsed,
   a non-2xx upstream status throws `CpaUpstreamError` (upstream `status`, `headers`, parsed `body`), and a CPA
   400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`

@@ -99,6 +99,20 @@ await server.stop();
   ```
 
   Lines longer than 64 KiB in CPA's output are truncated, with a marker saying how much was dropped.
+- Logs: `onLog` receives every line with `stream` and the redacted `line`. When the line uses CPA's log format,
+  it also has `level` (`debug`, `info`, `warn`, `error` or `fatal`), the short 8-character `requestId` (omitted
+  for CPA's `--------` placeholder) and `message` (the text after CPA's timestamp, request-id, level and caller
+  prefixes). Output that does not match the format still arrives, with only `stream` and `line`.
+
+  Pass `logs: { minLevel: 'warn' }` to drop lower-severity lines from `onLog`; `recentLogs` keeps everything,
+  because error messages often need the surrounding info lines. Lines without a parsed level always pass, so
+  unknown output is never hidden.
+
+  ```ts
+  await startServer({ config, logs: { minLevel: 'warn' }, onLog: ({ level, message, line }) => {
+    console.log(`[${level ?? 'raw'}] ${message ?? line}`);
+  } });
+  ```
 - Management key: you usually don't need one. Without `management`, cpajs generates a random key for each start,
   writes only its bcrypt hash into the managed config (remote management off), keeps the plaintext in memory,
   and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
