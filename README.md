@@ -99,6 +99,20 @@ await server.stop();
   ```
 
   Lines longer than 64 KiB in CPA's output are truncated, with a marker saying how much was dropped.
+- Logs: `onLog` receives every line with `stream` and the redacted `line`. When the line uses CPA's log format,
+  it also has `level` (`debug`, `info`, `warn`, `error` or `fatal`), the short 8-character `requestId` (omitted
+  for CPA's `--------` placeholder) and `message` (the text after CPA's timestamp, request-id, level and caller
+  prefixes). Output that does not match the format still arrives, with only `stream` and `line`.
+
+  Pass `logs: { minLevel: 'warn' }` to drop lower-severity lines from `onLog`; `recentLogs` keeps everything,
+  because error messages often need the surrounding info lines. Lines without a parsed level always pass, so
+  unknown output is never hidden.
+
+  ```ts
+  await startServer({ config, logs: { minLevel: 'warn' }, onLog: ({ level, message, line }) => {
+    console.log(`[${level ?? 'raw'}] ${message ?? line}`);
+  } });
+  ```
 - Management key: you usually don't need one. Without `management`, cpajs generates a random key for each start,
   writes only its bcrypt hash into the managed config (remote management off), keeps the plaintext in memory,
   and gives you `server.client()`: a management client bound to this server. The key is never exposed, and
@@ -211,6 +225,12 @@ await client.config.reconcile({ routing: { strategy: 'fill-first' } });
 const { files } = await client.credentials.list();
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
 
+const synced = await client.credentials.reconcile({
+  owner: 'chat',
+  files: [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }],
+});
+console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [] }
+
 const login = await client.oauth.start({ provider: 'claude' });
 console.log('open', login.url);
 await client.oauth.waitForCompletion(login.state);
@@ -222,17 +242,26 @@ try {
 }
 ```
 
+`credentials.reconcile` keeps a set of files owned by one caller in sync. Uploads carry a reserved
+`x-cpajs: { owner, revision }` field. Only `revision` is compared, so CPA rewriting a file during a token
+refresh does not cause another upload. With `prune` (the default), files owned by `owner` that are no longer
+in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
+mutated.
+
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list, upload (raw or multipart), delete, models, download, status, fields, refresh, SIWC status |
+| `credentials` | list, upload (raw or multipart), reconcile by owner/revision, delete, models, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |
 | `routing` | cooldown reset, model definitions |
-| `requests` | server-side `api-call` |
+| `requests` | server-side `api-call` (`apiCall`, `apiCallJson`) |
 | `plugins` | list, delete, store, install, quota |
 | `server` | `/healthz`, version headers, latest release |
+
+`requests.apiCallJson()` is the throwing variant of `apiCall`: a JSON string body becomes `data`, a non-2xx
+upstream status throws `CpaUpstreamError`, and an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
 
 Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's transient
 `500 invalid_config` (a read landing while `config.yaml` is rewritten) up to three times after
@@ -240,6 +269,10 @@ Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's tr
 
 - `CpaHttpError` for a non-2xx response. It carries `status`, the raw `body`, parsed `data`, and `errorCode` /
   `errorMessage`.
+- `CpaUpstreamError` when `requests.apiCallJson` gets a non-2xx upstream status. It carries the upstream
+  `status`, `headers`, and `body` (parsed when JSON).
+- `CpaCredentialTokenError` when `requests.apiCallJson` cannot resolve `$TOKEN$`. It carries `status` and
+  `errorCode`.
 - `CpaNetworkError` when the request fails.
 - `CpaTimeoutError` when the request times out.
 - `CpaAbortError` when your `signal` aborts the request.

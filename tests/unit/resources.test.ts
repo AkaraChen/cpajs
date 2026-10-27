@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CpaHttpError, type CpaConfig } from '../../src/client/index.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -314,6 +314,104 @@ describe('credentials', () => {
     expect(await files[1]!.text()).toBe('{"type":"codex"}');
   });
 
+  it('reconciles owned files by revision and prunes the rest', async () => {
+    const markers: Record<string, Record<string, unknown>> = {
+      'chat-a.json': { owner: 'chat', revision: 'r1' },
+      'chat-b.json': { owner: 'chat', revision: 'r1' },
+      'chat-stale.json': { owner: 'chat', revision: 'r1' },
+      'other.json': { owner: 'other', revision: 'r1' },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-b.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+            { name: 'chat-memory', source: 'memory' },
+          ],
+        });
+      }
+      if (req.url.pathname.endsWith('/download')) {
+        const name = req.url.searchParams.get('name')!;
+        return Response.json({ type: 'claude', email: `${name}@example.com`, 'x-cpajs': markers[name] });
+      }
+      return Response.json({ status: 'ok' });
+    });
+
+    const added = { type: 'claude', email: 'added@example.com' };
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [
+        // Same revision: CPA may have rewritten the tokens, but this must not be re-uploaded.
+        { name: 'chat-a.json', content: { type: 'claude', access_token: 'rewritten-by-cpa' }, revision: 'r1' },
+        { name: 'chat-b.json', content: { type: 'claude', email: 'b@example.com' }, revision: 'r2' },
+        { name: 'chat-c.json', content: added, revision: 'r9' },
+      ],
+    });
+
+    expect(result).toEqual({ uploaded: ['chat-b.json', 'chat-c.json'], deleted: ['chat-stale.json'], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual([
+      'chat-a.json',
+      'chat-b.json',
+      'chat-stale.json',
+      'other.json',
+    ]);
+    const uploads = calls.filter((c) => c.method === 'POST');
+    expect(uploads.map((c) => c.url.search)).toEqual(['?name=chat-b.json', '?name=chat-c.json']);
+    expect(JSON.parse(uploads[1]!.body)).toEqual({ type: 'claude', email: 'added@example.com', 'x-cpajs': { owner: 'chat', revision: 'r9' } });
+    expect(added).toEqual({ type: 'claude', email: 'added@example.com' });
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url.search)).toEqual(['?name=chat-stale.json']);
+  });
+
+  it('leaves unmanaged files alone when prune is off', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+          ],
+        });
+      }
+      return Response.json({ type: 'claude', 'x-cpajs': { owner: 'chat', revision: 'r1' } });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' }],
+      prune: false,
+    });
+
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual(['chat-a.json']);
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+  });
+
+  it('refuses to overwrite a file owned by someone else', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.url.pathname.endsWith('/download')
+        ? Response.json({ type: 'claude', 'x-cpajs': { owner: 'other', revision: 'r1' } })
+        : Response.json({ observed_at: '', files: [{ name: 'other.json', source: 'file' }] }),
+    );
+
+    await expect(
+      client.credentials.reconcile({ owner: 'chat', files: [{ name: 'other.json', content: { type: 'claude' }, revision: 'r2' }] }),
+    ).rejects.toThrow(/belongs to owner "other", not "chat"/);
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+  });
+
+  it('rejects duplicate file names before making requests', async () => {
+    const { client, calls } = mockClient();
+    const file = { name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' };
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file, file] })).rejects.toThrow(/more than once/);
+    expect(calls).toEqual([]);
+  });
+
   it('maps the remaining routes', async () => {
     const { client, calls } = mockClient((req) =>
       req.url.pathname.endsWith('/download') ? new Response('{"type":"codex"}', { headers: { 'Content-Type': 'application/json' } }) : Response.json({ status: 'ok' }),
@@ -456,5 +554,61 @@ describe('ops resources', () => {
     expect(calls[0]!.url.pathname).toBe('/prefix/healthz');
     expect(calls[0]!.headers.get('authorization')).toBeNull();
     expect(calls[1]!.url.pathname).toBe('/prefix/v8/management/server/latest-version');
+  });
+});
+
+describe('apiCallJson', () => {
+  const call = { method: 'GET', url: 'https://upstream.test/data', auth_index: 'abc' };
+
+  it('returns status, headers and a parsed JSON body', async () => {
+    const { client, calls } = mockClient(() =>
+      Response.json({ status_code: 200, header: { 'X-Upstream': ['yes'] }, body: '{"ok":true,"value":1}' }),
+    );
+    const result = await client.requests.apiCallJson<{ ok: boolean; value: number }>(call);
+    expect(result).toEqual({ status: 200, headers: { 'X-Upstream': ['yes'] }, data: { ok: true, value: 1 } });
+    expect(calls[0]!.url.pathname).toBe('/v8/management/requests/api-call');
+    expect(JSON.parse(calls[0]!.body)).toEqual(call);
+  });
+
+  it('throws CpaUpstreamError with the upstream status, headers and parsed body', async () => {
+    const { client } = mockClient(() =>
+      Response.json({ status_code: 401, header: { 'WWW-Authenticate': ['Bearer'] }, body: '{"error":"unauthorized"}' }),
+    );
+    const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaUpstreamError;
+    expect(error).toBeInstanceOf(CpaUpstreamError);
+    expect(error.status).toBe(401);
+    expect(error.headers).toEqual({ 'WWW-Authenticate': ['Bearer'] });
+    expect(error.body).toEqual({ error: 'unauthorized' });
+    expect(error.message).toContain('upstream 401');
+  });
+
+  it('throws CpaCredentialTokenError for CPA token-resolution failures', async () => {
+    for (const code of ['auth token not found', 'auth credential not found for auth_index', 'auth token refresh failed']) {
+      const { client } = mockClient(() => Response.json({ error: code }, { status: 400 }));
+      const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaCredentialTokenError;
+      expect(error).toBeInstanceOf(CpaCredentialTokenError);
+      expect(error.status).toBe(400);
+      expect(error.errorCode).toBe(code);
+      expect(error.cause).toBeInstanceOf(CpaHttpError);
+    }
+  });
+
+  it('keeps other CPA errors as CpaHttpError', async () => {
+    const { client } = mockClient(() => Response.json({ error: 'invalid url' }, { status: 400 }));
+    const error = await client.requests.apiCallJson(call).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect(error).not.toBeInstanceOf(CpaCredentialTokenError);
+  });
+
+  it('keeps a non-JSON body as text and returns undefined for an empty one', async () => {
+    const plain = mockClient(() => Response.json({ status_code: 200, header: {}, body: 'pong' }));
+    await expect(plain.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: 'pong' });
+    const empty = mockClient(() => Response.json({ status_code: 200, header: {}, body: '' }));
+    await expect(empty.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: undefined });
+  });
+
+  it('leaves apiCall resolving on an upstream error', async () => {
+    const { client } = mockClient(() => Response.json({ status_code: 401, header: {}, body: 'no' }));
+    await expect(client.requests.apiCall(call)).resolves.toEqual({ status_code: 401, header: {}, body: 'no' });
   });
 });
