@@ -6,22 +6,46 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ## Unreleased
 
-### Added
+### Breaking
 
-- `credentials.listAll` config entries expose `apiKey`, the entry's plaintext API key (a native provider key or
-  an OpenAI-compatible key entry). It is absent for a keyless OpenAI-compatible group and for file entries.
-- `CpaCredentialNotFoundError` (with `CpaCredentialNotFoundSelector`) carries `selector`
-  (`{ name?, auth_index? }`). `credentials.setStatus`, `credentials.delete` and `credentials.modelsFor` throw it
-  when cpajs cannot resolve the selector; a 404 answered by upstream remains a `CpaHttpError`.
-- `credentials.reconcile`'s `adopt` may return `{ revision, remove }` to delete legacy top-level fields such as
-  `chat_seed` from the kept file before the `x-cpajs` marker is written. Listing `x-cpajs` in `remove` is
-  ignored; returning a plain revision string works as before.
+Scope narrowed to running CPA and a faithful typed client for its v8 management API. Downstream policy and
+high-level wrappers moved back to callers; see [docs/scope.md](docs/scope.md) and the migration notes.
 
-### Changed
-
-- `credentials.setStatus`, `credentials.delete` and `credentials.modelsFor` throw `CpaCredentialNotFoundError`
-  instead of a plain `Error` for a selector they resolved to nothing. Code catching `Error` keeps working;
-  `instanceof CpaCredentialNotFoundError` lets a caller map the result to its own `not_found`.
+- **Server: automatic restart is removed.** The whole `restart` option (`onUnexpectedExit`, `onStartFailure`,
+  `backoffMs`, `stableAfterMs`, `maxAttempts`, `allowNewPort`), its backoff loop, first-start retries,
+  `allowNewPort` switching and `originChanged` are gone. `restart()` is manual again and rejects once the handle has stopped,
+  including after an unexpected exit. Use `server.exited` plus another `startServer()`, or call `restart()`
+  yourself.
+- **Server: only the `exit` event remains.** `restart`, `restarted` and `restart-failed` were removed, together
+  with the `on` start option. `server.on('exit')` still reports `reason: 'stop' | 'restart' | 'unexpected'`;
+  `willRestart` is true only while a manual restart replaces the process.
+- **Server: `hooks.afterStart`, its cleanup function, `AfterStartContext`, `requireClient()` and the
+  `startServer` overloads/generics that narrowed `client` are removed.** `CpaStartError` no longer has the
+  `hook-failed` code.
+- **Server: `singleton` and the `globalThis[Symbol.for('cpajs.servers')]` registry are removed.** Start one
+  server per state directory yourself if needed.
+- **Server: log filtering is removed.** `logs`, `LogOptions`, `logs.minLevel` and `logs.unleveled` are gone;
+  `onLog` receives every redacted line and keeps `level` / `requestId` / `message` parsing. Filter on
+  `log.level` in your callback.
+- **Client: `config.update`, `config.reconcile`, `ConfigMutationOptions`, `ConfigUpdateResult`,
+  `ConfigReconcileResult` and the per-client serialisation locks are removed.** Use `config.getPath` with
+  `config.set` / `config.patchPath` and an `ifMatch` ETag, retrying on 412 yourself.
+- **Client: automatic `invalid_config` retries and `retryInvalidConfig` are removed.** Read errors are reported
+  as `CpaHttpError`; retry your own transient reads.
+- **Client: `baseUrl` must be `string | URL`; the function form and `BaseUrl` type are removed.**
+- **Client: `credentials.reconcile`, `x-cpajs` markers, `adopt` / `remove`, `CpaReconcileError` and the related
+  reconcile types are removed.** Upload, compare and delete files with the primitive credential methods.
+- **Client: `credentials.listAll`, `CredentialSummary` / `FileCredentialSummary` / `ConfigCredentialSummary` and
+  the config-key view (`apiKey`, inferred `disabled`, group inheritance) are removed.** `credentials.list`
+  returns upstream's file entries; read config keys through `client.config`.
+- **Client: `credentials.modelsFor`, the model-definitions cache and `clearModelDefinitionsCache`, and the
+  provider/channel tables are removed.** Use `credentials.models(name)` for a file and CPA's routing/model
+  definitions directly.
+- **Client: `credentials.setStatus` / `credentials.delete` no longer target config keys by `auth_index`, and
+  `CpaCredentialNotFoundError` is removed.** Both pass through the upstream file routes; update config
+  `api-keys` through `client.config`.
+- **Client: `requests.apiCallJson`, `CpaUpstreamError` and `CpaCredentialTokenError` are removed.** `apiCall`
+  still returns the upstream `status_code`, `header` and `body` unchanged.
 
 ## 0.1.0-rc.6
 

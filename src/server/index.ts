@@ -8,13 +8,11 @@ import {
   inspectConfigFile,
   readManagedConfig,
   readManagedConfigObject,
-  updateManagedPort,
   updateManagedSecret,
   writeManagedConfig,
   type PreparedConfig,
 } from './config.ts';
 import { CpaStartError } from './errors.ts';
-import { isLogLevel } from './logs.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
 import { bundledPanel } from './panel.ts';
 import { ManagedProcess } from './process.ts';
@@ -23,27 +21,19 @@ import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import { createWarner } from './warnings.ts';
 import type {
-  AfterStartCleanup,
-  AfterStartContext,
-  AfterStartResult,
   CpaServer,
   CpaServerEvents,
   ConfigContext,
-  ConfigReason,
   ExitReason,
   ExitResult,
   LogLine,
-  LogOptions,
-  ManagementOptions,
   RestartOptions,
-  RestartPolicy,
-  RestartReason,
   ServerClientOptions,
   StartServerOptions,
   StartWithConfigOptions,
   StopOptions,
 } from './types.ts';
-import { createClient, type CpaClient } from '../client/index.ts';
+import { createClient } from '../client/index.ts';
 import type { CpaConfig } from '../client/types/config.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
@@ -62,30 +52,11 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const PROBE_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
-const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1_000, 5_000, 30_000];
-const DEFAULT_STABLE_AFTER_MS = 60_000;
-// Symbol.for keeps the registry shared when this module is evaluated twice,
-// e.g. by a dev server that reloads modules without restarting the process.
-const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
 type ConfigFunction = (ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>;
 
-/**
- * Config values whose type proves that cpajs knows the management key: omitted,
- * a function (whose `secret-key` never chooses the key), or an object whose type
- * rules out `management['secret-key']`. A wide `CpaConfig` variable falls back
- * to the general overload and keeps `client: CpaClient | undefined`.
- */
-type KnownClientConfig = ConfigFunction | (CpaConfig & { management?: { 'secret-key'?: undefined } });
-
 function validate(options: StartServerOptions): void {
   const config = typeof options.config === 'function' ? undefined : options.config;
-  if (options.singleton === true && options.configPath === undefined && options.stateDir === undefined) {
-    throw new CpaStartError(
-      'invalid-options',
-      'singleton requires an explicit stateDir or configPath so other starts can find the same server.',
-    );
-  }
   if (options.config !== undefined && options.configPath !== undefined) {
     throw new CpaStartError('invalid-options', 'config and configPath are mutually exclusive.');
   }
@@ -104,28 +75,6 @@ function validate(options: StartServerOptions): void {
   const { port } = options;
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65_535)) {
     throw new CpaStartError('invalid-options', `Invalid port ${String(port)}.`);
-  }
-  const restart = options.restart;
-  if (restart?.backoffMs !== undefined) {
-    if (restart.backoffMs.length === 0 || restart.backoffMs.some((ms) => !Number.isFinite(ms) || ms < 0)) {
-      throw new CpaStartError('invalid-options', 'restart.backoffMs must contain at least one non-negative finite number.');
-    }
-  }
-  if (
-    restart?.maxAttempts !== undefined &&
-    restart.maxAttempts !== Number.POSITIVE_INFINITY &&
-    (!Number.isInteger(restart.maxAttempts) || restart.maxAttempts < 0)
-  ) {
-    throw new CpaStartError('invalid-options', 'restart.maxAttempts must be a non-negative integer or Infinity.');
-  }
-  if (restart?.stableAfterMs !== undefined && (!Number.isFinite(restart.stableAfterMs) || restart.stableAfterMs < 0)) {
-    throw new CpaStartError('invalid-options', 'restart.stableAfterMs must be a non-negative finite number.');
-  }
-  if (restart?.onStartFailure !== undefined && typeof restart.onStartFailure !== 'boolean') {
-    throw new CpaStartError('invalid-options', 'restart.onStartFailure must be a boolean.');
-  }
-  if (restart?.allowNewPort !== undefined && typeof restart.allowNewPort !== 'boolean') {
-    throw new CpaStartError('invalid-options', 'restart.allowNewPort must be a boolean.');
   }
   if (options.management !== undefined && options.managementKey !== undefined) {
     throw new CpaStartError(
@@ -152,14 +101,6 @@ function validate(options: StartServerOptions): void {
       'invalid-options',
       'Do not set MANAGEMENT_PASSWORD in env: cpajs only passes it to CPA for management: { key, viaEnvironment: true }, because upstream treats it as enabling remote management.',
     );
-  }
-  const minLevel: string | undefined = options.logs?.minLevel;
-  if (minLevel !== undefined && (!isLogLevel(minLevel) || minLevel === 'fatal')) {
-    throw new CpaStartError('invalid-options', `Invalid logs.minLevel ${JSON.stringify(minLevel)}; expected debug, info, warn or error.`);
-  }
-  const unleveled: string | undefined = options.logs?.unleveled;
-  if (unleveled !== undefined && unleveled !== 'all' && unleveled !== 'stderr' && unleveled !== 'none') {
-    throw new CpaStartError('invalid-options', `Invalid logs.unleveled ${JSON.stringify(unleveled)}; expected all, stderr or none.`);
   }
   const requestedKey = (options.management === false ? undefined : options.management?.key) ?? options.managementKey;
   if (requestedKey === undefined) return;
@@ -277,7 +218,6 @@ interface LaunchOptions {
   env: NodeJS.ProcessEnv;
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
-  logs?: LogOptions | undefined;
   host: string;
   port: number;
   origin: string;
@@ -306,7 +246,6 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
       env: options.env,
       redact: options.redact,
       onLog: options.onLog,
-      logs: options.logs,
     });
   } catch (cause) {
     // Node reports spawn failures through the 'error' event; Bun throws synchronously.
@@ -361,76 +300,12 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
  *
  * On any failure the child process is stopped and resources created by this
  * call (the temporary state directory) are removed before the error is thrown.
- *
- * With `singleton: true`, concurrent starts for the same state directory (or
- * `configPath`) share one handle or one in-flight start. The entry is removed
- * once the handle stops, so a later call starts a new process.
  */
-// Overload order matters: a visible secret-key keeps the client optional, then
-// a known key narrows it, and the general overload stays last so it keeps
-// reporting invalid options.
-export function startServer(
-  options: StartWithConfigOptions & { config: { management: { 'secret-key': string } } },
-): Promise<CpaServer>;
-export function startServer(options: StartServerOptions<undefined> & { management: false }): Promise<CpaServer>;
-export function startServer(
-  options: Omit<StartWithConfigOptions<CpaClient>, 'config'> & {
-    management?: ManagementOptions;
-    config?: KnownClientConfig;
-  },
-): Promise<CpaServer>;
-export function startServer(options?: StartServerOptions): Promise<CpaServer>;
-export async function startServer(
-  rawOptions: StartServerOptions<never> = {} as StartServerOptions<never>,
-): Promise<CpaServer> {
-  const options = rawOptions as StartServerOptions;
-  const key = singletonKey(options);
-  if (key === undefined) return startServerInstance(options);
-
-  const registry = singletonRegistry();
-  const existing = registry.get(key);
-  if (existing !== undefined) return existing;
-
-  let pending: Promise<CpaServer>;
-  const release = (): void => {
-    if (registry.get(key) === pending) registry.delete(key);
-  };
-  pending = startServerInstance(options, release).catch((error: unknown) => {
-    release();
-    throw error;
-  });
-  registry.set(key, pending);
-  return pending;
-}
-
-function singletonKey(options: StartServerOptions): string | undefined {
-  if (options.singleton !== true) return undefined;
-  if (options.configPath !== undefined) return `config:${resolve(options.configPath)}`;
-  // A missing stateDir is rejected by validate(); leave it to startServerInstance.
-  if (options.stateDir === undefined) return undefined;
-  return `state:${resolve(options.stateDir)}`;
-}
-
-function singletonRegistry(): Map<string, Promise<CpaServer>> {
-  const shared = globalThis as unknown as Record<symbol, Map<string, Promise<CpaServer>> | undefined>;
-  return (shared[SINGLETON_SERVERS] ??= new Map());
-}
-
-async function startServerInstance(options: StartServerOptions, onSettled?: () => void): Promise<CpaServer> {
+export async function startServer(options: StartServerOptions = {}): Promise<CpaServer> {
   validate(options);
   const { signal } = options;
   if (signal?.aborted) throw abortError(signal, '');
   const events = createEventBus();
-  if (options.on !== undefined) {
-    for (const [event, listener] of Object.entries(options.on)) {
-      if (listener !== undefined) {
-        events.on(
-          event as keyof CpaServerEvents,
-          listener as (event: CpaServerEvents[keyof CpaServerEvents]) => void,
-        );
-      }
-    }
-  }
 
   const management = await resolveManagement({
     management: options.management,
@@ -478,15 +353,6 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
     // instead of leaving a temporary directory behind.
     if (ownsStateDir) await rm(stateDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   };
-  // A failed first start that will be retried keeps its stateDir (and the
-  // singleton entry) until the final attempt settles.
-  let retainingForRetry = false;
-  const cleanupUnlessRetrying = async (): Promise<void> => {
-    if (!retainingForRetry) await cleanup();
-  };
-  const settleUnlessRetrying = (): void => {
-    if (!retainingForRetry) onSettled?.();
-  };
   // True when cpajs may serve its own panel for this stateDir; the config can
   // still opt out by naming a panel repository on each evaluation.
   const panelEligible =
@@ -506,78 +372,65 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           ...(management.generated ? { disableControlPanel: true } : {}),
         };
 
-  const restartPolicy = options.restart;
-  const onStartFailure = restartPolicy?.onStartFailure === true;
-  const startBackoffMs = restartPolicy?.backoffMs ?? DEFAULT_BACKOFF_MS;
-  const startMaxAttempts = restartPolicy?.maxAttempts ?? Number.POSITIVE_INFINITY;
-  const retryableStartError = (error: unknown): boolean =>
-    error instanceof CpaStartError &&
-    (error.code === 'exited' ||
-      error.code === 'timeout' ||
-      error.code === 'port-in-use' ||
-      error.code === 'hook-failed');
-  /** Emits a start failure and waits before the next attempt; returns false to rethrow. */
-  const retryStart = async (error: unknown, attempt: number, retryable: boolean): Promise<boolean> => {
-    if (!onStartFailure || !retryable) return false;
-    if (signal?.aborted) throw abortError(signal, '');
-    const willRetry = attempt <= startMaxAttempts;
-    events.emit('restart-failed', { error, attempt, willRetry });
-    if (!willRetry) return false;
-    const wait = startBackoffMs[Math.min(attempt - 1, startBackoffMs.length - 1)]!;
-    try {
-      await delay(wait, undefined, signal ? { signal } : {});
-    } catch {
-      throw abortError(signal!, '');
-    }
-    if (signal?.aborted) throw abortError(signal!, '');
-    return true;
-  };
-
+  const configFn: ConfigFunction | undefined = typeof options.config === 'function' ? options.config : undefined;
   let reservation: PortReservation | undefined;
   let wroteConfig = false;
   try {
-    // A config function is evaluated once per start attempt (including a retry
-    // after a failed first start), before that attempt's first launch, and
-    // again before every restart.
-    const configFn: ConfigFunction | undefined =
-      typeof options.config === 'function' ? options.config : undefined;
+    // A config function is evaluated once before this start's first launch, and
+    // again before every manual restart.
+    const initialConfig: CpaConfig | undefined =
+      configFn === undefined
+        ? (options.config as CpaConfig | undefined)
+        : await configFn({ existing: await readManagedConfigObject(stateDir), reason: 'start' });
+    const pinnedPanel = panelEligible && initialConfig?.management?.['panel-github-repository'] === undefined;
 
-    startAttempt: for (let startAttempt = 1; ; startAttempt++) {
-      if (signal?.aborted) throw abortError(signal, '');
-      // Each start attempt gets its own readiness window; a timed-out try does
-      // not eat into the next one.
-      const deadline = Date.now() + startupTimeoutMs;
-      const existingConfig: CpaConfig | undefined =
-        configFn === undefined ? undefined : await readManagedConfigObject(stateDir);
-      let initialConfig: CpaConfig | undefined;
-      try {
-        initialConfig =
-          configFn === undefined
-            ? (options.config as CpaConfig | undefined)
-            : await configFn({ existing: existingConfig, reason: 'start' });
-      } catch (error) {
-        // A config function may fail for transient reasons (e.g. a fetch); it
-        // is retried with the same policy even when it throws a custom error.
-        if (await retryStart(error, startAttempt, true)) continue;
-        throw error;
-      }
-      const pinnedPanel =
-        panelEligible && initialConfig?.management?.['panel-github-repository'] === undefined;
-
-      for (let attempt = 1; ; attempt++) {
-        let prepared: PreparedConfig;
-        let dynamicPort = false;
-        if (options.configPath !== undefined) {
-          prepared = await inspectConfigFile(options.configPath);
-          if (management.key !== undefined && prepared.management.hasSecret) {
-            throw new CpaStartError(
-              'invalid-options',
-              'management.key conflicts with the management.secret-key in configPath. Keep one key: remove management.key or remove secret-key from the file.',
-            );
+    for (let attempt = 1; ; attempt++) {
+      let prepared: PreparedConfig;
+      let dynamicPort = false;
+      if (options.configPath !== undefined) {
+        prepared = await inspectConfigFile(options.configPath);
+        if (management.key !== undefined && prepared.management.hasSecret) {
+          throw new CpaStartError(
+            'invalid-options',
+            'management.key conflicts with the management.secret-key in configPath. Keep one key: remove management.key or remove secret-key from the file.',
+          );
+        }
+      } else if (configFn !== undefined) {
+        // The function ran once for this start; a dynamic-port retry only writes
+        // the same result again with a fresh port.
+        const listen = configListen(options, initialConfig);
+        if (listen.port === 0) {
+          reservation = await findFreePort(listen.host);
+          listen.port = reservation.port;
+          dynamicPort = true;
+        }
+        prepared = await writeManagedConfig(initialConfig ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
+        wroteConfig = true;
+      } else {
+        // The file belongs to CPA after the first start: management API writes and
+        // CPA's own normalisation must survive later starts.
+        const existing = options.overwriteConfig || wroteConfig ? undefined : await readManagedConfig(stateDir);
+        if (existing) {
+          prepared = existing;
+          // A reused file keeps everything CPA persisted, but the key passed to this
+          // start must still work: rewrite only the management fields when they differ.
+          if (
+            managedSecret !== undefined &&
+            (existing.management.allowRemote !== managedSecret.allowRemote ||
+              !(await keyMatches(management.key!, existing.management.secretKey)))
+          ) {
+            await updateManagedSecret(existing.configPath, managedSecret);
+            prepared = (await readManagedConfig(stateDir))!;
+            // A generated key changes on every start; only a caller's key change is news.
+            if (!management.generated) {
+              warn('managementKeyUpdated', `Replaced management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`);
+            }
           }
-        } else if (configFn !== undefined) {
-          // The function ran once for this start attempt; a dynamic-port retry
-          // only writes the same result again with a fresh port.
+          warn(
+            'configReused',
+            `Kept the existing config at ${existing.configPath}; this start's config, host and port were not applied. Pass overwriteConfig: true to replace it.`,
+          );
+        } else {
           const listen = configListen(options, initialConfig);
           if (listen.port === 0) {
             reservation = await findFreePort(listen.host);
@@ -586,177 +439,93 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           }
           prepared = await writeManagedConfig(initialConfig ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
           wroteConfig = true;
-        } else {
-          // The file belongs to CPA after the first start: management API writes and
-          // CPA's own normalisation must survive later starts.
-          const existing = options.overwriteConfig || wroteConfig ? undefined : await readManagedConfig(stateDir);
-          if (existing) {
-            prepared = existing;
-            // A reused file keeps everything CPA persisted, but the key passed to this
-            // start must still work: rewrite only the management fields when they differ.
-            if (
-              managedSecret !== undefined &&
-              (existing.management.allowRemote !== managedSecret.allowRemote ||
-                !(await keyMatches(management.key!, existing.management.secretKey)))
-            ) {
-              await updateManagedSecret(existing.configPath, managedSecret);
-              prepared = (await readManagedConfig(stateDir))!;
-              // A generated key changes on every start; only a caller's key change is news.
-              if (!management.generated) {
-                warn('managementKeyUpdated', `Replaced management.secret-key / allow-remote in ${existing.configPath} for the management key of this start.`);
-              }
-            }
-            warn(
-              'configReused',
-              `Kept the existing config at ${existing.configPath}; this start's config, host and port were not applied. Pass overwriteConfig: true to replace it.`,
-            );
-          } else {
-            const listen = configListen(options, initialConfig);
-            if (listen.port === 0) {
-              reservation = await findFreePort(listen.host);
-              listen.port = reservation.port;
-              dynamicPort = true;
-            }
-            prepared = await writeManagedConfig(initialConfig ?? {}, stateDir, listen, managedSecret, { pinnedPanel });
-            wroteConfig = true;
-          }
         }
+      }
 
-        const { host, port, tls } = prepared.listen;
-        const target = host === '' ? 'all interfaces' : host;
-        const exposed = !isLoopbackHost(host);
-        if (management.viaEnvironment) {
-          warn(
-            'managementViaEnvironment',
-            'management.viaEnvironment passes the key through MANAGEMENT_PASSWORD, which upstream compares in plaintext and which always enables remote management' +
-              (exposed ? `; the server binds ${target}, so the management API is reachable from non-loopback clients.` : '.'),
-          );
-        } else if (prepared.management.allowRemote && exposed) {
-          warn(
-            'remoteManagementExposed',
-            `management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
-          );
-        }
+      const { host, port, tls } = prepared.listen;
+      const target = host === '' ? 'all interfaces' : host;
+      const exposed = !isLoopbackHost(host);
+      if (management.viaEnvironment) {
+        warn(
+          'managementViaEnvironment',
+          'management.viaEnvironment passes the key through MANAGEMENT_PASSWORD, which upstream compares in plaintext and which always enables remote management' +
+            (exposed ? `; the server binds ${target}, so the management API is reachable from non-loopback clients.` : '.'),
+        );
+      } else if (prepared.management.allowRemote && exposed) {
+        warn(
+          'remoteManagementExposed',
+          `management.allow-remote is true and the server binds ${target}, so the management API is reachable from non-loopback clients.`,
+        );
+      }
 
-        await applyPinnedPanel({ panelFile, panelEligible, pinnedPanel, prepared, stateDir, env });
+      await applyPinnedPanel({ panelFile, panelEligible, pinnedPanel, prepared, stateDir, env });
 
-        const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
-        if (!dynamicPort && !(await isPortFree(host, port))) {
-          const error = new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
-          if (await retryStart(error, startAttempt, true)) continue startAttempt;
-          throw error;
-        }
+      const redact = createRedactor([management.key, options.home?.jwt, ...prepared.secrets, ...(options.redact ?? [])]);
+      if (!dynamicPort && !(await isPortFree(host, port))) {
+        throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
+      }
 
-        const origin = formatOrigin(tls ? 'https' : 'http', connectHost(host), port);
-        // Release the dynamic-port reservation as late as possible so the gap
-        // before CPA binds stays small.
-        const held = reservation;
-        reservation = undefined;
-        await held?.release();
-        const result = await launchProcess({
-          binaryPath: spawnPath,
+      const origin = formatOrigin(tls ? 'https' : 'http', connectHost(host), port);
+      // Release the dynamic-port reservation as late as possible so the gap
+      // before CPA binds stays small.
+      const held = reservation;
+      reservation = undefined;
+      await held?.release();
+      const result = await launchProcess({
+        binaryPath: spawnPath,
+        supervised,
+        args: [...prefixArgs, '-config', prepared.configPath, ...extraArgs],
+        stateDir,
+        env,
+        redact,
+        onLog: options.onLog,
+        host,
+        port,
+        origin,
+        deadline: Date.now() + startupTimeoutMs,
+        signal,
+        startupTimeoutMs,
+        portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
+        allowRetry: dynamicPort && attempt < DYNAMIC_PORT_ATTEMPTS,
+        abortMessage: 'startServer was aborted.',
+      });
+
+      if (result.kind === 'ready') {
+        const noClientReason =
+          options.management === false
+            ? 'the management API is disabled (management: false)'
+            : options.configPath !== undefined
+              ? 'with configPath, cpajs does not know the key; pass management: { key, viaEnvironment: true } or create a client with your own key'
+              : "config.management['secret-key'] is set, so the key is yours; create a client with it";
+        return createHandle(result.proc, {
+          binaryPath: binary.path,
+          managementKey: management.key,
+          noClientReason,
+          spawnPath,
           supervised,
-          args: [...prefixArgs, '-config', prepared.configPath, ...extraArgs],
+          prefixArgs,
+          configPath: prepared.configPath,
+          listen: prepared.listen,
+          origin,
           stateDir,
           env,
+          extraArgs,
           redact,
+          redactExtras: options.redact ?? [],
+          homeJwt: options.home?.jwt,
           onLog: options.onLog,
-          logs: options.logs,
-          host,
-          port,
-          origin,
-          deadline,
-          signal,
           startupTimeoutMs,
-          portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
-          allowRetry: dynamicPort && attempt < DYNAMIC_PORT_ATTEMPTS,
-          abortMessage: 'startServer was aborted.',
+          stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
+          events,
+          configFn,
+          managedSecret,
+          panelEligible,
+          panelFile,
+          cleanup,
         });
-
-        if (result.kind === 'ready') {
-          const noClientReason =
-            options.management === false
-              ? 'the management API is disabled (management: false)'
-              : options.configPath !== undefined
-                ? 'with configPath, cpajs does not know the key; pass management: { key, viaEnvironment: true } or create a client with your own key'
-                : "config.management['secret-key'] is set, so the key is yours; create a client with it";
-          const { server: handle, setAfterStartCleanup } = createHandle(result.proc, {
-            binaryPath: binary.path,
-            managementKey: management.key,
-            noClientReason,
-            spawnPath,
-            supervised,
-            prefixArgs,
-            configPath: prepared.configPath,
-            listen: prepared.listen,
-            origin,
-            dynamicPort,
-            stateDir,
-            env,
-            extraArgs,
-            redact,
-            redactExtras: options.redact ?? [],
-            homeJwt: options.home?.jwt,
-            onLog: options.onLog,
-            logs: options.logs,
-            startupTimeoutMs,
-            stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
-            restart: options.restart,
-            afterStart: options.hooks?.afterStart,
-            events,
-            configFn,
-            managedSecret,
-            panelEligible,
-            panelFile,
-            cleanup: cleanupUnlessRetrying,
-            onSettled: settleUnlessRetrying,
-          });
-          if (options.hooks?.afterStart !== undefined) {
-            let hookError: unknown;
-            let hookFailed = false;
-            let hookResult: AfterStartResult | undefined;
-            try {
-              hookResult = await options.hooks.afterStart(
-                afterStartContext(
-                  handle,
-                  management.key === undefined ? undefined : handle.client(),
-                  'start',
-                  noClientReason,
-                ),
-              );
-            } catch (cause) {
-              hookError = cause;
-              hookFailed = true;
-            }
-            setAfterStartCleanup(typeof hookResult === 'function' ? hookResult : undefined);
-            if (signal?.aborted) {
-              const output = handle.recentLogs.map((log) => log.line).join('\n');
-              await handle.stop();
-              throw abortError(signal, output);
-            }
-            if (hookFailed) {
-              const error = new CpaStartError(
-                'hook-failed',
-                `afterStart hook failed: ${redact((hookError as Error)?.message ?? String(hookError))}`,
-                { cause: hookError },
-              );
-              // Keep the stateDir and singleton entry while another attempt follows.
-              retainingForRetry = onStartFailure && startAttempt <= startMaxAttempts && !signal?.aborted;
-              try {
-                await handle.stop();
-              } finally {
-                retainingForRetry = false;
-              }
-              if (await retryStart(error, startAttempt, true)) continue startAttempt;
-              throw error;
-            }
-          }
-          return handle;
-        }
-        if (result.kind === 'retry') continue;
-        if (await retryStart(result.error, startAttempt, retryableStartError(result.error))) continue startAttempt;
-        throw result.error;
       }
+      if (result.kind === 'retry') continue;
+      throw result.error;
     }
   } catch (error) {
     await reservation?.release();
@@ -807,8 +576,6 @@ interface HandleInfo {
   configPath: string;
   listen: PreparedConfig['listen'];
   origin: string;
-  /** True when cpajs picked the initial port, so `allowNewPort` may move it. */
-  dynamicPort: boolean;
   stateDir: string;
   env: NodeJS.ProcessEnv;
   extraArgs: readonly string[];
@@ -816,92 +583,31 @@ interface HandleInfo {
   redactExtras: readonly string[];
   homeJwt: string | undefined;
   onLog?: ((log: LogLine) => void) | undefined;
-  logs: LogOptions | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
-  restart: RestartPolicy | undefined;
-  afterStart: ((ctx: AfterStartContext) => AfterStartResult | Promise<AfterStartResult>) | undefined;
-  /** Shared with `startServer`, so `on` also sees failed first-start attempts. */
+  /** Shared with the handle, so `on('exit')` works. */
   events: EventBus;
-  /** Re-evaluated before each restart; `undefined` keeps the existing file. */
+  /** Re-evaluated before each manual restart; `undefined` keeps the existing file. */
   configFn: ConfigFunction | undefined;
   managedSecret: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean } | undefined;
   panelEligible: boolean;
   panelFile: string | undefined;
   cleanup: () => Promise<void>;
-  /** Removes the singleton entry once this handle has stopped. */
-  onSettled?: (() => void) | undefined;
 }
 
-interface CreatedHandle {
-  server: CpaServer;
-  /** Stores the cleanup from the first afterStart; restarts store theirs internally. */
-  setAfterStartCleanup: (cleanup: AfterStartCleanup | undefined) => void;
-}
-
-function afterStartContext(
-  server: CpaServer,
-  client: CpaClient | undefined,
-  reason: ConfigReason,
-  noClientReason: string,
-): AfterStartContext {
-  return {
-    server,
-    client,
-    reason,
-    requireClient() {
-      if (client === undefined) throw new Error(`afterStart requireClient() is unavailable: ${noClientReason}.`);
-      return client;
-    },
-  };
-}
-
-function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHandle {
+function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
   let currentProc = initialProc;
-  let currentReadyAt = Date.now();
-  let state: 'running' | 'backoff' | 'restarting' | 'stopping' | 'stopped' = 'running';
+  let state: 'running' | 'restarting' | 'stopping' | 'stopped' = 'running';
   let restartTask: Promise<void> | undefined;
   let restartController: AbortController | undefined;
-  let scheduledAutoRestart: Promise<void> | undefined;
-  let backoffController: AbortController | undefined;
-  let autoAttempt = 0;
   let stopTask: Promise<ExitResult> | undefined;
   let resolveExited!: (result: ExitResult) => void;
   let finalizePromise: Promise<void> | undefined;
-  let afterStartCleanup: AfterStartCleanup | undefined;
-  // Set when allowNewPort moves this handle; the next `restarted` reports it.
-  let originChanged = false;
   const exited = new Promise<ExitResult>((resolve) => {
     resolveExited = resolve;
   });
 
-  const backoffMs = info.restart?.backoffMs ?? DEFAULT_BACKOFF_MS;
-  const maxAttempts = info.restart?.maxAttempts ?? Number.POSITIVE_INFINITY;
-  const stableAfterMs = info.restart?.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
-  const autoRestart = info.restart?.onUnexpectedExit === true && maxAttempts > 0;
-  const allowNewPort = info.restart?.allowNewPort === true && info.dynamicPort;
   const emit = info.events.emit;
-
-  const runAfterStartCleanup = async (): Promise<void> => {
-    const cleanup = afterStartCleanup;
-    afterStartCleanup = undefined;
-    if (cleanup === undefined) return;
-    try {
-      await cleanup();
-    } catch (error) {
-      // Cleanup is a best-effort courtesy; it cannot undo a stop or fail a restart.
-      process.emitWarning(`An afterStart cleanup threw: ${(error as Error)?.message ?? String(error)}`, {
-        type: 'CpaWarning',
-      });
-    }
-  };
-
-  const rememberAfterStartCleanup = (cleanup: AfterStartCleanup | undefined): void => {
-    if (cleanup === undefined) return;
-    afterStartCleanup = cleanup;
-    // A hook may stop the handle itself before returning its cleanup.
-    if (state === 'stopped' || state === 'stopping') void runAfterStartCleanup();
-  };
 
   const settle = (result: ExitResult): Promise<void> => {
     if (finalizePromise) return finalizePromise;
@@ -909,22 +615,15 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
     liveServers.delete(handle);
     finalizePromise = (async () => {
       try {
-        await runAfterStartCleanup();
         await info.cleanup();
       } finally {
         resolveExited(result);
-        info.onSettled?.();
       }
     })();
     return finalizePromise;
   };
 
-  const notifyExit = (
-    proc: ManagedProcess,
-    result: ExitResult,
-    willRestart: boolean,
-    reason: ExitReason,
-  ): void => {
+  const notifyExit = (proc: ManagedProcess, result: ExitResult, willRestart: boolean, reason: ExitReason): void => {
     emit('exit', { code: result.code, signal: result.signal, recentLogs: [...proc.recentLogs], willRestart, reason });
   };
 
@@ -935,60 +634,25 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
       notifyExit(proc, result, false, 'stop');
       return;
     }
-    if (state === 'restarting' || state === 'backoff') {
+    if (state === 'restarting') {
       notifyExit(proc, result, true, 'restart');
       return;
     }
-    // state === 'running': the process died on its own. A run that stayed up
-    // past the stability window breaks the crash loop and starts over.
-    if (Date.now() - currentReadyAt >= stableAfterMs) autoAttempt = 0;
-    const willRestart = autoRestart && autoAttempt < maxAttempts;
-    notifyExit(proc, result, willRestart, 'unexpected');
-    // An 'exit' listener may have stopped or restarted the server already.
+    // state === 'running': the process died on its own.
+    notifyExit(proc, result, false, 'unexpected');
+    // An 'exit' listener may have stopped the server already.
     if (state !== 'running') return;
-    if (!willRestart) {
-      void settle(result).catch(() => {});
-      return;
-    }
-    scheduleAutoRestart();
+    void settle(result).catch(() => {});
   };
 
   const watch = (proc: ManagedProcess): void => {
     void proc.exited.then((result) => handleExit(proc, result));
   };
 
-  function scheduleAutoRestart(): void {
-    state = 'backoff';
-    scheduledAutoRestart = (async () => {
-      while (state === 'backoff') {
-        const attempt = ++autoAttempt;
-        const wait = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)]!;
-        const controller = new AbortController();
-        backoffController = controller;
-        try {
-          await delay(wait, undefined, { signal: controller.signal });
-        } catch {
-          return;
-        } finally {
-          if (backoffController === controller) backoffController = undefined;
-        }
-        if (state !== 'backoff') return;
-        try {
-          // Success does not end the crash loop: the process must stay up for
-          // `stableAfterMs` before the attempt count is reset on its exit.
-          await startRestart('unexpected-exit', attempt, {});
-          return;
-        } catch {
-          // A failure that will be retried has put the handle back into backoff.
-          if (state !== 'backoff') return;
-        }
-      }
-    })().finally(() => {
-      scheduledAutoRestart = undefined;
-    });
-  }
-
-  function startRestart(reason: RestartReason, attempt: number, restartOptions: RestartOptions): Promise<void> {
+  const restart = (restartOptions: RestartOptions = {}): Promise<void> => {
+    if (state === 'stopped' || state === 'stopping') {
+      return Promise.reject(new CpaStartError('stopped', 'Cannot restart a stopped server.'));
+    }
     if (restartTask) return restartTask;
 
     state = 'restarting';
@@ -999,219 +663,96 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
       : controller.signal;
 
     restartTask = (async () => {
-      try {
-        const previous = currentProc;
-        const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
-        // The old process is gone; release whatever its afterStart registered
-        // before the replacement starts.
-        await runAfterStartCleanup();
-        if (signal.aborted) {
-          const error = abortError(signal, previous.output(), 'restart was aborted.');
-          emit('restart-failed', { error, attempt, willRetry: false });
-          await settle(previousExit);
-          throw error;
-        }
-
-        const willRetry = (): boolean =>
-          reason === 'unexpected-exit' && attempt < maxAttempts && state !== 'stopping';
-
-        // Reuse the original port, dynamic or not. The old listener is gone, and
-        // Go sets SO_REUSEADDR on Unix, so TIME_WAIT does not block the bind.
-        // Windows relies on its default (Go does not set SO_REUSEADDR there);
-        // either way another process holding the port is reported. A dynamic
-        // port may move when allowNewPort is set; a fixed port never does.
-        const host = info.listen.host;
-        let port = info.listen.port;
-        let reservation: PortReservation | undefined;
-        let movedPort = false;
-        if (!(await isPortFree(host, port))) {
-          if (!allowNewPort) {
-            const error = new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
-            const retry = willRetry();
-            emit('restart-failed', { error, attempt, willRetry: retry });
-            // A listener may have called stop() in the meantime.
-            if (retry && state === 'restarting') state = 'backoff';
-            else await settle(previousExit);
-            throw error;
-          }
-          reservation = await findFreePort(host);
-          port = reservation.port;
-          movedPort = true;
-        }
-
-        try {
-          if (info.configFn !== undefined) {
-            const existing = await readManagedConfigObject(info.stateDir);
-            const next = await info.configFn({ existing, reason: 'restart' });
-            const pinnedPanel =
-              info.panelEligible && next.management?.['panel-github-repository'] === undefined;
-            const prepared = await writeManagedConfig(next, info.stateDir, { host, port }, info.managedSecret, {
-              pinnedPanel,
-            });
-            await applyPinnedPanel({
-              panelFile: info.panelFile,
-              panelEligible: info.panelEligible,
-              pinnedPanel,
-              prepared,
-              stateDir: info.stateDir,
-              env: info.env,
-            });
-            info.redact = createRedactor([
-              info.managementKey,
-              info.homeJwt,
-              ...prepared.secrets,
-              ...info.redactExtras,
-            ]);
-          } else if (movedPort) {
-            // Rewriting the whole file would discard what CPA changed during the
-            // previous run (#13); move only the listener port.
-            await updateManagedPort(info.configPath, port);
-          }
-        } catch (error) {
-          await reservation?.release();
-          reservation = undefined;
-          const retry = willRetry();
-          emit('restart-failed', { error, attempt, willRetry: retry });
-          if (retry && state === 'restarting') state = 'backoff';
-          else await settle(previousExit);
-          throw error;
-        }
-
-        // Commit the new origin before launching, so a retry reuses the chosen
-        // port instead of moving again. `originChanged` stays set until a
-        // `restarted` event reports it, even if this attempt fails.
-        if (movedPort) {
-          info.listen.port = port;
-          info.origin = formatOrigin(info.listen.tls ? 'https' : 'http', connectHost(host), port);
-          originChanged = true;
-        }
-
-        // Release the new-port reservation as late as possible so the gap
-        // before CPA binds stays small.
-        const held = reservation;
-        reservation = undefined;
-        await held?.release();
-
-        // Reuse the config file as CPA left it. Rewriting it here would discard
-        // changes made through the management API during the previous run (#13).
-        const result = await launchProcess({
-          binaryPath: info.spawnPath,
-          supervised: info.supervised,
-          args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
-          stateDir: info.stateDir,
-          env: info.env,
-          redact: info.redact,
-          onLog: info.onLog,
-          logs: info.logs,
-          host,
-          port,
-          origin: info.origin,
-          deadline: Date.now() + info.startupTimeoutMs,
-          signal,
-          startupTimeoutMs: info.startupTimeoutMs,
-          portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
-          allowRetry: false,
-          abortMessage: 'restart was aborted.',
-        });
-
-        if (result.kind !== 'ready') {
-          const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
-          const retry = willRetry();
-          emit('restart-failed', { error: failure.error, attempt, willRetry: retry });
-          if (retry && state === 'restarting') state = 'backoff';
-          else await settle(failure.result ?? previousExit);
-          throw failure.error;
-        }
-
-        currentProc = result.proc;
-        currentReadyAt = Date.now();
-
-        if (info.afterStart !== undefined) {
-          let hookError: unknown;
-          let hookFailed = false;
-          let hookResult: AfterStartResult | undefined;
-          try {
-            hookResult = await info.afterStart(
-              afterStartContext(
-                handle,
-                info.managementKey === undefined ? undefined : handle.client(),
-                'restart',
-                info.noClientReason,
-              ),
-            );
-          } catch (cause) {
-            hookError = cause;
-            hookFailed = true;
-          }
-          rememberAfterStartCleanup(typeof hookResult === 'function' ? hookResult : undefined);
-
-          // stop() aborts the restart and waits for this task, so a hook that
-          // finishes after stop() must not put the handle back into 'running'.
-          if (signal.aborted) {
-            const exit = await result.proc.stop(info.stopTimeoutMs);
-            const error = abortError(signal, result.proc.output(), 'restart was aborted.');
-            emit('restart-failed', { error, attempt, willRetry: false });
-            await settle(exit);
-            throw error;
-          }
-
-          if (hookFailed) {
-            const hookExit = await result.proc.stop(info.stopTimeoutMs);
-            const error = new CpaStartError(
-              'hook-failed',
-              `afterStart hook failed: ${info.redact((hookError as Error)?.message ?? String(hookError))}`,
-              { cause: hookError },
-            );
-            const retry = willRetry();
-            emit('restart-failed', { error, attempt, willRetry: retry });
-            if (retry && state === 'restarting') state = 'backoff';
-            else await settle(hookExit);
-            throw error;
-          }
-        }
-
-        watch(result.proc);
-        state = 'running';
-        const changed = originChanged;
-        originChanged = false;
-        emit('restarted', { reason, attempt, originChanged: changed });
-      } finally {
-        restartTask = undefined;
-        restartController = undefined;
+      const previous = currentProc;
+      const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
+      if (signal.aborted) {
+        await settle(previousExit);
+        throw abortError(signal, previous.output(), 'restart was aborted.');
       }
-    })();
 
-    // Emitted after `restartTask` is set, so a listener may call restart() safely.
-    emit('restart', { reason, attempt });
+      // Reuse the original port, dynamic or not. The old listener is gone, and
+      // Go sets SO_REUSEADDR on Unix, so TIME_WAIT does not block the bind.
+      // Windows relies on its default (Go does not set SO_REUSEADDR there);
+      // either way another process holding the port is reported, never swapped.
+      const { host, port } = info.listen;
+      if (!(await isPortFree(host, port))) {
+        await settle(previousExit);
+        throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
+      }
+
+      try {
+        if (info.configFn !== undefined) {
+          const existing = await readManagedConfigObject(info.stateDir);
+          const next = await info.configFn({ existing, reason: 'restart' });
+          const pinnedPanel = info.panelEligible && next.management?.['panel-github-repository'] === undefined;
+          const prepared = await writeManagedConfig(next, info.stateDir, { host, port }, info.managedSecret, {
+            pinnedPanel,
+          });
+          await applyPinnedPanel({
+            panelFile: info.panelFile,
+            panelEligible: info.panelEligible,
+            pinnedPanel,
+            prepared,
+            stateDir: info.stateDir,
+            env: info.env,
+          });
+          info.redact = createRedactor([
+            info.managementKey,
+            info.homeJwt,
+            ...prepared.secrets,
+            ...info.redactExtras,
+          ]);
+        }
+      } catch (error) {
+        await settle(previousExit);
+        throw error;
+      }
+
+      // Reuse the config file as CPA left it. Rewriting it here would discard
+      // changes made through the management API during the previous run (#13).
+      const result = await launchProcess({
+        binaryPath: info.spawnPath,
+        supervised: info.supervised,
+        args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
+        stateDir: info.stateDir,
+        env: info.env,
+        redact: info.redact,
+        onLog: info.onLog,
+        host,
+        port,
+        origin: info.origin,
+        deadline: Date.now() + info.startupTimeoutMs,
+        signal,
+        startupTimeoutMs: info.startupTimeoutMs,
+        portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
+        allowRetry: false,
+        abortMessage: 'restart was aborted.',
+      });
+
+      if (result.kind !== 'ready') {
+        const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
+        await settle(failure.result ?? previousExit);
+        throw failure.error;
+      }
+
+      currentProc = result.proc;
+      watch(result.proc);
+      state = 'running';
+      // The process may have exited between the readiness probe and this point.
+      if (result.proc.exitResult) void settle(result.proc.exitResult).catch(() => {});
+    })().finally(() => {
+      restartTask = undefined;
+      restartController = undefined;
+      if (state === 'restarting') state = 'running';
+    });
+
     return restartTask;
-  }
-
-  const restart = (restartOptions: RestartOptions = {}): Promise<void> => {
-    if (state === 'stopped' || state === 'stopping') {
-      return Promise.reject(new CpaStartError('stopped', 'Cannot restart a stopped server.'));
-    }
-    if (restartTask) return restartTask;
-    if (state === 'backoff') {
-      // Skip the rest of the wait and try right away.
-      backoffController?.abort(new Error('manual restart'));
-    }
-    // A manual restart is a deliberate fresh start, not part of a crash loop.
-    autoAttempt = 0;
-    return startRestart('manual', 1, restartOptions);
   };
 
   const stop = (stopOptions: StopOptions = {}): Promise<ExitResult> => {
     stopTask ??= (async () => {
       if (state !== 'stopped') state = 'stopping';
       restartController?.abort(new Error('server stopped'));
-      backoffController?.abort(new Error('server stopped'));
-      if (scheduledAutoRestart) {
-        try {
-          await scheduledAutoRestart;
-        } catch {
-          // The auto-restart loop only rejects if one of its listeners does.
-        }
-      }
       if (restartTask) {
         try {
           await restartTask;
@@ -1226,16 +767,10 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
   };
 
   const handle: CpaServer = {
-    get origin() {
-      return info.origin;
-    },
-    get baseUrl() {
-      return `${info.origin}/v1`;
-    },
+    origin: info.origin,
+    baseUrl: `${info.origin}/v1`,
     host: info.listen.host,
-    get port() {
-      return info.listen.port;
-    },
+    port: info.listen.port,
     binaryPath: info.binaryPath,
     configPath: info.configPath,
     stateDir: info.stateDir,
@@ -1254,13 +789,12 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
     on: info.events.on,
     client(clientOptions: ServerClientOptions = {}) {
       if (info.managementKey === undefined) throw new Error(`server.client() is unavailable: ${info.noClientReason}.`);
-      // Read the origin per request, so an allowNewPort restart keeps old clients usable.
-      return createClient({ ...clientOptions, baseUrl: () => info.origin, managementKey: info.managementKey });
+      return createClient({ ...clientOptions, baseUrl: info.origin, managementKey: info.managementKey });
     },
   };
   watch(initialProc);
   liveServers.add(handle);
-  return { server: handle, setAfterStartCleanup: rememberAfterStartCleanup };
+  return handle;
 }
 
 // Handles that have started and not settled yet, for stopAllServers().

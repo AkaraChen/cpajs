@@ -2,150 +2,39 @@
 // called: startServer would need a real binary, and only the contextual types
 // of the options and callbacks matter here.
 import { describe, expect, expectTypeOf, it } from 'vitest';
-import type { CpaClient } from '../../src/client/index.ts';
 import {
   startServer,
+  type ConfigContext,
+  type ConfigReason,
   type CpaConfig,
   type CpaServer,
-  type ExitReason,
-  type ServerHooks,
 } from '../../src/server/index.ts';
 
 describe('lifecycle types', () => {
-  it('narrows the afterStart client to CpaClient when cpajs knows the key', () => {
-    const managed = () =>
+  it('types a config function context and return value', () => {
+    const config = () =>
       startServer({
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient>();
-            expectTypeOf(ctx.requireClient()).toEqualTypeOf<CpaClient>();
-          },
+        config: (ctx: ConfigContext) => {
+          expectTypeOf(ctx.reason).toEqualTypeOf<ConfigReason>();
+          expectTypeOf(ctx.existing).toEqualTypeOf<CpaConfig | undefined>();
+          return { routing: { strategy: 'fill-first' } };
         },
       });
-    const explicit = () =>
+    const asyncConfig = () =>
       startServer({
-        management: { key: 'known-key' },
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient>();
-          },
-        },
-      });
-    const literalConfig = () =>
-      startServer({
-        config: { routing: { strategy: 'fill-first' } },
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient>();
-          },
-        },
-      });
-    const configFunction = () =>
-      startServer({
-        config: () => ({ routing: { strategy: 'fill-first' } }),
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient>();
-          },
-        },
+        config: async () => Promise.resolve({ routing: { strategy: 'round-robin' } }),
       });
 
-    expect(managed).toBeTypeOf('function');
-    expect(explicit).toBeTypeOf('function');
-    expect(literalConfig).toBeTypeOf('function');
-    expect(configFunction).toBeTypeOf('function');
+    expect(config).toBeTypeOf('function');
+    expect(asyncConfig).toBeTypeOf('function');
   });
 
-  it('keeps the client optional when the key may be unknown', () => {
-    const disabled = () =>
-      startServer({
-        management: false,
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<undefined>();
-          },
-        },
-      });
-    const configPath = () =>
-      startServer({
-        configPath: '/tmp/cpa-config.yaml',
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient | undefined>();
-          },
-        },
-      });
-    const ownSecret = () =>
-      startServer({
-        config: { management: { 'secret-key': 'file-secret' } },
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient | undefined>();
-          },
-        },
-      });
-    const wideConfig: CpaConfig = { routing: { strategy: 'fill-first' } };
-    const wide = () =>
-      startServer({
-        config: wideConfig,
-        hooks: {
-          afterStart: (ctx) => {
-            expectTypeOf(ctx.client).toEqualTypeOf<CpaClient | undefined>();
-          },
-        },
-      });
+  it('keeps the general startServer contract', () => {
+    const server = () => startServer({ management: false });
+    // @ts-expect-error config and configPath are mutually exclusive
+    const invalid = () => startServer({ config: {}, configPath: '/tmp/cpa-config.yaml' });
 
-    expect(disabled).toBeTypeOf('function');
-    expect(configPath).toBeTypeOf('function');
-    expect(ownSecret).toBeTypeOf('function');
-    expect(wide).toBeTypeOf('function');
-  });
-
-  it('accepts a cleanup function synchronously or through a promise', () => {
-    const sync = () => startServer({ hooks: { afterStart: () => () => undefined } });
-    const async = () =>
-      startServer({
-        hooks: {
-          afterStart: async (ctx) => {
-            const client: CpaClient = ctx.requireClient();
-            void client;
-            return async () => undefined;
-          },
-        },
-      });
-    const typed: ServerHooks<CpaClient> = { afterStart: () => Promise.resolve(() => undefined) };
-
-    expect(sync).toBeTypeOf('function');
-    expect(async).toBeTypeOf('function');
-    expect(typed).toBeTypeOf('object');
-  });
-
-  it('types the on option per event', () => {
-    const subscribe = () =>
-      startServer({
-        on: {
-          exit: (event) => {
-            expectTypeOf(event.reason).toEqualTypeOf<ExitReason>();
-            expectTypeOf(event.willRestart).toEqualTypeOf<boolean>();
-          },
-          restarted: (event) => {
-            expectTypeOf(event.attempt).toEqualTypeOf<number>();
-          },
-        },
-      });
-
-    expect(subscribe).toBeTypeOf('function');
-  });
-
-  it('keeps the general overload for invalid options', () => {
-    const invalid = () =>
-      // @ts-expect-error config and configPath are mutually exclusive
-      startServer({ config: {}, configPath: '/tmp/cpa-config.yaml' });
-
+    expectTypeOf(server).returns.toEqualTypeOf<Promise<CpaServer>>();
     expect(invalid).toBeTypeOf('function');
-  });
-
-  it('keeps the startServer contract', () => {
-    expectTypeOf(startServer).returns.toEqualTypeOf<Promise<CpaServer>>();
   });
 });

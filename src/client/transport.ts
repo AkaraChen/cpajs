@@ -7,17 +7,12 @@ export type FetchLike = (input: Request) => Promise<Response>;
 export type QueryValue = string | number | boolean | null | undefined | readonly (string | number | boolean)[];
 export type Query = Readonly<Record<string, QueryValue>>;
 
-/** A server root, or a function that returns the current one (used by `server.client()` across restarts). */
-export type BaseUrl = string | URL | (() => string | URL);
-
 export interface ClientOptions {
   /**
    * Server root, e.g. `http://127.0.0.1:8317` or `https://example.com/cpa`.
    * A path prefix (reverse proxy) is kept; `/v8/management` is appended to it.
-   * A function is called for each request, so a client can follow a server that
-   * changes its dynamic port.
    */
-  baseUrl: BaseUrl;
+  baseUrl: string | URL;
   /** Management key (`management.secret-key` or `MANAGEMENT_PASSWORD`), not a model API key. */
   managementKey: string;
   /** Custom fetch. Defaults to the global `fetch`. */
@@ -26,12 +21,6 @@ export interface ClientOptions {
   headers?: HeadersInit;
   /** Default per-request timeout in ms. `0` or omitted disables it. */
   timeoutMs?: number;
-  /**
-   * Retry GET requests that fail with CPA's transient `500 invalid_config`
-   * (a config read landed while `config.yaml` was being rewritten). Defaults to
-   * `true`: up to three retries after 100, 200 and 400 ms. Writes never retry.
-   */
-  retryInvalidConfig?: boolean;
 }
 
 /** Per-call options accepted by every client method. */
@@ -86,47 +75,33 @@ export function managementUrl(baseUrl: string | URL, path: string, root = false)
   return url;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function resolveBaseUrl(baseUrl: BaseUrl): URL {
-  const url = new URL(typeof baseUrl === 'function' ? baseUrl() : baseUrl);
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new TypeError(`baseUrl must be http(s), got ${url.protocol}`);
-  }
-  return url;
-}
-
 export class Transport {
-  readonly #baseUrl: BaseUrl;
+  readonly #baseUrl: URL;
   readonly #managementKey: string;
   readonly #fetch: FetchLike;
   readonly #headers: Headers;
   readonly #timeoutMs: number;
-  readonly #retryInvalidConfig: boolean;
 
   constructor(options: ClientOptions) {
     if (!options.baseUrl) throw new TypeError('baseUrl is required.');
     if (!options.managementKey) throw new TypeError('managementKey is required.');
-    resolveBaseUrl(options.baseUrl);
-    this.#baseUrl = options.baseUrl;
+    this.#baseUrl = new URL(options.baseUrl);
+    if (this.#baseUrl.protocol !== 'http:' && this.#baseUrl.protocol !== 'https:') {
+      throw new TypeError(`baseUrl must be http(s), got ${this.#baseUrl.protocol}`);
+    }
     this.#managementKey = options.managementKey;
     const custom = options.fetch;
     this.#fetch = custom ? (request) => custom(request) : (request) => fetch(request);
     this.#headers = new Headers(options.headers);
     this.#timeoutMs = options.timeoutMs ?? 0;
-    this.#retryInvalidConfig = options.retryInvalidConfig ?? true;
   }
 
   get baseUrl(): URL {
-    return resolveBaseUrl(this.#baseUrl);
+    return new URL(this.#baseUrl);
   }
 
   async request<T>(req: RawRequest): Promise<TransportResponse<T>> {
-    const url = managementUrl(resolveBaseUrl(this.#baseUrl), req.path, req.root);
+    const url = managementUrl(this.#baseUrl, req.path, req.root);
     appendQuery(url, req.query);
     const target = { method: req.method, url: url.toString() };
 
@@ -188,26 +163,19 @@ export class Transport {
     if (body !== undefined) init.body = body;
 
     const responseType = req.responseType ?? 'json';
-    // A config read can land while CPA rewrites config.yaml non-atomically. Retry
-    // only that transient 500, and only for GET: writes are not idempotent here.
-    const retries = this.#retryInvalidConfig && req.method === 'GET' ? 3 : 0;
     // Set once a Response is handed to the caller, who then owns reading its body.
     let handedOff = false;
     try {
       let response: Response;
-      for (let attempt = 0; ; attempt++) {
-        try {
-          response = await guard(this.#fetch(new Request(url, init)));
-        } catch (error) {
-          throw error instanceof CpaAbortError || error instanceof CpaTimeoutError ? error : classify(error);
-        }
-        if (response.ok) break;
-        const httpError = new CpaHttpError(target, response, await guard(response.text()));
-        const transient = httpError.status === 500 && httpError.errorCode === 'invalid_config';
-        if (!transient || attempt >= retries) throw httpError;
-        await guard(delay(100 * 2 ** attempt));
+      try {
+        response = await guard(this.#fetch(new Request(url, init)));
+      } catch (error) {
+        throw error instanceof CpaAbortError || error instanceof CpaTimeoutError ? error : classify(error);
       }
 
+      if (!response.ok) {
+        throw new CpaHttpError(target, response, await guard(response.text()));
+      }
       if (responseType === 'response') {
         handedOff = true;
         return { data: response as T, status: response.status, headers: response.headers };

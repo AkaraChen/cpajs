@@ -1,6 +1,6 @@
-import type { LogLevel, LogLine, LogOptions } from './types.ts';
+import type { LogLevel, LogLine } from './types.ts';
 
-const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3, fatal: 4 };
+const LEVELS: readonly LogLevel[] = ['debug', 'info', 'warn', 'error', 'fatal'];
 
 /**
  * CPA's logrus formatter prints
@@ -12,7 +12,7 @@ const LOG_LINE_PATTERN =
   /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[([^\]]*)\] \[([a-z]+)\s*\](?: \[([^\]\s]+:\d+)\])? (.*)$/;
 
 export function isLogLevel(value: string): value is LogLevel {
-  return Object.hasOwn(LEVEL_RANK, value);
+  return (LEVELS as readonly string[]).includes(value);
 }
 
 /** Extracts the structured fields CPA's formatter adds, if the line has them. */
@@ -25,19 +25,4 @@ export function parseLogLine(line: string): Pick<LogLine, 'level' | 'requestId' 
     ...(rawRequestId !== undefined && rawRequestId !== '' && rawRequestId !== '--------' ? { requestId: rawRequestId } : {}),
     message: message ?? '',
   };
-}
-
-/**
- * True when `log` reaches `onLog`. Without `minLevel` everything passes; with it,
- * lines without a parsed level follow `unleveled` (default `'all'`), so unknown
- * output is not hidden unless asked.
- */
-export function passesLogFilter(log: Pick<LogLine, 'level' | 'stream'>, options: LogOptions | undefined): boolean {
-  const minLevel = options?.minLevel;
-  if (minLevel === undefined) return true;
-  if (log.level === undefined) {
-    const unleveled = options?.unleveled ?? 'all';
-    return unleveled === 'all' || (unleveled === 'stderr' && log.stream === 'stderr');
-  }
-  return LEVEL_RANK[log.level] >= LEVEL_RANK[minLevel];
 }
