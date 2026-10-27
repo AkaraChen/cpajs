@@ -1,5 +1,21 @@
 import { CpaReconcileError } from '../errors.ts';
-import type { CpaConfig, CpaModelBase, CpaOpenAICompatModel, CpaThinkingSupport } from '../types/config.ts';
+import type {
+  CpaClaudeKey,
+  CpaClaudeModel,
+  CpaCodexKey,
+  CpaCodexModel,
+  CpaConfig,
+  CpaGeminiKey,
+  CpaGeminiModel,
+  CpaKeyGroup,
+  CpaModelBase,
+  CpaOpenAICompatGroup,
+  CpaOpenAICompatKey,
+  CpaOpenAICompatModel,
+  CpaThinkingSupport,
+  CpaVertexKey,
+  CpaVertexModel,
+} from '../types/config.ts';
 import type {
   AuthFileEntry,
   CoreAuth,
@@ -64,20 +80,50 @@ export interface ReconcileCredentialsResult {
 /** Identifies a credential by auth ID / file name or by `auth_index`. */
 export type CredentialSelector = { name: string; auth_index?: string } | { auth_index: string; name?: string };
 
-/** One credential file or one config API key, as returned by {@link CredentialsResource.listAll}. */
-export interface CredentialSummary {
+type GroupWithoutKeys<G extends { keys?: unknown }> = Omit<G, 'keys'>;
+
+/** A config API key's group with `keys` removed. */
+export type ConfigCredentialGroup =
+  | GroupWithoutKeys<CpaKeyGroup<CpaGeminiKey, CpaGeminiModel>>
+  | GroupWithoutKeys<CpaKeyGroup<CpaVertexKey, CpaVertexModel>>
+  | GroupWithoutKeys<CpaKeyGroup<CpaCodexKey, CpaCodexModel>>
+  | GroupWithoutKeys<CpaKeyGroup<CpaClaudeKey, CpaClaudeModel>>
+  | GroupWithoutKeys<CpaOpenAICompatGroup>;
+
+/**
+ * The raw config entry behind a config credential: a provider-specific API key,
+ * or an OpenAI-compatible group when it has no keys of its own.
+ */
+export type ConfigCredentialRaw = CpaGeminiKey | CpaVertexKey | CpaCodexKey | CpaClaudeKey | CpaOpenAICompatKey | CpaOpenAICompatGroup;
+
+/** A credential file, as returned by {@link CredentialsResource.listAll}. */
+export interface FileCredentialSummary {
+  /** Runtime auth index. Empty when CPA does not expose one. */
+  auth_index: string;
+  provider: string;
+  source: 'file';
+  /** File name. */
+  name: string;
+  disabled: boolean;
+  raw: AuthFileEntry;
+}
+
+/** One config `api-keys` entry, as returned by {@link CredentialsResource.listAll}. */
+export interface ConfigCredentialSummary {
   /** Runtime auth index. Empty when CPA does not expose one (e.g. an invalid config key). */
   auth_index: string;
   provider: string;
-  source: 'file' | 'config';
-  /** File name, for `source: 'file'`. */
-  name?: string;
-  /** Config group name, for `source: 'config'`. */
+  source: 'config';
+  /** Config group name. */
   label?: string;
   disabled: boolean;
-  /** The source entry: an {@link AuthFileEntry}, a config key, or a keyless OpenAI-compatible group. */
-  raw: unknown;
+  raw: ConfigCredentialRaw;
+  /** The enclosing group, without its `keys`. */
+  group: ConfigCredentialGroup;
 }
+
+/** One credential file or one config API key, as returned by {@link CredentialsResource.listAll}. */
+export type CredentialSummary = FileCredentialSummary | ConfigCredentialSummary;
 
 export interface ModelsForOptions extends RequestOptions {
   /**
@@ -85,12 +131,14 @@ export interface ModelsForOptions extends RequestOptions {
    * context limits, thinking support and the other static metadata.
    */
   details?: boolean;
+  /** Fetch the channel's model definitions again instead of using the client's cache. */
+  refreshDefinitions?: boolean;
 }
 
 type ConfiguredModel = (CpaModelBase | CpaOpenAICompatModel) & { 'max-context-length'?: number };
 
 interface ConfigCredential {
-  summary: CredentialSummary;
+  summary: ConfigCredentialSummary;
   provider: string;
   channel: string | undefined;
   models: readonly ConfiguredModel[] | undefined;
@@ -100,6 +148,11 @@ interface ConfigCredential {
 
 /** Reserved top-level credential field that records ownership and revision. */
 const RECONCILE_MARKER = 'x-cpajs';
+
+/** Marks config summaries that came from `api-keys.openai-compatibility`. */
+const OPENAI_COMPAT = Symbol('cpajs.openaiCompatibility');
+
+type MarkedConfigSummary = ConfigCredentialSummary & { [OPENAI_COMPAT]?: true };
 
 interface ReconcileMarker {
   owner: string;
@@ -116,6 +169,7 @@ function toBlob(content: CredentialContent): Blob {
 /** `/v8/management/credentials*`: OAuth and API-key credential files. */
 export class CredentialsResource {
   readonly #t: Transport;
+  readonly #definitions = new Map<string, Promise<ModelInfo[]>>();
 
   constructor(transport: Transport) {
     this.#t = transport;
@@ -193,6 +247,9 @@ export class CredentialsResource {
   /**
    * Models one credential can serve, for a file or a config API key.
    *
+   * Pass a `listAll()` summary to skip the `GET /credentials` and `GET /config`
+   * lookups; a selector still resolves those from the server.
+   *
    * For config keys the resolution follows upstream: the key's `models` list
    * replaces the channel defaults, `alias` is the client-facing ID, a key's
    * `excluded-models` overrides its group's and accepts `*` wildcards, and
@@ -200,7 +257,10 @@ export class CredentialsResource {
    * File credentials ask `GET /credentials/models`.
    *
    * With `details: true` the channel's `GET /routing/model-definitions/:channel`
-   * is merged into each model. A channel is requested at most once per call.
+   * is merged into each model. Definitions are static for one CPA binary and
+   * cached for the lifetime of this resource, so concurrent calls share one
+   * request; `refreshDefinitions: true` or {@link clearModelDefinitionsCache}
+   * fetches them again.
    *
    * Mirrors CLIProxyAPI v8.0.43 `sdk/cliproxy/service_models.go`
    * (`registerModelsForAuthWithConfigAndCache`, `buildConfigModels`,
@@ -208,8 +268,14 @@ export class CredentialsResource {
    * `internal/watcher/synthesizer/config.go`; key fields inherit from their group in
    * `internal/config/config_v8.go` (`expandV8Groups`).
    */
-  async modelsFor(selector: CredentialSelector, options: ModelsForOptions = {}): Promise<ModelInfo[]> {
-    const { details = false, ...requestOptions } = options;
+  async modelsFor(selectorOrSummary: CredentialSelector | CredentialSummary, options: ModelsForOptions = {}): Promise<ModelInfo[]> {
+    const { details = false, refreshDefinitions = false, ...requestOptions } = options;
+    if (isCredentialSummary(selectorOrSummary)) {
+      if (selectorOrSummary.source === 'file') return this.#modelsForFile(selectorOrSummary.raw, details, requestOptions, refreshDefinitions);
+      return this.#modelsForConfig(configCredentialFromSummary(selectorOrSummary), details, requestOptions, refreshDefinitions);
+    }
+
+    const selector = selectorOrSummary;
     const name = selector.name?.trim() || undefined;
     const authIndex = selector.auth_index?.trim() || undefined;
     if (name === undefined && authIndex === undefined) throw new TypeError('modelsFor needs a name or auth_index.');
@@ -222,14 +288,19 @@ export class CredentialsResource {
         (name === undefined || entry.name === name) &&
         (authIndex === undefined || entry.auth_index === authIndex),
     );
-    if (file !== undefined) return this.#modelsForFile(file, details, requestOptions);
+    if (file !== undefined) return this.#modelsForFile(file, details, requestOptions, refreshDefinitions);
     if (authIndex === undefined) throw new Error(`Credential "${name}" was not found.`);
 
     const entry = configCredentials(await this.#readConfig(requestOptions)).find(
-      (credential) => credential.summary.auth_index === authIndex && (name === undefined || credential.summary.name === name),
+      (credential) => credential.summary.auth_index === authIndex && (name === undefined || credential.summary.label === name),
     );
     if (entry === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
-    return this.#modelsForConfig(entry, details, requestOptions);
+    return this.#modelsForConfig(entry, details, requestOptions, refreshDefinitions);
+  }
+
+  /** Drops cached static model definitions so the next `details: true` call fetches them again. */
+  clearModelDefinitionsCache(): void {
+    this.#definitions.clear();
   }
 
   /** Downloads a credential file by file name. The content includes tokens. */
@@ -342,7 +413,20 @@ export class CredentialsResource {
     return (await this.#t.request<CpaConfig>({ ...options, method: 'GET', path: '/config' })).data;
   }
 
-  async #modelDefinitions(channel: string, options: RequestOptions): Promise<ModelInfo[]> {
+  async #modelDefinitions(channel: string, options: RequestOptions, refresh: boolean): Promise<ModelInfo[]> {
+    if (refresh) this.#definitions.delete(channel);
+    let pending = this.#definitions.get(channel);
+    if (pending === undefined) {
+      pending = this.#fetchModelDefinitions(channel, options);
+      this.#definitions.set(channel, pending);
+      void pending.catch(() => {
+        if (this.#definitions.get(channel) === pending) this.#definitions.delete(channel);
+      });
+    }
+    return pending;
+  }
+
+  async #fetchModelDefinitions(channel: string, options: RequestOptions): Promise<ModelInfo[]> {
     return (
       await this.#t.request<ModelDefinitionsResponse>({
         ...options,
@@ -352,28 +436,18 @@ export class CredentialsResource {
     ).data.models;
   }
 
-  async #modelsForFile(entry: AuthFileEntry, details: boolean, options: RequestOptions): Promise<ModelInfo[]> {
+  async #modelsForFile(entry: AuthFileEntry, details: boolean, options: RequestOptions, refreshDefinitions: boolean): Promise<ModelInfo[]> {
     const { models } = await this.models(entry.name, options);
     const basic = models.map((model) => fileModelInfo(model, entry));
     if (!details) return basic;
     const channel = channelForProvider(entry.provider) ?? channelForProvider(entry.type);
     if (channel === undefined) return basic;
-    const definitions = await this.#modelDefinitions(channel, options);
+    const definitions = await this.#modelDefinitions(channel, options, refreshDefinitions);
     const byId = new Map(definitions.map((model) => [model.id.toLowerCase(), model]));
     return basic.map((model) => mergeFileModel(model, byId.get(model.id.toLowerCase())));
   }
 
-  async #modelsForConfig(entry: ConfigCredential, details: boolean, options: RequestOptions): Promise<ModelInfo[]> {
-    const definitions = new Map<string, Promise<ModelInfo[]>>();
-    const loadDefinitions = (channel: string): Promise<ModelInfo[]> => {
-      let pending = definitions.get(channel);
-      if (pending === undefined) {
-        pending = this.#modelDefinitions(channel, options);
-        definitions.set(channel, pending);
-      }
-      return pending;
-    };
-
+  async #modelsForConfig(entry: ConfigCredential, details: boolean, options: RequestOptions, refreshDefinitions: boolean): Promise<ModelInfo[]> {
     let models: { upstreamName: string; info: ModelInfo }[] = [];
     if (entry.openaiCompat) {
       models = configuredModels(entry.models ?? [], entry.provider, (model) =>
@@ -385,14 +459,16 @@ export class CredentialsResource {
         if ((entry.models?.length ?? 0) > 0) {
           models = configuredModels(entry.models!, meta.ownedBy, meta.type);
           if (details && entry.channel !== undefined) {
-            const byId = new Map((await loadDefinitions(entry.channel)).map((model) => [model.id.toLowerCase(), model]));
+            const definitions = await this.#modelDefinitions(entry.channel, options, refreshDefinitions);
+            const byId = new Map(definitions.map((model) => [model.id.toLowerCase(), model]));
             models = models.map((item) => ({
               upstreamName: item.upstreamName,
               info: mergeConfiguredModel(item.info, byId.get(item.upstreamName.toLowerCase()) ?? byId.get(item.info.id.toLowerCase())),
             }));
           }
         } else if (entry.channel !== undefined) {
-          models = (await loadDefinitions(entry.channel)).map((info) => ({ upstreamName: info.id, info }));
+          const definitions = await this.#modelDefinitions(entry.channel, options, refreshDefinitions);
+          models = definitions.map((info) => ({ upstreamName: info.id, info }));
         }
       }
     }
@@ -500,7 +576,7 @@ function readModels(value: unknown): ConfiguredModel[] | undefined {
   return value.filter(isRecord) as unknown as ConfiguredModel[];
 }
 
-function fileSummary(entry: AuthFileEntry): CredentialSummary {
+function fileSummary(entry: AuthFileEntry): FileCredentialSummary {
   return {
     auth_index: entry.auth_index,
     provider: entry.provider,
@@ -509,6 +585,48 @@ function fileSummary(entry: AuthFileEntry): CredentialSummary {
     disabled: entry.disabled,
     raw: entry,
   };
+}
+
+function isCredentialSummary(value: CredentialSelector | CredentialSummary): value is CredentialSummary {
+  return 'source' in value && (value.source === 'file' || value.source === 'config');
+}
+
+function isOpenAICompatSummary(summary: ConfigCredentialSummary): boolean {
+  if ((summary as MarkedConfigSummary)[OPENAI_COMPAT] === true) return true;
+  return !(CONFIG_PROVIDERS as readonly string[]).includes(summary.provider);
+}
+
+/** Rebuilds the internal view from a summary without reading `/config` again. */
+function configCredentialFromSummary(summary: ConfigCredentialSummary): ConfigCredential {
+  const key: Record<string, unknown> = isRecord(summary.raw) ? summary.raw : {};
+  const group: Record<string, unknown> = isRecord(summary.group) ? summary.group : {};
+  const openaiCompat = isOpenAICompatSummary(summary);
+  return {
+    summary,
+    provider: summary.provider,
+    channel: openaiCompat ? undefined : channelForProvider(summary.provider),
+    models: openaiCompat ? readModels(group.models) : (readModels(key.models) ?? readModels(group.models)),
+    excluded: openaiCompat ? undefined : (readStrings(key['excluded-models']) ?? readStrings(group['excluded-models'])),
+    openaiCompat,
+  };
+}
+
+function groupWithoutKeys(group: Record<string, unknown>): Record<string, unknown> {
+  const { keys: _keys, ...rest } = group;
+  return rest;
+}
+
+/**
+ * A config key is disabled when `excluded-models` on the key or (inherited from)
+ * its group contains `*`. `PATCH /credentials/status` writes exactly that on a
+ * config key: `internal/api/handlers/management/config_apikey_disable.go`
+ * (`setConfigAPIKeyExcludedAll`) appends the `*` pattern to the key's own
+ * `excluded-models`, and `auth_files_fields.go` reports `via:
+ * "config:excluded-models"` / `excluded_pattern: "*"`.
+ */
+function configDisabled(group: Record<string, unknown>, excluded: readonly string[] | undefined): boolean {
+  if (group.disabled === true) return true;
+  return excluded?.some((item) => item.trim() === '*') === true;
 }
 
 /**
@@ -530,22 +648,25 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       const label = readString(group.name);
       const groupModels = readModels(group.models);
       const groupExcluded = readStrings(group['excluded-models']);
+      const stripped = groupWithoutKeys(group) as unknown as ConfigCredentialGroup;
       const keys = Array.isArray(group.keys) ? group.keys : [];
       for (const item of keys) {
         if (!isRecord(item)) continue;
+        const excluded = readStrings(item['excluded-models']) ?? groupExcluded;
         out.push({
           summary: {
             auth_index: readString(item.auth_index) ?? '',
             provider,
             source: 'config',
             ...(label === undefined ? {} : { label }),
-            disabled: false,
-            raw: item,
+            disabled: configDisabled(group, excluded),
+            raw: item as unknown as ConfigCredentialRaw,
+            group: stripped,
           },
           provider,
           channel: channelForProvider(provider),
           models: readModels(item.models) ?? groupModels,
-          excluded: readStrings(item['excluded-models']) ?? groupExcluded,
+          excluded,
           openaiCompat: false,
         });
       }
@@ -560,20 +681,25 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       const name = readString(group.name);
       const provider = name ?? 'openai-compatibility';
       const models = readModels(group.models);
+      const excluded = readStrings(group['excluded-models']);
+      const stripped = groupWithoutKeys(group) as unknown as ConfigCredentialGroup;
       const keys = Array.isArray(group.keys) ? group.keys : [];
       // A group without keys is one credential and carries auth_index itself.
       const entries: unknown[] = keys.length > 0 ? keys : [group];
       for (const item of entries) {
         if (!isRecord(item)) continue;
+        const summary: MarkedConfigSummary = {
+          auth_index: readString(item.auth_index) ?? '',
+          provider,
+          source: 'config',
+          ...(name === undefined ? {} : { label: name }),
+          disabled: configDisabled(group, readStrings(item['excluded-models']) ?? excluded),
+          raw: item as unknown as ConfigCredentialRaw,
+          group: stripped,
+        };
+        summary[OPENAI_COMPAT] = true;
         out.push({
-          summary: {
-            auth_index: readString(item.auth_index) ?? '',
-            provider,
-            source: 'config',
-            ...(name === undefined ? {} : { label: name }),
-            disabled: group.disabled === true,
-            raw: item,
-          },
+          summary,
           provider,
           channel: undefined,
           models,
@@ -616,8 +742,9 @@ function configuredModelInfo(model: ConfiguredModel, ownedBy: string, type: stri
     created: Math.floor(Date.now() / 1000),
     owned_by: ownedBy,
     type,
-    display_name: readString(model['display-name']) ?? (name || alias),
   };
+  const displayName = readString(model['display-name']);
+  if (displayName !== undefined) info.display_name = displayName;
   if (typeof model['max-context-length'] === 'number' && model['max-context-length'] > 0) {
     info.context_length = model['max-context-length'];
   }

@@ -8,6 +8,75 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Breaking
 
+- `CredentialSummary` is now discriminated by `source`: `FileCredentialSummary` carries the file `name` and
+  `raw: AuthFileEntry`, while `ConfigCredentialSummary` carries the provider-specific key as `raw` and the
+  enclosing group (without `keys`) as `group`. `raw` is no longer `unknown`, so callers can stop casting.
+
+### Added
+
+- `scripts/wait-for-packages.ts` polls the abbreviated npm packument that npm, pnpm and bun use, until every
+  `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
+  package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)
+  fails the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
+- `credentials.modelsFor` also accepts a `listAll()` entry, skipping the `GET /credentials` and `GET /config`
+  lookups for config keys. Its `details: true` model definitions are cached for the lifetime of the
+  `CredentialsResource`; concurrent calls share one request, `refreshDefinitions: true` fetches them again,
+  and `clearModelDefinitionsCache()` drops the cache.
+- `credentials.listAll` marks a config key `disabled` when its own or its group's effective `excluded-models`
+  contains `*`, matching what upstream `PATCH /credentials/status` writes (key-level `excluded-models`; see
+  `internal/api/handlers/management/config_apikey_disable.go`).
+- `credentials.reconcile` returns `adopted: string[]` alongside `uploaded`, `deleted` and `unchanged`. `adopted`
+  lists files claimed through `adopt`, which may also appear in one of the other lists.
+- `files[].content` in `credentials.reconcile` accepts `CredentialContent` — a parsed object, JSON text, a
+  `Blob`, or raw bytes — like `credentials.upload`.
+- `config.set`, `config.patchPath` and `config.update` now type tuple paths by the value at that path, the
+  same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
+  JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
+  behaviour.
+- `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
+  and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
+  a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
+  `['api-keys', 'gemini']` needs no `as const`. Broad `string` and `string[]` paths still accept any
+  JSON-serialisable value. Runtime behaviour is unchanged.
+- `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
+  variable.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
+- `exit` events now include `reason: 'stop' | 'restart' | 'unexpected'`: `stop` when `stop()` stopped the
+  process, `restart` when a manual or automatic restart replaced it, and `unexpected` when the process exited
+  by itself. `willRestart` is unchanged.
+- `hooks.afterStart` may return a cleanup function (or a promise of one). cpajs calls it once when the process
+  that the hook observed exits: before the replacement starts on a restart, or after the final stop. A cleanup
+  that throws is reported as a `CpaWarning` and does not change the restart or stop outcome.
+- `startServer({ on })` registers lifecycle listeners as soon as the handle is created, so they also see an
+  immediate exit. With `singleton: true` only the first call's listeners are registered, like `hooks`.
+- `AfterStartContext.requireClient()` returns the management client or throws a clear error explaining why it
+  is unavailable. `startServer` types `ctx.client` as `CpaClient` only when the key is provably known: no
+  `management: false` or `configPath`, and `config` omitted, a function, or an object whose type rules out
+  `management['secret-key']`. A wide `CpaConfig` variable keeps `CpaClient | undefined`; `requireClient()` is
+  the runtime fallback.
+
+### Changed
+
+- `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
+  is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
+  string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
+- The release workflow publishes the platform packages, waits for all of them to resolve, and only then
+  publishes `@cpajs/cpa`. A platform package can still return a cached 404 minutes after its publish;
+  publishing the main package during that window lets package managers silently skip the optional
+  dependency and write an incomplete lockfile.
+
+### Fixed
+
+- Config models no longer lose their static display name when `display-name` is unset. Only an explicit
+  `display-name` overrides the channel's `model-definitions` value; a regression made `details: true` show the
+  upstream model ID instead (for example `gpt-5` instead of `GPT-5`).
 - `credentials.reconcile` no longer overwrites an existing same-name file that has no `x-cpajs` marker.
   It throws `CpaReconcileError` with code `unmarked` (files owned by another caller now use the same class with
   code `owned-by-other`), so a legacy `chat-openai-*.json` that CPA has already refreshed is not replaced with a
@@ -26,45 +95,6 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
     adopt: (name, body) => (name.startsWith('chat-openai-') && body.chat_seed !== undefined ? revisions.get(name) : undefined),
   });
   ```
-
-### Added
-
-- `scripts/wait-for-packages.ts` polls the abbreviated npm packument that npm, pnpm and bun use, until every
-  `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
-  package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)
-  fails the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
-- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
-  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
-- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
-  hard-coded target.
-- `credentials.reconcile` returns `adopted: string[]` alongside `uploaded`, `deleted` and `unchanged`. `adopted`
-  lists files claimed through `adopt`, which may also appear in one of the other lists.
-- `files[].content` in `credentials.reconcile` accepts `CredentialContent` — a parsed object, JSON text, a
-  `Blob`, or raw bytes — like `credentials.upload`.
-- `config.set`, `config.patchPath` and `config.update` now type tuple paths by the value at that path, the
-  same as their slash-separated form. `['routing', 'strategy']` takes a routing strategy and rejects other
-  JSON values, where it used to accept any `JsonInput`. Type a path as `readonly string[]` to keep the untyped
-  behaviour.
-- `config.set`, `config.patchPath` and `config.update` resolve known tuple paths (`['api-keys', 'gemini']`)
-  and union paths (`` `api-keys/${'gemini' | 'claude'}` `` or `['api-keys', provider]`) to the value type;
-  a union path takes the union of its branches' value types. Inline array literals infer as tuples, so
-  `['api-keys', 'gemini']` needs no `as const`. Broad `string` and `string[]` paths still accept any
-  JSON-serialisable value. Runtime behaviour is unchanged.
-- `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
-  variable.
-
-### Changed
-
-- `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
-  is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
-  string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
-- The release workflow publishes the platform packages, waits for all of them to resolve, and only then
-  publishes `@cpajs/cpa`. A platform package can still return a cached 404 minutes after its publish;
-  publishing the main package during that window lets package managers silently skip the optional
-  dependency and write an incomplete lockfile.
-
-### Fixed
-
 - `credentials.reconcile` no longer expands JSON string or byte content into `{"0":"{","1":"\n",…}`, which
   produced a file CPA could not read and made the account disappear from its model list. Non-object content is
   parsed and rejected with a `TypeError` before any request is sent.

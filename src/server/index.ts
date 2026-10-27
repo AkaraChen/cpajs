@@ -22,22 +22,28 @@ import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import { createWarner } from './warnings.ts';
 import type {
+  AfterStartCleanup,
   AfterStartContext,
+  AfterStartResult,
   CpaServer,
   CpaServerEvents,
   ConfigContext,
+  ConfigReason,
+  ExitReason,
   ExitResult,
   LogLine,
   LogOptions,
+  ManagementOptions,
   RestartOptions,
   RestartPolicy,
   RestartReason,
   ServerClientOptions,
+  ServerEventListeners,
   StartServerOptions,
   StartWithConfigOptions,
   StopOptions,
 } from './types.ts';
-import { createClient } from '../client/index.ts';
+import { createClient, type CpaClient } from '../client/index.ts';
 import type { CpaConfig } from '../client/types/config.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
@@ -63,6 +69,14 @@ const DEFAULT_STABLE_AFTER_MS = 60_000;
 const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
 type ConfigFunction = (ctx: ConfigContext) => CpaConfig | Promise<CpaConfig>;
+
+/**
+ * Config values whose type proves that cpajs knows the management key: omitted,
+ * a function (whose `secret-key` never chooses the key), or an object whose type
+ * rules out `management['secret-key']`. A wide `CpaConfig` variable falls back
+ * to the general overload and keeps `client: CpaClient | undefined`.
+ */
+type KnownClientConfig = ConfigFunction | (CpaConfig & { management?: { 'secret-key'?: undefined } });
 
 function validate(options: StartServerOptions): void {
   const config = typeof options.config === 'function' ? undefined : options.config;
@@ -312,7 +326,24 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
  * `configPath`) share one handle or one in-flight start. The entry is removed
  * once the handle stops, so a later call starts a new process.
  */
-export async function startServer(options: StartServerOptions = {}): Promise<CpaServer> {
+// Overload order matters: a visible secret-key keeps the client optional, then
+// a known key narrows it, and the general overload stays last so it keeps
+// reporting invalid options.
+export function startServer(
+  options: StartWithConfigOptions & { config: { management: { 'secret-key': string } } },
+): Promise<CpaServer>;
+export function startServer(options: StartServerOptions<undefined> & { management: false }): Promise<CpaServer>;
+export function startServer(
+  options: Omit<StartWithConfigOptions<CpaClient>, 'config'> & {
+    management?: ManagementOptions;
+    config?: KnownClientConfig;
+  },
+): Promise<CpaServer>;
+export function startServer(options?: StartServerOptions): Promise<CpaServer>;
+export async function startServer(
+  rawOptions: StartServerOptions<never> = {} as StartServerOptions<never>,
+): Promise<CpaServer> {
+  const options = rawOptions as StartServerOptions;
   const key = singletonKey(options);
   if (key === undefined) return startServerInstance(options);
 
@@ -538,15 +569,16 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
       });
 
       if (result.kind === 'ready') {
-        const handle = createHandle(result.proc, {
+        const noClientReason =
+          options.management === false
+            ? 'the management API is disabled (management: false)'
+            : options.configPath !== undefined
+              ? 'with configPath, cpajs does not know the key; pass management: { key, viaEnvironment: true } or create a client with your own key'
+              : "config.management['secret-key'] is set, so the key is yours; create a client with it";
+        const { server: handle, setAfterStartCleanup } = createHandle(result.proc, {
           binaryPath: binary.path,
           managementKey: management.key,
-          noClientReason:
-            options.management === false
-              ? 'the management API is disabled (management: false)'
-              : options.configPath !== undefined
-                ? 'with configPath, cpajs does not know the key; pass management: { key, viaEnvironment: true } or create a client with your own key'
-                : "config.management['secret-key'] is set, so the key is yours; create a client with it",
+          noClientReason,
           spawnPath,
           supervised,
           prefixArgs,
@@ -565,6 +597,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           restart: options.restart,
           afterStart: options.hooks?.afterStart,
+          on: options.on,
           configFn,
           managedSecret,
           panelEligible,
@@ -575,16 +608,21 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
         if (options.hooks?.afterStart !== undefined) {
           let hookError: unknown;
           let hookFailed = false;
+          let hookResult: AfterStartResult | undefined;
           try {
-            await options.hooks.afterStart({
-              server: handle,
-              client: management.key === undefined ? undefined : handle.client(),
-              reason: 'start',
-            });
+            hookResult = await options.hooks.afterStart(
+              afterStartContext(
+                handle,
+                management.key === undefined ? undefined : handle.client(),
+                'start',
+                noClientReason,
+              ),
+            );
           } catch (cause) {
             hookError = cause;
             hookFailed = true;
           }
+          setAfterStartCleanup(typeof hookResult === 'function' ? hookResult : undefined);
           if (signal?.aborted) {
             const output = handle.recentLogs.map((log) => log.line).join('\n');
             await handle.stop();
@@ -664,7 +702,9 @@ interface HandleInfo {
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   restart: RestartPolicy | undefined;
-  afterStart: ((ctx: AfterStartContext) => void | Promise<void>) | undefined;
+  afterStart: ((ctx: AfterStartContext) => AfterStartResult | Promise<AfterStartResult>) | undefined;
+  /** Listeners registered as soon as the handle exists. */
+  on: Partial<ServerEventListeners> | undefined;
   /** Re-evaluated before each restart; `undefined` keeps the existing file. */
   configFn: ConfigFunction | undefined;
   managedSecret: { secretKeyHash: string; allowRemote: boolean; disableControlPanel?: boolean } | undefined;
@@ -675,7 +715,30 @@ interface HandleInfo {
   onSettled?: (() => void) | undefined;
 }
 
-function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
+interface CreatedHandle {
+  server: CpaServer;
+  /** Stores the cleanup from the first afterStart; restarts store theirs internally. */
+  setAfterStartCleanup: (cleanup: AfterStartCleanup | undefined) => void;
+}
+
+function afterStartContext(
+  server: CpaServer,
+  client: CpaClient | undefined,
+  reason: ConfigReason,
+  noClientReason: string,
+): AfterStartContext {
+  return {
+    server,
+    client,
+    reason,
+    requireClient() {
+      if (client === undefined) throw new Error(`afterStart requireClient() is unavailable: ${noClientReason}.`);
+      return client;
+    },
+  };
+}
+
+function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHandle {
   let currentProc = initialProc;
   let currentReadyAt = Date.now();
   let state: 'running' | 'backoff' | 'restarting' | 'stopping' | 'stopped' = 'running';
@@ -687,6 +750,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
   let stopTask: Promise<ExitResult> | undefined;
   let resolveExited!: (result: ExitResult) => void;
   let finalizePromise: Promise<void> | undefined;
+  let afterStartCleanup: AfterStartCleanup | undefined;
   const exited = new Promise<ExitResult>((resolve) => {
     resolveExited = resolve;
   });
@@ -712,12 +776,34 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     }
   };
 
+  const runAfterStartCleanup = async (): Promise<void> => {
+    const cleanup = afterStartCleanup;
+    afterStartCleanup = undefined;
+    if (cleanup === undefined) return;
+    try {
+      await cleanup();
+    } catch (error) {
+      // Cleanup is a best-effort courtesy; it cannot undo a stop or fail a restart.
+      process.emitWarning(`An afterStart cleanup threw: ${(error as Error)?.message ?? String(error)}`, {
+        type: 'CpaWarning',
+      });
+    }
+  };
+
+  const rememberAfterStartCleanup = (cleanup: AfterStartCleanup | undefined): void => {
+    if (cleanup === undefined) return;
+    afterStartCleanup = cleanup;
+    // A hook may stop the handle itself before returning its cleanup.
+    if (state === 'stopped' || state === 'stopping') void runAfterStartCleanup();
+  };
+
   const settle = (result: ExitResult): Promise<void> => {
     if (finalizePromise) return finalizePromise;
     state = 'stopped';
     liveServers.delete(handle);
     finalizePromise = (async () => {
       try {
+        await runAfterStartCleanup();
         await info.cleanup();
       } finally {
         resolveExited(result);
@@ -727,26 +813,31 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     return finalizePromise;
   };
 
-  const notifyExit = (proc: ManagedProcess, result: ExitResult, willRestart: boolean): void => {
-    emit('exit', { code: result.code, signal: result.signal, recentLogs: [...proc.recentLogs], willRestart });
+  const notifyExit = (
+    proc: ManagedProcess,
+    result: ExitResult,
+    willRestart: boolean,
+    reason: ExitReason,
+  ): void => {
+    emit('exit', { code: result.code, signal: result.signal, recentLogs: [...proc.recentLogs], willRestart, reason });
   };
 
   const handleExit = (proc: ManagedProcess, result: ExitResult): void => {
     if (proc !== currentProc) return;
     if (state === 'stopped' || state === 'stopping') {
       // stop() settles the handle after the process is gone.
-      notifyExit(proc, result, false);
+      notifyExit(proc, result, false, 'stop');
       return;
     }
     if (state === 'restarting' || state === 'backoff') {
-      notifyExit(proc, result, true);
+      notifyExit(proc, result, true, 'restart');
       return;
     }
     // state === 'running': the process died on its own. A run that stayed up
     // past the stability window breaks the crash loop and starts over.
     if (Date.now() - currentReadyAt >= stableAfterMs) autoAttempt = 0;
     const willRestart = autoRestart && autoAttempt < maxAttempts;
-    notifyExit(proc, result, willRestart);
+    notifyExit(proc, result, willRestart, 'unexpected');
     // An 'exit' listener may have stopped or restarted the server already.
     if (state !== 'running') return;
     if (!willRestart) {
@@ -805,6 +896,9 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       try {
         const previous = currentProc;
         const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
+        // The old process is gone; release whatever its afterStart registered
+        // before the replacement starts.
+        await runAfterStartCleanup();
         if (signal.aborted) {
           const error = abortError(signal, previous.output(), 'restart was aborted.');
           emit('restart-failed', { error, attempt, willRetry: false });
@@ -899,16 +993,21 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         if (info.afterStart !== undefined) {
           let hookError: unknown;
           let hookFailed = false;
+          let hookResult: AfterStartResult | undefined;
           try {
-            await info.afterStart({
-              server: handle,
-              client: info.managementKey === undefined ? undefined : handle.client(),
-              reason: 'restart',
-            });
+            hookResult = await info.afterStart(
+              afterStartContext(
+                handle,
+                info.managementKey === undefined ? undefined : handle.client(),
+                'restart',
+                info.noClientReason,
+              ),
+            );
           } catch (cause) {
             hookError = cause;
             hookFailed = true;
           }
+          rememberAfterStartCleanup(typeof hookResult === 'function' ? hookResult : undefined);
 
           // stop() aborts the restart and waits for this task, so a hook that
           // finishes after stop() must not put the handle back into 'running'.
@@ -1023,9 +1122,19 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       return createClient({ ...clientOptions, baseUrl: info.origin, managementKey: info.managementKey });
     },
   };
+  if (info.on !== undefined) {
+    for (const [event, listener] of Object.entries(info.on)) {
+      if (listener !== undefined) {
+        handle.on(
+          event as keyof CpaServerEvents,
+          listener as (event: CpaServerEvents[keyof CpaServerEvents]) => void,
+        );
+      }
+    }
+  }
   watch(initialProc);
   liveServers.add(handle);
-  return handle;
+  return { server: handle, setAfterStartCleanup: rememberAfterStartCleanup };
 }
 
 // Handles that have started and not settled yet, for stopAllServers().

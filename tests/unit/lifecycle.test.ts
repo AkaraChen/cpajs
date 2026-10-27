@@ -399,6 +399,55 @@ describe('server lifecycle (fake binary)', () => {
     if (error.code === 'exited') expect(error.exitCode).toBe(127);
   });
 
+  describe('exit event reason', () => {
+    it('reports stop for stop()', async () => {
+      const server = await startFake();
+      const events: ExitEvent[] = [];
+      server.on('exit', (event) => events.push(event));
+
+      await server.stop();
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ reason: 'stop', willRestart: false });
+    });
+
+    it('reports restart while a manual restart stops the old process', async () => {
+      const server = await startFake();
+      const events: ExitEvent[] = [];
+      server.on('exit', (event) => events.push(event));
+
+      await server.restart();
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ reason: 'restart', willRestart: true });
+
+      await server.stop();
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({ reason: 'stop', willRestart: false });
+    });
+
+    it('reports unexpected when the process exits on its own', async () => {
+      const server = await startFake();
+      const event = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+
+      expect(await event).toMatchObject({ reason: 'unexpected', willRestart: false });
+      await server.stop();
+    });
+
+    it('keeps reason unexpected when an auto restart follows the exit', async () => {
+      const server = await startFake({ restart: { onUnexpectedExit: true, backoffMs: [10] } });
+      const event = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+      const restarted = new Promise<RestartedEvent>((resolve) => server.on('restarted', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+
+      expect(await event).toMatchObject({ reason: 'unexpected', willRestart: true });
+      await restarted;
+      await server.stop();
+    });
+  });
+
   describe('singleton', () => {
     it('shares one process between concurrent starts for the same stateDir', async () => {
       const counter = join(dir, 'runs');
@@ -409,6 +458,24 @@ describe('server lifecycle (fake binary)', () => {
       expect(second).toBe(first);
       expect(await readFile(counter, 'utf8')).toBe('1');
       await first.stop();
+    });
+
+    it('registers the on option only from the first call', async () => {
+      const events: string[] = [];
+      const first = await startFake({
+        singleton: true,
+        stateDir: dir,
+        on: { exit: (event) => events.push(`first:${event.reason}`) },
+      });
+      const second = await startFake({
+        singleton: true,
+        stateDir: dir,
+        on: { exit: (event) => events.push(`second:${event.reason}`) },
+      });
+
+      expect(second).toBe(first);
+      await second.stop();
+      expect(events).toEqual(['first:stop']);
     });
 
     it('starts a new process after the shared handle stopped', async () => {
@@ -890,6 +957,55 @@ describe('server lifecycle (fake binary)', () => {
       await server.stop();
     });
 
+    it('calls the afterStart cleanup once before a restart and once after the final stop', async () => {
+      const calls: string[] = [];
+      const server = await startFake({
+        hooks: {
+          afterStart: (ctx) => {
+            calls.push(`start:${ctx.reason}`);
+            return async () => {
+              calls.push(`cleanup:${ctx.reason}`);
+            };
+          },
+        },
+      });
+      expect(calls).toEqual(['start:start']);
+
+      await server.restart();
+      expect(calls).toEqual(['start:start', 'cleanup:start', 'start:restart']);
+
+      await server.stop();
+      expect(calls).toEqual(['start:start', 'cleanup:start', 'start:restart', 'cleanup:restart']);
+    });
+
+    it('reports a failing afterStart cleanup as a warning without changing the lifecycle', async () => {
+      const warnings: string[] = [];
+      const capture = (warning: Error): void => {
+        warnings.push(warning.message);
+      };
+      process.on('warning', capture);
+      try {
+        let cleanups = 0;
+        const server = await startFake({
+          hooks: {
+            afterStart: () => () => {
+              cleanups++;
+              throw new Error('cleanup boom');
+            },
+          },
+        });
+
+        await server.restart();
+        expect(cleanups).toBe(1);
+        expect(warnings.some((w) => w.includes('afterStart cleanup threw') && w.includes('cleanup boom'))).toBe(true);
+
+        await server.stop();
+        expect(cleanups).toBe(2);
+      } finally {
+        process.off('warning', capture);
+      }
+    });
+
     it('calls afterStart after the first start and every restart with a ready server and client', async () => {
       const calls: { reason: 'start' | 'restart'; client: boolean; healthy: boolean }[] = [];
       const server = await startFake({
@@ -1003,6 +1119,26 @@ describe('server lifecycle (fake binary)', () => {
       expect(error.code).toBe('aborted');
       expect(error.cause).toEqual(new Error('stop it'));
       expect(existsSync(stateDir!)).toBe(false);
+    });
+
+    it('requireClient throws a clear error when cpajs does not know the plaintext key', async () => {
+      let error: unknown;
+      const server = await startFake({
+        management: false,
+        hooks: {
+          afterStart: (ctx) => {
+            try {
+              ctx.requireClient();
+            } catch (cause) {
+              error = cause;
+            }
+          },
+        },
+      });
+
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('management: false');
+      await server.stop();
     });
 
     it('passes client undefined when cpajs does not know the plaintext key', async () => {

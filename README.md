@@ -100,15 +100,24 @@ await server.stop();
   The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
   in the same process share it.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
-  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
-  `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
-  `originChanged` (currently always `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A
-  listener that throws is reported through `process.emitWarning` and never disturbs the server.
-- `hooks.afterStart({ server, client, reason })` runs after each process is ready: the first start and every
-  restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is `server.client()` when cpajs
-  knows the plaintext management key and `undefined` otherwise. If it throws, the first start rejects with
-  `CpaStartError` code `hook-failed` after stopping the process, while a restart fails like any other
-  (`restart-failed`, then backoff or a rejected `restart()`).
+  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs`, `willRestart` and `reason`:
+  `'stop'` when `stop()` stopped the process, `'restart'` when a manual or automatic restart replaced it, and
+  `'unexpected'` when the process exited by itself. `restart` and `restarted` carry `reason`
+  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (currently always
+  `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A listener that throws is reported through
+  `process.emitWarning` and never disturbs the server. Pass `on` to `startServer` to subscribe before the first
+  process is watched; with `singleton: true` only the first call's listeners are registered.
+- `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
+  start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
+  `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`
+  narrows `client` to `CpaClient` only when the key is provably known: no `management: false` or `configPath`,
+  and `config` omitted, a function, or an object whose type has no `management['secret-key']`. A wide
+  `CpaConfig` variable stays `CpaClient | undefined`; `requireClient()` returns the client or throws with the
+  reason it is unavailable. The hook may return a cleanup function (or a promise of one), which cpajs calls once
+  when that process exits: before the replacement starts on a restart, or after the final stop. A cleanup that
+  throws is reported through `process.emitWarning` and does not change the lifecycle. If the hook throws, the
+  first start rejects with `CpaStartError` code `hook-failed` after stopping the process, while a restart fails
+  like any other (`restart-failed`, then backoff or a rejected `restart()`).
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:
@@ -263,7 +272,7 @@ await client.credentials.upload({ name: 'codex-me.json', content: credentialJson
 
 // Files and config `api-keys` entries in one list, with the runtime auth_index.
 const all = await client.credentials.listAll();
-const models = await client.credentials.modelsFor({ auth_index: all[0]!.auth_index }, { details: true });
+const models = await client.credentials.modelsFor(all[0]!, { details: true });
 
 const desired = [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }];
 const synced = await client.credentials.reconcile({
@@ -303,10 +312,17 @@ called for unmarked files in the prune range, so a recognized legacy file can be
 resolve to a JSON object, which is checked before any request.
 
 `credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
-exposes as a runtime view. Select either a file by `name` or any credential by `auth_index` with
-`credentials.modelsFor`. Config-key models follow CPA's own resolution (model aliases, `excluded-models` with
-`*` wildcards, and per-key overrides); `details: true` adds the channel's static model definitions. Runtime
-state such as cooldowns is only available for files.
+exposes as a runtime view. It returns a discriminated union: a file entry has `raw: AuthFileEntry` and its
+`name`, while a config entry has the provider key as `raw` and its group (without `keys`) as `group`. A config
+key is `disabled` when its own or its group's effective `excluded-models` contains `*`, which is what
+`PATCH /credentials/status` writes upstream.
+
+`credentials.modelsFor` accepts either a selector (file `name` or `auth_index`) or a `listAll` entry; passing
+the entry skips the extra list/config requests. Config-key models follow CPA's own resolution (model aliases,
+`excluded-models` with `*` wildcards, and per-key overrides); `details: true` adds the channel's static model
+definitions, which are cached for the client's lifetime. Pass `refreshDefinitions: true` or call
+`clearModelDefinitionsCache()` after the CPA binary changes. Runtime state such as cooldowns is only available
+for files.
 
 | Group | Routes |
 | --- | --- |
