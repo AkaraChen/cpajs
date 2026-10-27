@@ -4,6 +4,9 @@
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
 //   FAKE_EXIT_AFTER=<n>     only apply FAKE_EXIT from run <n> on (counted in FAKE_COUNTER)
+//   FAKE_EXIT_AFTER_READY_MS=<ms>  exit <ms> after the listener starts, i.e. after becoming ready
+//   FAKE_EXIT_AFTER_READY_MAX_RUNS=<n>  only apply the previous switch to runs <= <n>
+//   FAKE_EXIT_CODE=<code>   exit code for FAKE_EXIT_AFTER_READY_MS (default 0)
 //   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
 //                           port occupied from a separate process so the real bind fails
 //                           and the process exits 0, like the real binary
@@ -66,7 +69,14 @@ setTimeout(() => {
     console.error(`fake cpa could not listen on ${host}:${port}: ${error.code}`);
     process.exit(0);
   });
-  server.listen(port, host, () => console.log(`API server started successfully on: ${host}:${port}`));
+  server.listen(port, host, () => {
+    console.log(`API server started successfully on: ${host}:${port}`);
+    const exitAfterReadyMs = Number(process.env.FAKE_EXIT_AFTER_READY_MS ?? 0);
+    const exitAfterReadyMaxRuns = Number(process.env.FAKE_EXIT_AFTER_READY_MAX_RUNS ?? 0);
+    if (exitAfterReadyMs > 0 && (!exitAfterReadyMaxRuns || runs <= exitAfterReadyMaxRuns)) {
+      setTimeout(() => process.exit(Number(process.env.FAKE_EXIT_CODE ?? 0)), exitAfterReadyMs);
+    }
+  });
 }, delayMs);
 
 function holdPort(host, port) {

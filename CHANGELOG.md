@@ -8,11 +8,14 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
-- Auto-restart: `restart: { onUnexpectedExit, backoffMs, maxAttempts }` starts CPA again after an unexpected
-  exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and existing
-  `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last value
-  repeats; after `maxAttempts` consecutive failures the handle stops and `exited` settles (default `Infinity`).
-  `stop()` cancels a pending wait and `restart()` during one tries immediately.
+- Auto-restart: `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` starts CPA again after
+  an unexpected exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and
+  existing `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last
+  value repeats. A restarted process must stay up for `stableAfterMs` (default 60 s) to be healthy; a process
+  that becomes ready and then dies keeps the backoff growing instead of restarting every 500 ms. After
+  `maxAttempts` consecutive restarts without a stable run the handle stops and `exited` settles (default
+  `Infinity`). `stop()` cancels a pending wait, `restart()` during one tries immediately, and a manual
+  `restart()` resets the count.
 - Lifecycle events on the server handle: `on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)`,
   each returning an unsubscribe function. `exit` reports `code`, `signal`, `recentLogs` and `willRestart`;
   restart events carry `reason` and `attempt`, and `restarted` also has `originChanged` (currently always

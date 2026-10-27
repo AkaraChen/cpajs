@@ -576,6 +576,65 @@ describe('server lifecycle (fake binary)', () => {
       await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
     });
 
+    it('keeps escalating the backoff when restarts become ready and die before stableAfterMs', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter, FAKE_EXIT_AFTER_READY_MS: '30', FAKE_EXIT_CODE: '9' },
+        restart: { onUnexpectedExit: true, backoffMs: [60, 120, 180], maxAttempts: 3, stableAfterMs: 1_000 },
+      });
+      const restarts: { at: number; attempt: number }[] = [];
+      const exits: ExitEvent[] = [];
+      server.on('restart', (e) => restarts.push({ at: Date.now(), attempt: e.attempt }));
+      server.on('exit', (e) => exits.push(e));
+
+      const exit = await server.exited;
+
+      expect(exit).toEqual({ code: 9, signal: null });
+      expect(restarts.map((r) => r.attempt)).toEqual([1, 2, 3]);
+      // Each run lived for 30 ms and produced a fresh attempt, so the waits grow
+      // instead of staying at the first value.
+      expect(restarts[1]!.at - restarts[0]!.at).toBeGreaterThanOrEqual(110);
+      expect(restarts[2]!.at - restarts[1]!.at).toBeGreaterThanOrEqual(170);
+      expect(await readFile(counter, 'utf8')).toBe('4');
+      expect(exits).toHaveLength(4);
+      expect(exits.slice(0, -1).every((e) => e.willRestart)).toBe(true);
+      expect(exits.at(-1)?.willRestart).toBe(false);
+      expect(existsSync(server.stateDir)).toBe(false);
+      await server.stop();
+    });
+
+    it('resets the attempt count after a process stays up past stableAfterMs', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({
+        env: {
+          FAKE_COUNTER: counter,
+          FAKE_EXIT_AFTER_READY_MS: '30',
+          FAKE_EXIT_AFTER_READY_MAX_RUNS: '2',
+        },
+        restart: { onUnexpectedExit: true, backoffMs: [40, 80, 160], maxAttempts: 10, stableAfterMs: 300 },
+      });
+      const restarts: { at: number; attempt: number }[] = [];
+      const restarted: number[] = [];
+      server.on('restart', (e) => restarts.push({ at: Date.now(), attempt: e.attempt }));
+      server.on('restarted', () => restarted.push(Date.now()));
+
+      // Runs 1 and 2 crash shortly after becoming ready: attempts 1 and 2.
+      await waitFor(async () => restarts.length === 2 && restarted.length === 2);
+      expect(restarts.map((r) => r.attempt)).toEqual([1, 2]);
+
+      // Run 3 stays up past the stability window, so its exit starts over.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      const killedAt = Date.now();
+      process.kill(server.pid, 'SIGKILL');
+
+      await waitFor(async () => restarts.length === 3);
+      expect(restarts[2]!.attempt).toBe(1);
+      // Without the reset this would be the third backoff value (160 ms).
+      expect(restarts[2]!.at - killedAt).toBeGreaterThanOrEqual(30);
+      expect(restarts[2]!.at - killedAt).toBeLessThan(150);
+      await server.stop();
+    });
+
     it('cancels the backoff on stop() and settles without another start', async () => {
       const counter = join(dir, 'runs');
       const server = await startFake({ env: { FAKE_COUNTER: counter }, restart: { onUnexpectedExit: true, backoffMs: [10_000] } });

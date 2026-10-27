@@ -45,6 +45,7 @@ const PROBE_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1_000, 5_000, 30_000];
+const DEFAULT_STABLE_AFTER_MS = 60_000;
 
 function validate(options: StartServerOptions): void {
   if (options.config !== undefined && options.configPath !== undefined) {
@@ -72,6 +73,9 @@ function validate(options: StartServerOptions): void {
     (!Number.isInteger(restart.maxAttempts) || restart.maxAttempts < 0)
   ) {
     throw new CpaStartError('invalid-options', 'restart.maxAttempts must be a non-negative integer or Infinity.');
+  }
+  if (restart?.stableAfterMs !== undefined && (!Number.isFinite(restart.stableAfterMs) || restart.stableAfterMs < 0)) {
+    throw new CpaStartError('invalid-options', 'restart.stableAfterMs must be a non-negative finite number.');
   }
   if (options.management !== undefined && options.managementKey !== undefined) {
     throw new CpaStartError(
@@ -500,6 +504,7 @@ interface HandleInfo {
 
 function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
   let currentProc = initialProc;
+  let currentReadyAt = Date.now();
   let state: 'running' | 'backoff' | 'restarting' | 'stopping' | 'stopped' = 'running';
   let restartTask: Promise<void> | undefined;
   let restartController: AbortController | undefined;
@@ -515,6 +520,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
 
   const backoffMs = info.restart?.backoffMs ?? DEFAULT_BACKOFF_MS;
   const maxAttempts = info.restart?.maxAttempts ?? Number.POSITIVE_INFINITY;
+  const stableAfterMs = info.restart?.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
   const autoRestart = info.restart?.onUnexpectedExit === true && maxAttempts > 0;
 
   const listeners = new Map<keyof CpaServerEvents, Set<(event: unknown) => void>>();
@@ -562,11 +568,14 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       notifyExit(proc, result, true);
       return;
     }
-    // state === 'running': the process died on its own.
-    notifyExit(proc, result, autoRestart);
+    // state === 'running': the process died on its own. A run that stayed up
+    // past the stability window breaks the crash loop and starts over.
+    if (Date.now() - currentReadyAt >= stableAfterMs) autoAttempt = 0;
+    const willRestart = autoRestart && autoAttempt < maxAttempts;
+    notifyExit(proc, result, willRestart);
     // An 'exit' listener may have stopped or restarted the server already.
     if (state !== 'running') return;
-    if (!autoRestart) {
+    if (!willRestart) {
       void settle(result).catch(() => {});
       return;
     }
@@ -578,7 +587,6 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
   };
 
   function scheduleAutoRestart(): void {
-    autoAttempt = 0;
     state = 'backoff';
     scheduledAutoRestart = (async () => {
       while (state === 'backoff') {
@@ -595,8 +603,9 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         }
         if (state !== 'backoff') return;
         try {
+          // Success does not end the crash loop: the process must stay up for
+          // `stableAfterMs` before the attempt count is reset on its exit.
           await startRestart('unexpected-exit', attempt, {});
-          autoAttempt = 0;
           return;
         } catch {
           // A failure that will be retried has put the handle back into backoff.
@@ -678,6 +687,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         }
 
         currentProc = result.proc;
+        currentReadyAt = Date.now();
         watch(result.proc);
         state = 'running';
         emit('restarted', { reason, attempt, originChanged: false });
@@ -700,8 +710,9 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     if (state === 'backoff') {
       // Skip the rest of the wait and try right away.
       backoffController?.abort(new Error('manual restart'));
-      autoAttempt = 0;
     }
+    // A manual restart is a deliberate fresh start, not part of a crash loop.
+    autoAttempt = 0;
     return startRestart('manual', 1, restartOptions);
   };
 

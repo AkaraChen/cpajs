@@ -74,13 +74,15 @@ await server.stop();
   `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
   operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
   the handle stopped and cleans up a temporary state directory like `startServer` does.
-- `restart: { onUnexpectedExit, backoffMs, maxAttempts }` restarts CPA by itself after an unexpected exit. It
-  goes through the same path as `restart()`, so `origin`, `port`, the handle, the existing config file and
-  already-created `server.client()` instances keep working. `backoffMs` defaults to
-  `[500, 1000, 5000, 30_000]` and its last value repeats; `maxAttempts` consecutive failed attempts stop the
-  server and settle `exited` (default `Infinity`, a success resets the count). `stop()` cancels a pending wait,
-  `restart()` during one tries immediately. A port taken by another process makes that attempt fail and retries
-  after the next backoff instead of changing `origin`.
+- `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` restarts CPA by itself after an
+  unexpected exit. It goes through the same path as `restart()`, so `origin`, `port`, the handle, the existing
+  config file and already-created `server.client()` instances keep working. `backoffMs` defaults to
+  `[500, 1000, 5000, 30_000]` and its last value repeats. A restarted process must stay up for `stableAfterMs`
+  (default 60 s) to count as healthy; one that exits before it keeps the backoff position, so a crash loop
+  escalates instead of restarting every 500 ms. `maxAttempts` consecutive restarts without a stable run stop the
+  server and settle `exited` (default `Infinity`); a manual `restart()` resets the count. `stop()` cancels a
+  pending wait, and `restart()` during one tries immediately. A port taken by another process makes that attempt
+  fail and retries after the next backoff instead of changing `origin`.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
   unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
   `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has

@@ -138,9 +138,16 @@ export interface RestartPolicy {
    */
   backoffMs?: readonly number[];
   /**
-   * Give up after this many consecutive failed restart attempts: the handle
-   * enters `stopped` and `exited` settles. A successful restart resets the
-   * count. Default `Infinity`.
+   * How long a restarted process must stay up before it counts as healthy.
+   * A process that exits before this window continues the crash loop: the next
+   * restart keeps the backoff position and counts toward `maxAttempts`. A
+   * process still running at this point resets the count when it later exits.
+   * Default 60 000 ms.
+   */
+  stableAfterMs?: number;
+  /**
+   * Give up after this many consecutive restarts without a stable run: the
+   * handle enters `stopped` and `exited` settles. Default `Infinity`.
    */
   maxAttempts?: number;
 }
