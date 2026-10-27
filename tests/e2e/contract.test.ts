@@ -323,6 +323,30 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.errorCode).toBe('file not found');
     });
 
+    it('lists files and config keys, and resolves models for both', async () => {
+      await client.credentials.upload({ name: 'e2e-list-all.json', content: { type: 'claude', email: 'list-all@example.com', api_key: 'sk-list' } });
+      try {
+        const entries = await client.credentials.listAll();
+        const file = entries.find((entry) => entry.name === 'e2e-list-all.json');
+        expect(file).toMatchObject({ source: 'file', provider: 'claude', disabled: false });
+        expect(file!.auth_index).not.toBe('');
+
+        const config = entries.find((entry) => entry.source === 'config' && entry.provider === 'fake');
+        expect(config).toMatchObject({ source: 'config', label: 'fake', disabled: false });
+        expect(config!.auth_index).not.toBe('');
+
+        await expect(client.credentials.modelsFor({ name: 'e2e-list-all.json' })).resolves.toBeInstanceOf(Array);
+        await expect(client.credentials.modelsFor({ auth_index: config!.auth_index })).resolves.toContainEqual(
+          expect.objectContaining({ id: 'fake-model' }),
+        );
+        await expect(client.credentials.modelsFor({ auth_index: config!.auth_index }, { details: true })).resolves.toContainEqual(
+          expect.objectContaining({ id: 'fake-model' }),
+        );
+      } finally {
+        await client.credentials.delete('e2e-list-all.json').catch(() => {});
+      }
+    });
+
     it('refreshes an API-key credential and reports a missing file', async () => {
       // A refresh token would call the real provider. An API key has nothing to rotate,
       // so the executor returns the credential unchanged and 200 proves the response shape.
