@@ -231,7 +231,14 @@ export interface RestartPolicy {
    * `port-in-use`), as well as a failing `afterStart` or config function. Uses
    * `backoffMs` and `maxAttempts`; `invalid-options`, aborted starts and a
    * missing binary still reject right away. The retries are reported as
-   * `restart-failed` events registered through `on`. Default `false`.
+   * `restart-failed` events registered through `on`, with `phase: 'start'`.
+   *
+   * While these retries run, `startServer` has not resolved and there is no
+   * handle yet. Abort them with `startServer({ signal })`: it rejects with
+   * `CpaStartError` code `aborted` after stopping any child process and
+   * removing the temporary state directory. `stopAllServers()` only stops
+   * handles that already started, so it cannot stop a retrying first start.
+   * Default `false`.
    */
   onStartFailure?: boolean;
   /**
@@ -373,6 +380,11 @@ export interface RestartFailedEvent {
   attempt: number;
   /** Whether another attempt follows. `false` means the server stopped. */
   willRetry: boolean;
+  /**
+   * `start` while a retried first start has not produced a handle yet
+   * (`restart.onStartFailure`), `restart` for a manual or automatic restart.
+   */
+  phase: 'start' | 'restart';
 }
 
 export interface CpaServerEvents {

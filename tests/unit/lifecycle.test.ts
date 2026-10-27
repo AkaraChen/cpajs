@@ -674,7 +674,7 @@ describe('server lifecycle (fake binary)', () => {
 
       expect(await readFile(counter, 'utf8')).toBe('2');
       expect(failures).toHaveLength(1);
-      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: true });
+      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: true, phase: 'start' });
       expect((failures[0]!.error as CpaStartError).code).toBe('exited');
       await server.stop();
     });
@@ -728,6 +728,7 @@ describe('server lifecycle (fake binary)', () => {
       expect(await readFile(counter, 'utf8')).toBe('3');
       expect(failures.map((failure) => failure.attempt)).toEqual([1, 2, 3]);
       expect(failures.map((failure) => failure.willRetry)).toEqual([true, true, false]);
+      expect(failures.map((failure) => failure.phase)).toEqual(['start', 'start', 'start']);
       expect(failures.at(-1)!.error).toBe(error);
     });
 
@@ -915,6 +916,7 @@ describe('server lifecycle (fake binary)', () => {
       expect(restarts).toHaveLength(3);
       expect(failures.map((f) => f.attempt)).toEqual([1, 2, 3]);
       expect(failures.map((f) => f.willRetry)).toEqual([true, true, false]);
+      expect(failures.map((f) => f.phase)).toEqual(['restart', 'restart', 'restart']);
       expect(restarts[0]! - killedAt).toBeGreaterThanOrEqual(50);
       expect(restarts[1]! - restarts[0]!).toBeGreaterThanOrEqual(110);
       expect(restarts[2]! - restarts[1]!).toBeGreaterThanOrEqual(170);
@@ -1372,7 +1374,7 @@ describe('server lifecycle (fake binary)', () => {
       expect(error.code).toBe('hook-failed');
       expect(error.cause).toEqual(new Error('restart hook boom'));
       expect(failures).toHaveLength(1);
-      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: false });
+      expect(failures[0]).toMatchObject({ attempt: 1, willRetry: false, phase: 'restart' });
       expect(failures[0]!.error).toBe(error);
       expect(existsSync(stateDir)).toBe(false);
       await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
@@ -1398,6 +1400,7 @@ describe('server lifecycle (fake binary)', () => {
       await server.exited;
 
       expect(failures.map((f) => f.willRetry)).toEqual([true, false]);
+      expect(failures.map((f) => f.phase)).toEqual(['restart', 'restart']);
       expect(
         failures.every((f) => f.error instanceof CpaStartError && f.error.code === 'hook-failed'),
       ).toBe(true);

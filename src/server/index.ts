@@ -521,7 +521,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
     if (!onStartFailure || !retryable) return false;
     if (signal?.aborted) throw abortError(signal, '');
     const willRetry = attempt <= startMaxAttempts;
-    events.emit('restart-failed', { error, attempt, willRetry });
+    events.emit('restart-failed', { error, attempt, willRetry, phase: 'start' });
     if (!willRetry) return false;
     const wait = startBackoffMs[Math.min(attempt - 1, startBackoffMs.length - 1)]!;
     try {
@@ -1007,7 +1007,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
         await runAfterStartCleanup();
         if (signal.aborted) {
           const error = abortError(signal, previous.output(), 'restart was aborted.');
-          emit('restart-failed', { error, attempt, willRetry: false });
+          emit('restart-failed', { error, attempt, willRetry: false, phase: 'restart' });
           await settle(previousExit);
           throw error;
         }
@@ -1028,7 +1028,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
           if (!allowNewPort) {
             const error = new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
             const retry = willRetry();
-            emit('restart-failed', { error, attempt, willRetry: retry });
+            emit('restart-failed', { error, attempt, willRetry: retry, phase: 'restart' });
             // A listener may have called stop() in the meantime.
             if (retry && state === 'restarting') state = 'backoff';
             else await settle(previousExit);
@@ -1071,7 +1071,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
           await reservation?.release();
           reservation = undefined;
           const retry = willRetry();
-          emit('restart-failed', { error, attempt, willRetry: retry });
+          emit('restart-failed', { error, attempt, willRetry: retry, phase: 'restart' });
           if (retry && state === 'restarting') state = 'backoff';
           else await settle(previousExit);
           throw error;
@@ -1117,7 +1117,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
         if (result.kind !== 'ready') {
           const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
           const retry = willRetry();
-          emit('restart-failed', { error: failure.error, attempt, willRetry: retry });
+          emit('restart-failed', { error: failure.error, attempt, willRetry: retry, phase: 'restart' });
           if (retry && state === 'restarting') state = 'backoff';
           else await settle(failure.result ?? previousExit);
           throw failure.error;
@@ -1150,7 +1150,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
           if (signal.aborted) {
             const exit = await result.proc.stop(info.stopTimeoutMs);
             const error = abortError(signal, result.proc.output(), 'restart was aborted.');
-            emit('restart-failed', { error, attempt, willRetry: false });
+            emit('restart-failed', { error, attempt, willRetry: false, phase: 'restart' });
             await settle(exit);
             throw error;
           }
@@ -1163,7 +1163,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CreatedHan
               { cause: hookError },
             );
             const retry = willRetry();
-            emit('restart-failed', { error, attempt, willRetry: retry });
+            emit('restart-failed', { error, attempt, willRetry: retry, phase: 'restart' });
             if (retry && state === 'restarting') state = 'backoff';
             else await settle(hookExit);
             throw error;

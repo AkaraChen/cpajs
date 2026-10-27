@@ -4,6 +4,21 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `restart-failed` events now carry `phase: 'start' | 'restart'`, so a failed first start retried by
+  `restart.onStartFailure` is distinguishable from a failed manual or automatic restart. Existing fields are
+  unchanged.
+
+### Changed
+
+- Documented that `startServer` stays pending while `restart.onStartFailure` retries a first start: abort it with
+  `startServer({ signal })`, which rejects with code `aborted` after stopping the child and removing the
+  temporary directory. `stopAllServers()` only stops handles that already started, so it cannot stop a retrying
+  first start.
+
 ## 0.1.0-rc.6
 
 ### Breaking
