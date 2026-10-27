@@ -97,7 +97,9 @@ if (import.meta.main) {
 
   if (values.check) {
     for (const file of files) {
-      const current = await readFile(file.path, 'utf8').catch(() => undefined);
+      const current = await readFile(file.path, 'utf8')
+        .then((text) => text.replace(/\r\n/g, '\n'))
+        .catch(() => undefined);
       if (current !== file.content) fail(`${relative(ROOT, file.path)} is out of date; run node scripts/generate-binary-table.ts`);
     }
     log(`${relative(ROOT, SOURCE)} and ${relative(ROOT, TYPES)} are up to date`);

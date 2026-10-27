@@ -69,8 +69,8 @@ describe('binary entry', () => {
     const generated = generateBinaryTable();
     const source = fileURLToPath(new URL('../../src/binary-packages.cjs', import.meta.url));
     const types = fileURLToPath(new URL('../../src/binary-packages.d.cts', import.meta.url));
-    expect(await readFile(source, 'utf8')).toBe(generated.source);
-    expect(await readFile(types, 'utf8')).toBe(generated.types);
+    expect((await readFile(source, 'utf8')).replace(/\r\n/g, '\n')).toBe(generated.source);
+    expect((await readFile(types, 'utf8')).replace(/\r\n/g, '\n')).toBe(generated.types);
   });
 
   it('returns undefined for unknown or uninstalled packages', () => {
