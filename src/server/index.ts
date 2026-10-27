@@ -6,6 +6,7 @@ import { buildArgs } from './args.ts';
 import { resolveBinary, resolveLauncher } from './binary.ts';
 import { inspectConfigFile, readManagedConfig, updateManagedSecret, writeManagedConfig, type PreparedConfig } from './config.ts';
 import { CpaStartError } from './errors.ts';
+import { isLogLevel } from './logs.ts';
 import { keyMatches, resolveManagement, type ResolvedManagement } from './management.ts';
 import { bundledPanel } from './panel.ts';
 import { ManagedProcess } from './process.ts';
@@ -13,7 +14,7 @@ import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, pr
 import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import { createWarner } from './warnings.ts';
-import type { CpaServer, ExitResult, LogLine, RestartOptions, ServerClientOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
+import type { CpaServer, ExitResult, LogLine, LogMinLevel, RestartOptions, ServerClientOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
 import { createClient } from '../client/index.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
@@ -73,6 +74,10 @@ function validate(options: StartServerOptions): void {
       'Do not set MANAGEMENT_PASSWORD in env: cpajs only passes it to CPA for management: { key, viaEnvironment: true }, because upstream treats it as enabling remote management.',
     );
   }
+  const minLevel: string | undefined = options.logs?.minLevel;
+  if (minLevel !== undefined && (!isLogLevel(minLevel) || minLevel === 'fatal')) {
+    throw new CpaStartError('invalid-options', `Invalid logs.minLevel ${JSON.stringify(minLevel)}; expected debug, info, warn or error.`);
+  }
   const requestedKey = (options.management === false ? undefined : options.management?.key) ?? options.managementKey;
   if (requestedKey === undefined) return;
   if (options.configPath !== undefined) {
@@ -129,6 +134,7 @@ interface LaunchOptions {
   env: NodeJS.ProcessEnv;
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
+  minLevel?: LogMinLevel | undefined;
   host: string;
   port: number;
   origin: string;
@@ -157,6 +163,7 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
       env: options.env,
       redact: options.redact,
       onLog: options.onLog,
+      minLevel: options.minLevel,
     });
   } catch (cause) {
     // Node reports spawn failures through the 'error' event; Bun throws synchronously.
@@ -371,6 +378,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
         env,
         redact,
         onLog: options.onLog,
+        minLevel: options.logs?.minLevel,
         host,
         port,
         origin,
@@ -403,6 +411,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           extraArgs,
           redact,
           onLog: options.onLog,
+          minLevel: options.logs?.minLevel,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           cleanup,
@@ -465,6 +474,7 @@ interface HandleInfo {
   extraArgs: readonly string[];
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
+  minLevel: LogMinLevel | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   cleanup: () => Promise<void>;
@@ -545,6 +555,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         env: info.env,
         redact: info.redact,
         onLog: info.onLog,
+        minLevel: info.minLevel,
         host,
         port,
         origin: info.origin,

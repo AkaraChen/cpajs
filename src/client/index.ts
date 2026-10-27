@@ -12,10 +12,12 @@ import { Transport, type ClientOptions, type RawRequest, type TransportResponse 
 export {
   CpaAbortError,
   CpaClientError,
+  CpaCredentialTokenError,
   CpaHttpError,
   CpaNetworkError,
   CpaResponseError,
   CpaTimeoutError,
+  CpaUpstreamError,
 } from './errors.ts';
 export type { ClientOptions, FetchLike, Query, QueryValue, RawRequest, RequestOptions, ResponseType, TransportResponse } from './transport.ts';
 export type { ConfigPath, ConfigPathValue, JsonInput, ConfigWriteOptions, ConfigWriteResult, Versioned } from './resources/config.ts';

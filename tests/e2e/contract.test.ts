@@ -9,7 +9,7 @@ import { crc32 } from 'node:zlib';
 import { compareSync } from 'bcryptjs';
 import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
 import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './helpers.ts';
@@ -468,6 +468,27 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(res.status_code).toBe(201);
       expect(res.header['X-Echo']).toEqual(['yes']);
       expect(JSON.parse(res.body)).toEqual({ method: 'POST', auth: 'Bearer abc', body: '{"x":1}' });
+
+      const parsed = await client.requests.apiCallJson<{ method: string; auth: string; body: string }>({
+        method: 'post',
+        url: `${upstream.url}/echo`,
+        header: { Authorization: 'Bearer abc' },
+        data: '{"x":1}',
+      });
+      expect(parsed).toMatchObject({ status: 201, data: { method: 'POST', auth: 'Bearer abc', body: '{"x":1}' } });
+
+      const missingToken = (await client.requests
+        .apiCallJson({ auth_index: '0000000000000000', method: 'GET', url: `${upstream.url}/echo`, header: { Authorization: 'Bearer $TOKEN$' } })
+        .catch((e: unknown) => e)) as CpaCredentialTokenError;
+      expect(missingToken).toBeInstanceOf(CpaCredentialTokenError);
+      expect(missingToken.status).toBe(400);
+      expect(missingToken.errorCode).toBe('auth credential not found for auth_index');
+
+      const upstreamError = (await client.requests
+        .apiCallJson({ method: 'GET', url: `${upstream.url}/missing` })
+        .catch((e: unknown) => e)) as CpaUpstreamError;
+      expect(upstreamError).toBeInstanceOf(CpaUpstreamError);
+      expect(upstreamError.status).toBe(404);
     });
 
     it('lists plugins', async () => {
