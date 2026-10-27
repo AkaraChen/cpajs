@@ -14,7 +14,11 @@ import {
   CpaStartError,
   startServer,
   type CpaServer,
+  type ExitEvent,
   type LogLine,
+  type RestartEvent,
+  type RestartFailedEvent,
+  type RestartedEvent,
   type CpaWarning,
   type StartServerOptions,
   type StartWithConfigOptions,
@@ -511,6 +515,219 @@ describe('server lifecycle (fake binary)', () => {
       expect(await server.exited).toEqual(expected);
       expect(await server.stop()).toEqual(expected);
       expect(existsSync(server.stateDir)).toBe(false);
+    });
+  });
+
+  describe('auto restart', () => {
+    it('restarts after an unexpected exit and keeps the handle and client usable', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({ env: { FAKE_COUNTER: counter }, restart: { onUnexpectedExit: true, backoffMs: [50] } });
+      const origin = server.origin;
+      const port = server.port;
+      const client = server.client();
+      const oldPid = server.pid;
+      let exits = 0;
+      void server.exited.then(() => {
+        exits++;
+      });
+
+      const events: string[] = [];
+      server.on('exit', (e) => events.push(`exit:${e.willRestart}`));
+      server.on('restart', (e) => events.push(`restart:${e.reason}:${e.attempt}`));
+      server.on('restarted', (e) => events.push(`restarted:${e.reason}:${e.attempt}:${e.originChanged}`));
+
+      process.kill(server.pid, 'SIGKILL');
+      await waitFor(async () => server.pid !== oldPid && (await fetch(`${server.origin}/healthz`)).ok);
+
+      expect(server.origin).toBe(origin);
+      expect(server.port).toBe(port);
+      expect(events).toEqual(['exit:true', 'restart:unexpected-exit:1', 'restarted:unexpected-exit:1:false']);
+      expect(exits).toBe(0);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      // The client is bound to the original origin and key, so it just keeps working.
+      const health = await client.request<{ status: string }>({ method: 'GET', path: '/healthz', root: true, anonymous: true });
+      expect(health.data).toEqual({ status: 'ok' });
+
+      const exit = await server.stop();
+      expect(await server.exited).toEqual(exit);
+      expect(exits).toBe(1);
+    });
+
+    it('auto-restarts in configPath mode', async () => {
+      const probe = createServer();
+      await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as { port: number }).port;
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+      const configPath = join(dir, 'config.yaml');
+      await writeFile(configPath, `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\n`);
+
+      const server = await startFake({ configPath, restart: { onUnexpectedExit: true, backoffMs: [30] } });
+      const oldPid = server.pid;
+      const restarted = new Promise<RestartedEvent>((resolve) => server.on('restarted', resolve));
+      process.kill(server.pid, 'SIGKILL');
+      await restarted;
+
+      expect(server.pid).not.toBe(oldPid);
+      expect(server.configPath).toBe(configPath);
+      expect(server.port).toBe(port);
+      await server.stop();
+    });
+
+    it('follows the backoff sequence and gives up after maxAttempts', async () => {
+      const counter = join(dir, 'runs');
+      // Runs 2 and later exit before becoming ready, so every restart attempt fails.
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter, FAKE_EXIT: '1', FAKE_EXIT_AFTER: '2' },
+        restart: { onUnexpectedExit: true, backoffMs: [60, 120, 180], maxAttempts: 3 },
+      });
+      const restarts: number[] = [];
+      const failures: RestartFailedEvent[] = [];
+      server.on('restart', () => restarts.push(Date.now()));
+      server.on('restart-failed', (e) => failures.push(e));
+
+      const killedAt = Date.now();
+      process.kill(server.pid, 'SIGKILL');
+      const exit = await server.exited;
+
+      expect(exit).toEqual({ code: 1, signal: null });
+      expect(restarts).toHaveLength(3);
+      expect(failures.map((f) => f.attempt)).toEqual([1, 2, 3]);
+      expect(failures.map((f) => f.willRetry)).toEqual([true, true, false]);
+      expect(restarts[0]! - killedAt).toBeGreaterThanOrEqual(50);
+      expect(restarts[1]! - restarts[0]!).toBeGreaterThanOrEqual(110);
+      expect(restarts[2]! - restarts[1]!).toBeGreaterThanOrEqual(170);
+      expect(await readFile(counter, 'utf8')).toBe('4');
+      expect(existsSync(server.stateDir)).toBe(false);
+      expect(await server.stop()).toEqual(exit);
+      await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
+    });
+
+    it('keeps escalating the backoff when restarts become ready and die before stableAfterMs', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({
+        // The exit only starts after a /healthz response, so the readiness probe
+        // cannot race the process exit: every run is observed as ready first.
+        env: { FAKE_COUNTER: counter, FAKE_EXIT_AFTER_HEALTH_MS: '100', FAKE_EXIT_CODE: '9' },
+        restart: { onUnexpectedExit: true, backoffMs: [20, 40, 60], maxAttempts: 3, stableAfterMs: 1_000 },
+      });
+      const attempts: number[] = [];
+      const exits: ExitEvent[] = [];
+      server.on('restart', (e) => attempts.push(e.attempt));
+      server.on('exit', (e) => exits.push(e));
+
+      const exit = await server.exited;
+
+      expect(exit).toEqual({ code: 9, signal: null });
+      // Attempt numbers keep growing (and therefore the backoff moves down the
+      // array) instead of restarting at attempt 1 every 500 ms.
+      expect(attempts).toEqual([1, 2, 3]);
+      expect(await readFile(counter, 'utf8')).toBe('4');
+      expect(exits).toHaveLength(4);
+      expect(exits.slice(0, -1).every((e) => e.willRestart)).toBe(true);
+      expect(exits.at(-1)?.willRestart).toBe(false);
+      expect(existsSync(server.stateDir)).toBe(false);
+      await server.stop();
+    });
+
+    it('resets the attempt count after a process stays up past stableAfterMs', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({
+        env: {
+          FAKE_COUNTER: counter,
+          FAKE_EXIT_AFTER_HEALTH_MS: '100',
+          FAKE_EXIT_AFTER_HEALTH_MAX_RUNS: '2',
+        },
+        restart: { onUnexpectedExit: true, backoffMs: [20, 40, 60], maxAttempts: 10, stableAfterMs: 200 },
+      });
+      const attempts: number[] = [];
+      server.on('restart', (e) => attempts.push(e.attempt));
+
+      // Runs 1 and 2 exit shortly after their first /healthz: attempts 1 and 2.
+      await waitFor(
+        async () =>
+          attempts.length === 2 && (await fetch(`${server.origin}/healthz`).catch(() => undefined))?.ok === true,
+      );
+      expect(attempts).toEqual([1, 2]);
+
+      // Run 3 stays up past the stability window, so its exit starts over.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      process.kill(server.pid, 'SIGKILL');
+
+      await waitFor(async () => attempts.length === 3);
+      expect(attempts).toEqual([1, 2, 1]);
+      await server.stop();
+    });
+
+    it('cancels the backoff on stop() and settles without another start', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({ env: { FAKE_COUNTER: counter }, restart: { onUnexpectedExit: true, backoffMs: [10_000] } });
+      const restarts: RestartEvent[] = [];
+      server.on('restart', (e) => restarts.push(e));
+      const exitedEvent = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      expect((await exitedEvent).willRestart).toBe(true);
+
+      const started = Date.now();
+      const exit = await server.stop();
+      expect(Date.now() - started).toBeLessThan(3_000);
+      expect(restarts).toHaveLength(0);
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      expect(await server.exited).toEqual(exit);
+      expect(existsSync(server.stateDir)).toBe(false);
+    });
+
+    it('restarts immediately when restart() is called during a backoff', async () => {
+      const counter = join(dir, 'runs');
+      const server = await startFake({ env: { FAKE_COUNTER: counter }, restart: { onUnexpectedExit: true, backoffMs: [10_000] } });
+      const oldPid = server.pid;
+      const events: string[] = [];
+      server.on('restarted', (e) => events.push(`${e.reason}:${e.attempt}:${e.originChanged}`));
+      const exitedEvent = new Promise<void>((resolve) => server.on('exit', () => resolve()));
+
+      process.kill(server.pid, 'SIGKILL');
+      await exitedEvent;
+
+      const started = Date.now();
+      await server.restart();
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(server.pid).not.toBe(oldPid);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      expect(events).toEqual(['manual:1:false']);
+      await server.stop();
+    });
+
+    it('reports willRestart=false without auto restart', async () => {
+      const server = await startFake();
+      let event: ExitEvent | undefined;
+      server.on('exit', (e) => {
+        event = e;
+      });
+      process.kill(server.pid, 'SIGKILL');
+      await server.exited;
+      expect(event?.willRestart).toBe(false);
+      await server.stop();
+    });
+
+    it('ignores a throwing listener and reports it as a warning', async () => {
+      const server = await startFake({ restart: { onUnexpectedExit: true, backoffMs: [30] } });
+      const warnings: string[] = [];
+      const capture = (warning: Error): void => {
+        warnings.push(warning.message);
+      };
+      process.on('warning', capture);
+      try {
+        server.on('exit', () => {
+          throw new Error('listener boom');
+        });
+        const restarted = new Promise<RestartedEvent>((resolve) => server.on('restarted', resolve));
+        process.kill(server.pid, 'SIGKILL');
+        expect(await restarted).toMatchObject({ reason: 'unexpected-exit', attempt: 1, originChanged: false });
+        expect(warnings.some((w) => w.includes("'exit' listener threw") && w.includes('listener boom'))).toBe(true);
+      } finally {
+        process.off('warning', capture);
+        await server.stop();
+      }
     });
   });
 });
