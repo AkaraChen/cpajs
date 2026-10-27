@@ -300,6 +300,55 @@ import OpenAI from 'openai';
 const openai = new OpenAI({ baseURL: server.baseUrl, apiKey: 'sk-my-model-key' });
 ```
 
+## Bundling and deploying
+
+The platform package is an optional dependency picked at runtime, so a bundler cannot see it in a normal
+`import`. `@cpajs/cpa/binary` is a small entry that contains a literal `require.resolve()` for every target;
+importing it for its side effect puts the installed platform packages in the module graph:
+
+```ts
+import '@cpajs/cpa/binary';
+```
+
+Trace on the deployment platform (including glibc vs musl). A file tracer such as `@vercel/nft` then copies
+the package that matches the build machine. Keep `@cpajs/cpa` and `@cpajs/<target>` external rather than
+bundling them. nft reports a warning for every platform package that is not installed; those are expected
+and non-fatal.
+
+Nitro uses nft. Import the entry from the server code, and full-trace the platform package so its `bin/`
+directory is copied too (`pkg*` copies every file, not only the traced ones):
+
+```ts
+export default defineNitroConfig({
+  // Replace linux-x64-gnu with the target you deploy to (see src/server/targets.ts).
+  traceDeps: ['@cpajs/cpa', '@cpajs/linux-x64-gnu*'],
+});
+```
+
+Vite SSR leaves packages in `node_modules` external; make that explicit and run nft over the server output (or
+over `@cpajs/cpa/binary`) as part of the deploy step:
+
+```ts
+export default defineConfig({
+  ssr: { external: ['@cpajs/cpa'] },
+});
+```
+
+Next.js: keep cpajs outside the server bundle and let output file tracing include it:
+
+```js
+module.exports = {
+  serverExternalPackages: ['@cpajs/cpa'],
+};
+```
+
+In all three setups the side-effect import is what makes the table visible; if a trace still misses the
+binary, copy `node_modules/@cpajs/<target>/` into the deployment or pass `binaryPath` to `startServer`.
+
+Bun ignores `libc`, so `bun install` on Linux installs both `@cpajs/linux-*-gnu` and `@cpajs/linux-*-musl`
+(about 72 MB extra). Install with npm or pnpm, or delete the packages for the other libc before packaging;
+cpajs still picks the right target at runtime. `binaryPath` also lets you ship a single binary yourself.
+
 ## Development
 
 ```sh
@@ -320,6 +369,7 @@ Release tooling, all in `scripts/` and run directly with Node's type stripping:
 | Script | Purpose |
 | --- | --- |
 | `fetch-source.ts` | Clone the pinned CPA tag and verify the commit. |
+| `generate-binary-table.ts` | Regenerate `src/binary-packages.cjs` and its types from `TARGETS`; `--check` fails on drift. |
 | `build-binary.ts` | Build one or more targets, with the same CGO/plugin split as upstream. |
 | `verify-binary.ts` | Check format, CPU, static linking and the glibc baseline; `--smoke` starts the binary. |
 | `assemble-packages.ts` | Create the `@cpajs/*` platform packages. |
