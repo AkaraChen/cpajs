@@ -18,7 +18,17 @@ export {
   CpaTimeoutError,
 } from './errors.ts';
 export type { ClientOptions, FetchLike, Query, QueryValue, RawRequest, RequestOptions, ResponseType, TransportResponse } from './transport.ts';
-export type { ConfigPath, ConfigPathValue, JsonInput, ConfigWriteOptions, ConfigWriteResult, Versioned } from './resources/config.ts';
+export type {
+  ConfigMutationOptions,
+  ConfigPath,
+  ConfigPathValue,
+  ConfigReconcileResult,
+  ConfigUpdateResult,
+  ConfigWriteOptions,
+  ConfigWriteResult,
+  JsonInput,
+  Versioned,
+} from './resources/config.ts';
 export type { CredentialContent, CredentialFile, CredentialSelector } from './resources/credentials.ts';
 export type { DownloadedFile } from './resources/download.ts';
 export type { WaitForOAuthOptions } from './resources/oauth.ts';

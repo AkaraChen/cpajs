@@ -160,6 +160,24 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(error.errorCode).toBe('precondition_failed');
     });
 
+    it('updates a node with If-Match and reconciles only changed sections', async () => {
+      const apiKeys = await client.config.getPath('api-keys');
+      expect(JSON.stringify(apiKeys.data)).toContain('auth_index');
+
+      // Writing the read value back succeeds only because update strips auth_index.
+      const updated = await client.config.update('api-keys', (current) => current);
+      expect(updated.written).toBe(true);
+      expect(updated.etag).toMatch(/^"[0-9a-f]{64}"$/);
+
+      const current = await client.config.get();
+      await expect(client.config.reconcile(current.data)).resolves.toEqual({ written: false, changed: [], etag: current.etag });
+
+      const changed = await client.config.reconcile({ routing: { 'session-affinity-ttl': '1h' } });
+      expect(changed.written).toBe(true);
+      expect(changed.changed).toEqual(['routing']);
+      expect((await client.config.getPath('routing/session-affinity-ttl')).data).toBe('1h');
+    });
+
     it('rejects invalid documents with the native error', async () => {
       const error = (await client.config.patch({ bogus: 1 } as never).catch((e: unknown) => e)) as CpaHttpError;
       expect(error.status).toBe(400);

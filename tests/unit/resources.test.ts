@@ -93,6 +93,161 @@ describe('config', () => {
     expect(calls[6]!.body).toBe('');
   });
 
+  it('update reads, strips auth_index, writes with If-Match and retries a 412', async () => {
+    let reads = 0;
+    let writes = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') {
+        reads++;
+        return Response.json(
+          { claude: [{ keys: [{ 'api-key': `k${reads}`, auth_index: 'key-id' }], auth_index: 'group-id' }] },
+          { headers: { ETag: `"read-${reads}"` } },
+        );
+      }
+      writes++;
+      if (writes === 1) return Response.json({ error: 'precondition_failed' }, { status: 412 });
+      return Response.json(ok, { headers: { ETag: '"written"' } });
+    });
+    const seen: unknown[] = [];
+    const result = await client.config.update('api-keys', (current) => {
+      seen.push(current);
+      return current;
+    });
+    expect(reads).toBe(2);
+    expect(writes).toBe(2);
+    expect(result).toEqual({ written: true, etag: '"written"' });
+    expect(JSON.stringify(seen)).not.toContain('auth_index');
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT', 'GET', 'PUT']);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read-1"');
+    expect(calls[3]!.headers.get('if-match')).toBe('"read-2"');
+    expect(calls[3]!.body).not.toContain('auth_index');
+  });
+
+  it('update skips the write when fn returns undefined', async () => {
+    const { client, calls } = mockClient(() => Response.json({ strategy: 'fill-first' }, { headers: { ETag: '"current"' } }));
+    await expect(client.config.update('routing/strategy', () => undefined)).resolves.toEqual({
+      written: false,
+      etag: '"current"',
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('update passes undefined for a missing node and writes without If-Match', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.method === 'GET'
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json(ok, { headers: { ETag: '"created"' } }),
+    );
+    const seen: unknown[] = [];
+    await expect(
+      client.config.update('routing/strategy', (current) => {
+        seen.push(current);
+        return 'fill-first';
+      }),
+    ).resolves.toEqual({ written: true, etag: '"created"' });
+    expect(seen).toEqual([undefined]);
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT']);
+    expect(calls[1]!.headers.get('if-match')).toBeNull();
+    expect(calls[1]!.body).toBe('"fill-first"');
+  });
+
+  it('update serialises concurrent calls for the same path', async () => {
+    const events: string[] = [];
+    let release = (): void => {};
+    let firstRead = (): void => {};
+    const readStarted = new Promise<void>((resolve) => {
+      firstRead = resolve;
+    });
+    let reads = 0;
+    const { client } = mockClient((req) => {
+      if (req.method !== 'GET') return Response.json(ok, { headers: { ETag: '"written"' } });
+      const response = Response.json({}, { headers: { ETag: `"e${++reads}"` } });
+      if (reads === 1) firstRead();
+      return response;
+    });
+    const one = client.config.update('routing', async () => {
+      events.push('one-start');
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      events.push('one-end');
+      return {};
+    });
+    await readStarted;
+    const two = client.config.update('routing', () => {
+      events.push('two-start');
+      return undefined;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toEqual(['one-start']);
+    release();
+    await one;
+    await two;
+    expect(events).toEqual(['one-start', 'one-end', 'two-start']);
+  });
+
+  it('reconcile writes nothing when the values match, ignoring auth_index', async () => {
+    const { client, calls } = mockClient(() =>
+      Response.json(
+        {
+          'config-version': 8,
+          routing: { strategy: 'fill-first' },
+          'api-keys': { claude: [{ keys: [{ 'api-key': 'k', auth_index: 'injected' }], auth_index: 'group' }] },
+        },
+        { headers: { ETag: '"same"' } },
+      ),
+    );
+    await expect(
+      client.config.reconcile({
+        'config-version': 8,
+        routing: { strategy: 'fill-first' },
+        'api-keys': { claude: [{ keys: [{ 'api-key': 'k' }] }] },
+      }),
+    ).resolves.toEqual({ written: false, changed: [], etag: '"same"' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reconcile writes only changed top-level keys with one If-Match', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.method === 'GET'
+        ? Response.json(
+            { 'config-version': 8, routing: { strategy: 'fill-first' }, access: { 'api-keys': ['old'] } },
+            { headers: { ETag: '"read"' } },
+          )
+        : Response.json(ok, { headers: { ETag: '"written"' } }),
+    );
+    await expect(
+      client.config.reconcile({
+        'config-version': 8,
+        routing: { strategy: 'fill-first' },
+        access: { 'api-keys': ['new'] },
+      }),
+    ).resolves.toEqual({ written: true, changed: ['access'], etag: '"written"' });
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PATCH']);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read"');
+    expect(JSON.parse(calls[1]!.body)).toEqual({ access: { 'api-keys': ['new'] } });
+  });
+
+  it('reconcile re-reads and retries on 412', async () => {
+    let reads = 0;
+    let writes = 0;
+    const { client } = mockClient((req) => {
+      if (req.method === 'GET') {
+        reads++;
+        return Response.json({ routing: { strategy: 'round-robin' } }, { headers: { ETag: `"read-${reads}"` } });
+      }
+      writes++;
+      if (writes === 1) return Response.json({ error: 'precondition_failed' }, { status: 412 });
+      return Response.json(ok, { headers: { ETag: '"written"' } });
+    });
+    await expect(client.config.reconcile({ routing: { strategy: 'fill-first' } })).resolves.toEqual({
+      written: true,
+      changed: ['routing'],
+      etag: '"written"',
+    });
+    expect([reads, writes]).toEqual([2, 2]);
+  });
+
   it('refuses an empty path for node operations', async () => {
     const { client } = mockClient();
     expect(() => client.config.delete('')).toThrow(/must not be empty/);

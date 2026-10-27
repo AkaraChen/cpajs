@@ -4,6 +4,20 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `config.update(path, fn, options?)` reads one node, removes the read-only `auth_index` fields that GET
+  injects, passes the value to `fn`, and writes the result back with `If-Match`. A 412 re-reads and calls `fn`
+  again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for
+  the same path on one client instance run one at a time. A missing node passes `undefined` and is created.
+- `config.reconcile(partial, options?)` deep-compares each top-level section against the stored config,
+  ignoring `auth_index`, and PATCHes only the sections that differ with one `If-Match` and the same retry.
+- GET requests retry CPA's transient `500 invalid_config` (a read landing while `config.yaml` is rewritten
+  non-atomically) up to three times after 100/200/400 ms. Writes never retry. Disable with
+  `retryInvalidConfig: false` on `createClient`.
+
 ## 0.1.0-rc.4
 
 ### Added
