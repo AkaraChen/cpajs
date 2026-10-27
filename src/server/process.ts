@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable } from 'node:stream';
-import { parseLogLine, passesMinLevel } from './logs.ts';
-import type { ExitResult, LogLine, LogMinLevel } from './types.ts';
+import { parseLogLine, passesLogFilter } from './logs.ts';
+import type { ExitResult, LogLine, LogOptions } from './types.ts';
 
 const MAX_RECENT_LINES = 200;
 /** Longest line kept, in UTF-16 code units; longer output is truncated with a marker. */
@@ -29,8 +29,8 @@ export interface SpawnOptions {
   env: NodeJS.ProcessEnv;
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
-  /** Drop parsed lines below this level from `onLog`; `recentLogs` keeps them. */
-  minLevel?: LogMinLevel | undefined;
+  /** Filters `onLog`; `recentLogs` keeps every line. */
+  logs?: LogOptions | undefined;
   /**
    * Supervise mode of cpa-launcher: start it in its own process group, signal
    * the whole group (launcher and CPA), and keep a stdin pipe open whose EOF
@@ -50,7 +50,7 @@ export class ManagedProcess {
 
   readonly #redact: (text: string) => string;
   readonly #onLog: ((log: LogLine) => void) | undefined;
-  readonly #minLevel: LogMinLevel | undefined;
+  readonly #logs: LogOptions | undefined;
   readonly #lineListeners = new Set<(log: LogLine) => void>();
   readonly #supervised: boolean;
   #stopping: Promise<ExitResult> | undefined;
@@ -58,7 +58,7 @@ export class ManagedProcess {
   constructor(binaryPath: string, args: readonly string[], options: SpawnOptions) {
     this.#redact = options.redact;
     this.#onLog = options.onLog;
-    this.#minLevel = options.minLevel;
+    this.#logs = options.logs;
     this.#supervised = options.supervised === true;
     this.child = spawn(binaryPath, [...args], {
       cwd: options.cwd,
@@ -110,7 +110,7 @@ export class ManagedProcess {
       this.recentLogs.push(log);
       if (this.recentLogs.length > MAX_RECENT_LINES) this.recentLogs.shift();
       for (const listener of this.#lineListeners) listener(log);
-      if (passesMinLevel(log.level, this.#minLevel)) this.#onLog?.(log);
+      if (passesLogFilter(log, this.#logs)) this.#onLog?.(log);
     };
     stream.on('data', (chunk: string) => {
       pending += chunk;

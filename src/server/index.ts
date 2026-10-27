@@ -28,7 +28,7 @@ import type {
   ConfigContext,
   ExitResult,
   LogLine,
-  LogMinLevel,
+  LogOptions,
   RestartOptions,
   RestartPolicy,
   RestartReason,
@@ -137,6 +137,10 @@ function validate(options: StartServerOptions): void {
   if (minLevel !== undefined && (!isLogLevel(minLevel) || minLevel === 'fatal')) {
     throw new CpaStartError('invalid-options', `Invalid logs.minLevel ${JSON.stringify(minLevel)}; expected debug, info, warn or error.`);
   }
+  const unleveled: string | undefined = options.logs?.unleveled;
+  if (unleveled !== undefined && unleveled !== 'all' && unleveled !== 'stderr' && unleveled !== 'none') {
+    throw new CpaStartError('invalid-options', `Invalid logs.unleveled ${JSON.stringify(unleveled)}; expected all, stderr or none.`);
+  }
   const requestedKey = (options.management === false ? undefined : options.management?.key) ?? options.managementKey;
   if (requestedKey === undefined) return;
   if (options.configPath !== undefined) {
@@ -219,7 +223,7 @@ interface LaunchOptions {
   env: NodeJS.ProcessEnv;
   redact: (text: string) => string;
   onLog?: ((log: LogLine) => void) | undefined;
-  minLevel?: LogMinLevel | undefined;
+  logs?: LogOptions | undefined;
   host: string;
   port: number;
   origin: string;
@@ -248,7 +252,7 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
       env: options.env,
       redact: options.redact,
       onLog: options.onLog,
-      minLevel: options.minLevel,
+      logs: options.logs,
     });
   } catch (cause) {
     // Node reports spawn failures through the 'error' event; Bun throws synchronously.
@@ -521,7 +525,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
         env,
         redact,
         onLog: options.onLog,
-        minLevel: options.logs?.minLevel,
+        logs: options.logs,
         host,
         port,
         origin,
@@ -556,7 +560,7 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
           redactExtras: options.redact ?? [],
           homeJwt: options.home?.jwt,
           onLog: options.onLog,
-          minLevel: options.logs?.minLevel,
+          logs: options.logs,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           restart: options.restart,
@@ -656,7 +660,7 @@ interface HandleInfo {
   redactExtras: readonly string[];
   homeJwt: string | undefined;
   onLog?: ((log: LogLine) => void) | undefined;
-  minLevel: LogMinLevel | undefined;
+  logs: LogOptions | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
   restart: RestartPolicy | undefined;
@@ -868,7 +872,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
           env: info.env,
           redact: info.redact,
           onLog: info.onLog,
-          minLevel: info.minLevel,
+          logs: info.logs,
           host,
           port,
           origin: info.origin,
