@@ -4,6 +4,20 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- Auto-restart: `restart: { onUnexpectedExit, backoffMs, maxAttempts }` starts CPA again after an unexpected
+  exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and existing
+  `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last value
+  repeats; after `maxAttempts` consecutive failures the handle stops and `exited` settles (default `Infinity`).
+  `stop()` cancels a pending wait and `restart()` during one tries immediately.
+- Lifecycle events on the server handle: `on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)`,
+  each returning an unsubscribe function. `exit` reports `code`, `signal`, `recentLogs` and `willRestart`;
+  restart events carry `reason` and `attempt`, and `restarted` also has `originChanged` (currently always
+  `false`). Listener errors are reported through `process.emitWarning`.
+
 ## 0.1.0-rc.4
 
 ### Added

@@ -74,6 +74,18 @@ await server.stop();
   `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
   operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
   the handle stopped and cleans up a temporary state directory like `startServer` does.
+- `restart: { onUnexpectedExit, backoffMs, maxAttempts }` restarts CPA by itself after an unexpected exit. It
+  goes through the same path as `restart()`, so `origin`, `port`, the handle, the existing config file and
+  already-created `server.client()` instances keep working. `backoffMs` defaults to
+  `[500, 1000, 5000, 30_000]` and its last value repeats; `maxAttempts` consecutive failed attempts stop the
+  server and settle `exited` (default `Infinity`, a success resets the count). `stop()` cancels a pending wait,
+  `restart()` during one tries immediately. A port taken by another process makes that attempt fail and retries
+  after the next backoff instead of changing `origin`.
+- Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
+  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
+  `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
+  `originChanged` (currently always `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A
+  listener that throws is reported through `process.emitWarning` and never disturbs the server.
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:

@@ -13,7 +13,19 @@ import { connectHost, findFreePort, formatOrigin, isLoopbackHost, isPortFree, pr
 import { internalCommand, type InternalCommand } from './internal.ts';
 import { createRedactor } from './redact.ts';
 import { createWarner } from './warnings.ts';
-import type { CpaServer, ExitResult, LogLine, RestartOptions, ServerClientOptions, StartServerOptions, StartWithConfigOptions, StopOptions } from './types.ts';
+import type {
+  CpaServer,
+  CpaServerEvents,
+  ExitResult,
+  LogLine,
+  RestartOptions,
+  RestartPolicy,
+  RestartReason,
+  ServerClientOptions,
+  StartServerOptions,
+  StartWithConfigOptions,
+  StopOptions,
+} from './types.ts';
 import { createClient } from '../client/index.ts';
 
 export { candidateTargets, currentPlatform, detectLibc, resolveBinary } from './binary.ts';
@@ -32,6 +44,7 @@ const DEFAULT_STOP_TIMEOUT_MS = 10_000;
 const PROBE_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
+const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1_000, 5_000, 30_000];
 
 function validate(options: StartServerOptions): void {
   if (options.config !== undefined && options.configPath !== undefined) {
@@ -46,6 +59,19 @@ function validate(options: StartServerOptions): void {
   const { port } = options;
   if (port !== undefined && (!Number.isInteger(port) || port < 0 || port > 65_535)) {
     throw new CpaStartError('invalid-options', `Invalid port ${String(port)}.`);
+  }
+  const restart = options.restart;
+  if (restart?.backoffMs !== undefined) {
+    if (restart.backoffMs.length === 0 || restart.backoffMs.some((ms) => !Number.isFinite(ms) || ms < 0)) {
+      throw new CpaStartError('invalid-options', 'restart.backoffMs must contain at least one non-negative finite number.');
+    }
+  }
+  if (
+    restart?.maxAttempts !== undefined &&
+    restart.maxAttempts !== Number.POSITIVE_INFINITY &&
+    (!Number.isInteger(restart.maxAttempts) || restart.maxAttempts < 0)
+  ) {
+    throw new CpaStartError('invalid-options', 'restart.maxAttempts must be a non-negative integer or Infinity.');
   }
   if (options.management !== undefined && options.managementKey !== undefined) {
     throw new CpaStartError(
@@ -405,6 +431,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           onLog: options.onLog,
           startupTimeoutMs,
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
+          restart: options.restart,
           cleanup,
         });
       }
@@ -467,20 +494,44 @@ interface HandleInfo {
   onLog?: ((log: LogLine) => void) | undefined;
   startupTimeoutMs: number;
   stopTimeoutMs: number;
+  restart: RestartPolicy | undefined;
   cleanup: () => Promise<void>;
 }
 
 function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
   let currentProc = initialProc;
-  let state: 'running' | 'restarting' | 'stopping' | 'stopped' = 'running';
+  let state: 'running' | 'backoff' | 'restarting' | 'stopping' | 'stopped' = 'running';
   let restartTask: Promise<void> | undefined;
   let restartController: AbortController | undefined;
+  let scheduledAutoRestart: Promise<void> | undefined;
+  let backoffController: AbortController | undefined;
+  let autoAttempt = 0;
   let stopTask: Promise<ExitResult> | undefined;
   let resolveExited!: (result: ExitResult) => void;
   let finalizePromise: Promise<void> | undefined;
   const exited = new Promise<ExitResult>((resolve) => {
     resolveExited = resolve;
   });
+
+  const backoffMs = info.restart?.backoffMs ?? DEFAULT_BACKOFF_MS;
+  const maxAttempts = info.restart?.maxAttempts ?? Number.POSITIVE_INFINITY;
+  const autoRestart = info.restart?.onUnexpectedExit === true && maxAttempts > 0;
+
+  const listeners = new Map<keyof CpaServerEvents, Set<(event: unknown) => void>>();
+  const emit = <K extends keyof CpaServerEvents>(event: K, payload: CpaServerEvents[K]): void => {
+    const set = listeners.get(event);
+    if (set === undefined) return;
+    for (const listener of set) {
+      try {
+        (listener as (event: CpaServerEvents[K]) => void)(payload);
+      } catch (error) {
+        // A broken listener must not disturb the process lifecycle.
+        process.emitWarning(`A CpaServer '${event}' listener threw: ${(error as Error)?.message ?? String(error)}`, {
+          type: 'CpaWarning',
+        });
+      }
+    }
+  };
 
   const settle = (result: ExitResult): Promise<void> => {
     if (finalizePromise) return finalizePromise;
@@ -496,18 +547,68 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     return finalizePromise;
   };
 
-  const watch = (proc: ManagedProcess): void => {
-    void proc.exited.then((result) => {
-      if (proc !== currentProc || state !== 'running') return;
-      void settle(result).catch(() => {});
-    });
+  const notifyExit = (proc: ManagedProcess, result: ExitResult, willRestart: boolean): void => {
+    emit('exit', { code: result.code, signal: result.signal, recentLogs: [...proc.recentLogs], willRestart });
   };
-  watch(initialProc);
 
-  const restart = (restartOptions: RestartOptions = {}): Promise<void> => {
+  const handleExit = (proc: ManagedProcess, result: ExitResult): void => {
+    if (proc !== currentProc) return;
     if (state === 'stopped' || state === 'stopping') {
-      return Promise.reject(new CpaStartError('stopped', 'Cannot restart a stopped server.'));
+      // stop() settles the handle after the process is gone.
+      notifyExit(proc, result, false);
+      return;
     }
+    if (state === 'restarting' || state === 'backoff') {
+      notifyExit(proc, result, true);
+      return;
+    }
+    // state === 'running': the process died on its own.
+    notifyExit(proc, result, autoRestart);
+    // An 'exit' listener may have stopped or restarted the server already.
+    if (state !== 'running') return;
+    if (!autoRestart) {
+      void settle(result).catch(() => {});
+      return;
+    }
+    scheduleAutoRestart();
+  };
+
+  const watch = (proc: ManagedProcess): void => {
+    void proc.exited.then((result) => handleExit(proc, result));
+  };
+
+  function scheduleAutoRestart(): void {
+    autoAttempt = 0;
+    state = 'backoff';
+    scheduledAutoRestart = (async () => {
+      while (state === 'backoff') {
+        const attempt = ++autoAttempt;
+        const wait = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)]!;
+        const controller = new AbortController();
+        backoffController = controller;
+        try {
+          await delay(wait, undefined, { signal: controller.signal });
+        } catch {
+          return;
+        } finally {
+          if (backoffController === controller) backoffController = undefined;
+        }
+        if (state !== 'backoff') return;
+        try {
+          await startRestart('unexpected-exit', attempt, {});
+          autoAttempt = 0;
+          return;
+        } catch {
+          // A failure that will be retried has put the handle back into backoff.
+          if (state !== 'backoff') return;
+        }
+      }
+    })().finally(() => {
+      scheduledAutoRestart = undefined;
+    });
+  }
+
+  function startRestart(reason: RestartReason, attempt: number, restartOptions: RestartOptions): Promise<void> {
     if (restartTask) return restartTask;
 
     state = 'restarting';
@@ -518,68 +619,104 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
       : controller.signal;
 
     restartTask = (async () => {
-      const previous = currentProc;
-      const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
-      if (signal.aborted) {
-        await settle(previousExit);
-        throw abortError(signal, previous.output(), 'restart was aborted.');
+      try {
+        const previous = currentProc;
+        const previousExit = await previous.stop(restartOptions.timeoutMs ?? info.stopTimeoutMs);
+        if (signal.aborted) {
+          const error = abortError(signal, previous.output(), 'restart was aborted.');
+          emit('restart-failed', { error, attempt, willRetry: false });
+          await settle(previousExit);
+          throw error;
+        }
+
+        const willRetry = (): boolean =>
+          reason === 'unexpected-exit' && attempt < maxAttempts && state !== 'stopping';
+
+        // Reuse the original port, dynamic or not. The old listener is gone, and
+        // Go sets SO_REUSEADDR on Unix, so TIME_WAIT does not block the bind.
+        // Windows relies on its default (Go does not set SO_REUSEADDR there);
+        // either way another process holding the port is reported, never swapped.
+        const { host, port } = info.listen;
+        if (!(await isPortFree(host, port))) {
+          const error = new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
+          const retry = willRetry();
+          emit('restart-failed', { error, attempt, willRetry: retry });
+          // A listener may have called stop() in the meantime.
+          if (retry && state === 'restarting') state = 'backoff';
+          else await settle(previousExit);
+          throw error;
+        }
+
+        // Reuse the config file as CPA left it. Rewriting it here would discard
+        // changes made through the management API during the previous run (#13).
+        const result = await launchProcess({
+          binaryPath: info.spawnPath,
+          supervised: info.supervised,
+          args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
+          stateDir: info.stateDir,
+          env: info.env,
+          redact: info.redact,
+          onLog: info.onLog,
+          host,
+          port,
+          origin: info.origin,
+          deadline: Date.now() + info.startupTimeoutMs,
+          signal,
+          startupTimeoutMs: info.startupTimeoutMs,
+          portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
+          allowRetry: false,
+          abortMessage: 'restart was aborted.',
+        });
+
+        if (result.kind !== 'ready') {
+          const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
+          const retry = willRetry();
+          emit('restart-failed', { error: failure.error, attempt, willRetry: retry });
+          if (retry && state === 'restarting') state = 'backoff';
+          else await settle(failure.result ?? previousExit);
+          throw failure.error;
+        }
+
+        currentProc = result.proc;
+        watch(result.proc);
+        state = 'running';
+        emit('restarted', { reason, attempt, originChanged: false });
+      } finally {
+        restartTask = undefined;
+        restartController = undefined;
       }
+    })();
 
-      // Reuse the original port, dynamic or not. The old listener is gone, and
-      // Go sets SO_REUSEADDR on Unix, so TIME_WAIT does not block the bind.
-      // Windows relies on its default (Go does not set SO_REUSEADDR there);
-      // either way another process holding the port is reported, never swapped.
-      const { host, port } = info.listen;
-      if (!(await isPortFree(host, port))) {
-        await settle(previousExit);
-        throw new CpaStartError('port-in-use', `Port ${port} on ${host || 'all interfaces'} is already in use.`);
-      }
-
-      // Reuse the config file as CPA left it. Rewriting it here would discard
-      // changes made through the management API during the previous run (#13).
-      const result = await launchProcess({
-        binaryPath: info.spawnPath,
-        supervised: info.supervised,
-        args: [...info.prefixArgs, '-config', info.configPath, ...info.extraArgs],
-        stateDir: info.stateDir,
-        env: info.env,
-        redact: info.redact,
-        onLog: info.onLog,
-        host,
-        port,
-        origin: info.origin,
-        deadline: Date.now() + info.startupTimeoutMs,
-        signal,
-        startupTimeoutMs: info.startupTimeoutMs,
-        portMessage: `Port ${port} on ${host || 'all interfaces'} is already in use.`,
-        allowRetry: false,
-        abortMessage: 'restart was aborted.',
-      });
-
-      if (result.kind !== 'ready') {
-        const failure = result as Extract<LaunchResult, { kind: 'failed' }>;
-        await settle(failure.result ?? previousExit);
-        throw failure.error;
-      }
-
-      currentProc = result.proc;
-      watch(result.proc);
-      state = 'running';
-      // The process may have exited between the readiness probe and this point.
-      if (result.proc.exitResult) void settle(result.proc.exitResult).catch(() => {});
-    })().finally(() => {
-      restartTask = undefined;
-      restartController = undefined;
-      if (state === 'restarting') state = 'running';
-    });
-
+    // Emitted after `restartTask` is set, so a listener may call restart() safely.
+    emit('restart', { reason, attempt });
     return restartTask;
+  }
+
+  const restart = (restartOptions: RestartOptions = {}): Promise<void> => {
+    if (state === 'stopped' || state === 'stopping') {
+      return Promise.reject(new CpaStartError('stopped', 'Cannot restart a stopped server.'));
+    }
+    if (restartTask) return restartTask;
+    if (state === 'backoff') {
+      // Skip the rest of the wait and try right away.
+      backoffController?.abort(new Error('manual restart'));
+      autoAttempt = 0;
+    }
+    return startRestart('manual', 1, restartOptions);
   };
 
   const stop = (stopOptions: StopOptions = {}): Promise<ExitResult> => {
     stopTask ??= (async () => {
       if (state !== 'stopped') state = 'stopping';
       restartController?.abort(new Error('server stopped'));
+      backoffController?.abort(new Error('server stopped'));
+      if (scheduledAutoRestart) {
+        try {
+          await scheduledAutoRestart;
+        } catch {
+          // The auto-restart loop only rejects if one of its listeners does.
+        }
+      }
       if (restartTask) {
         try {
           await restartTask;
@@ -613,11 +750,22 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
     exited,
     stop,
     restart,
+    on(event, listener) {
+      const existing = listeners.get(event);
+      const target = existing ?? new Set<(event: unknown) => void>();
+      if (existing === undefined) listeners.set(event, target);
+      const stored = listener as (event: unknown) => void;
+      target.add(stored);
+      return () => {
+        target.delete(stored);
+      };
+    },
     client(clientOptions: ServerClientOptions = {}) {
       if (info.managementKey === undefined) throw new Error(`server.client() is unavailable: ${info.noClientReason}.`);
       return createClient({ ...clientOptions, baseUrl: info.origin, managementKey: info.managementKey });
     },
   };
+  watch(initialProc);
   liveServers.add(handle);
   return handle;
 }

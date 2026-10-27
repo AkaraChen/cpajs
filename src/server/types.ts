@@ -121,6 +121,28 @@ interface CommonServerOptions {
   redact?: readonly string[];
   /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
   stopTimeoutMs?: number;
+  /**
+   * Restart CPA by itself when it exits unexpectedly. Goes through the same path
+   * as `restart()`, so `origin`, `port`, the handle, its config file and existing
+   * clients stay valid. Disabled by default.
+   */
+  restart?: RestartPolicy;
+}
+
+export interface RestartPolicy {
+  /** Start CPA again after an unexpected exit. Default `false`. */
+  onUnexpectedExit?: boolean;
+  /**
+   * Backoff before each restart attempt, in milliseconds; the last value is
+   * reused. Default `[500, 1000, 5000, 30_000]`.
+   */
+  backoffMs?: readonly number[];
+  /**
+   * Give up after this many consecutive failed restart attempts: the handle
+   * enters `stopped` and `exited` settles. A successful restart resets the
+   * count. Default `Infinity`.
+   */
+  maxAttempts?: number;
 }
 
 export interface StartWithConfigOptions extends CommonServerOptions {
@@ -182,6 +204,42 @@ export interface RestartOptions {
   signal?: AbortSignal;
 }
 
+export type RestartReason = 'unexpected-exit' | 'manual';
+
+export interface ExitEvent {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  /** Output the exited process had produced, oldest first. */
+  recentLogs: readonly LogLine[];
+  /** Whether a new process will be started (a manual restart or auto-restart). */
+  willRestart: boolean;
+}
+
+export interface RestartEvent {
+  reason: RestartReason;
+  /** 1-based attempt number; consecutive failed attempts increase it. */
+  attempt: number;
+}
+
+export interface RestartedEvent extends RestartEvent {
+  /** Reserved for a future port change; currently always `false`. */
+  originChanged: boolean;
+}
+
+export interface RestartFailedEvent {
+  error: unknown;
+  attempt: number;
+  /** Whether another attempt follows. `false` means the server stopped. */
+  willRetry: boolean;
+}
+
+export interface CpaServerEvents {
+  exit: ExitEvent;
+  restart: RestartEvent;
+  restarted: RestartedEvent;
+  'restart-failed': RestartFailedEvent;
+}
+
 export interface CpaServer {
   /** e.g. `http://127.0.0.1:8317`. Use as the client `baseUrl`. */
   readonly origin: string;
@@ -197,8 +255,9 @@ export interface CpaServer {
   /** Recent output lines (redacted), oldest first. */
   readonly recentLogs: readonly LogLine[];
   /**
-   * Settles when the process exits for good: on `stop()` or an unexpected exit.
-   * A restart stops one process and starts another, so it does not settle this.
+   * Settles when the process exits for good: on `stop()`, an unexpected exit
+   * when auto-restart is off, or after its restart attempts are exhausted. A
+   * restart stops one process and starts another, so it does not settle this.
    */
   readonly exited: Promise<ExitResult>;
   /**
@@ -214,11 +273,19 @@ export interface CpaServer {
    * `secret-key` you put in `config` yourself.
    */
   client(options?: ServerClientOptions): CpaClient;
+  /**
+   * Subscribes to lifecycle events. Returns a function that removes the
+   * listener. A listener that throws is ignored (reported through
+   * `process.emitWarning`) and never affects the server.
+   */
+  on<K extends keyof CpaServerEvents>(event: K, listener: (event: CpaServerEvents[K]) => void): () => void;
   stop(options?: StopOptions): Promise<ExitResult>;
   /**
    * Restarts CPA with the original options, reusing `origin`, `baseUrl`, `host`,
    * `port`, `stateDir` and the existing config file. Concurrent calls share one
-   * operation. A failed or cancelled restart leaves the server stopped.
+   * operation. During an auto-restart backoff the wait is skipped and the
+   * restart happens immediately. A failed or cancelled restart leaves the
+   * server stopped.
    */
   restart(options?: RestartOptions): Promise<void>;
 }
