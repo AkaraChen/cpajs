@@ -265,11 +265,16 @@ await client.credentials.upload({ name: 'codex-me.json', content: credentialJson
 const all = await client.credentials.listAll();
 const models = await client.credentials.modelsFor({ auth_index: all[0]!.auth_index }, { details: true });
 
+const desired = [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }];
 const synced = await client.credentials.reconcile({
   owner: 'chat',
-  files: [{ name: 'chat-a.json', content: credentialJson, revision: '2026-10-27' }],
+  files: desired,
+  // A legacy file without `x-cpajs` is claimed in place. Returning its desired
+  // revision keeps the tokens CPA already rotated; a different one uploads `desired`.
+  adopt: (name, body) =>
+    body.chat_seed === undefined ? undefined : desired.find((file) => file.name === name)?.revision,
 });
-console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [] }
+console.log(synced); // { uploaded: ['chat-a.json'], deleted: [], unchanged: [], adopted: [] }
 
 const login = await client.oauth.start({ provider: 'claude' });
 console.log('open', login.url);
@@ -288,6 +293,15 @@ refresh does not cause another upload. With `prune` (the default), files owned b
 in `files` are deleted; files owned by anyone else are never touched. The caller's content objects are not
 mutated.
 
+A same-name file without the marker is never overwritten. Reconcile throws `CpaReconcileError` with code
+`unmarked` (also for files owned by another caller, code `owned-by-other`) unless `adopt(name, body)` returns
+a revision. Adoption keeps the stored content, including tokens, writes only the marker, and then compares the
+returned revision with the desired one: equal leaves the file alone, different uploads the desired content.
+Returning `undefined` leaves the file unmanaged; a same-name unmarked file then still throws. `adopt` is also
+called for unmarked files in the prune range, so a recognized legacy file can be claimed and deleted.
+`files[].content` accepts an object, JSON text, bytes, or a `Blob`; strings and bytes are parsed and must
+resolve to a JSON object, which is checked before any request.
+
 `credentials.listAll` merges credential files with the config's `api-keys` entries, which `/credentials` only
 exposes as a runtime view. Select either a file by `name` or any credential by `auth_index` with
 `credentials.modelsFor`. Config-key models follow CPA's own resolution (model aliases, `excluded-models` with
@@ -297,7 +311,7 @@ state such as cooldowns is only available for files.
 | Group | Routes |
 | --- | --- |
 | `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
-| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision, delete, download, status, fields, refresh, SIWC status |
+| `credentials` | list all (files + config keys), models per credential (with details), upload (raw or multipart), reconcile by owner/revision (with adoption), delete, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
 | `usage` | API-key counters, usage queue (destructive pop) |
@@ -320,6 +334,8 @@ Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's tr
   `status`, `headers`, and `body` (parsed when JSON).
 - `CpaCredentialTokenError` when `requests.apiCallJson` cannot resolve `$TOKEN$`. It carries `status` and
   `errorCode`.
+- `CpaReconcileError` when `credentials.reconcile` will not overwrite a file. It carries `code` (`unmarked` or
+  `owned-by-other`) and `file`.
 - `CpaNetworkError` when the request fails.
 - `CpaTimeoutError` when the request times out.
 - `CpaAbortError` when your `signal` aborts the request.
