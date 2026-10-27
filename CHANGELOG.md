@@ -12,6 +12,18 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   be parsed, while `line` and `stream` stay unchanged. Pass `logs: { minLevel: 'warn' }` to drop lower-severity
   lines from `onLog` instead of re-parsing text; `recentLogs` still keeps every line, and lines without a parsed
   level always pass. No new runtime dependencies.
+- `requests.apiCallJson(request, options)` wraps `apiCall` for JSON upstreams: a JSON string body is parsed,
+  a non-2xx upstream status throws `CpaUpstreamError` (upstream `status`, `headers`, parsed `body`), and a CPA
+  400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`
+  (`auth token not found`, `auth credential not found for auth_index`, or `auth token refresh failed`).
+  `apiCall` is unchanged and still returns the raw result.
+
+### Changed
+
+- A generated management key is hashed at bcrypt cost 4 (upstream's `bcrypt.MinCost`) instead of 10. CPA
+  checks the key against the hash on every management request at the stored cost, so cost 10 spent about
+  65 ms of CPU per request, which adds up for hosts that poll the management API. The key is 256 random
+  bits, so the cheaper hash does not make it easier to guess. An explicit `management.key` keeps cost 10.
 
 ## 0.1.0-rc.4
 
