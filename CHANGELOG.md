@@ -17,6 +17,25 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   client-facing ID, a key's `excluded-models` overrides its group's and supports `*` wildcards, and
   `display-name` / `max-context-length` / `thinking` override the defaults. With `details: true` the channel's
   `GET /routing/model-definitions/:channel` is merged into each model, requesting each channel once per call.
+- Auto-restart: `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` starts CPA again after
+  an unexpected exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and
+  existing `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last
+  value repeats. A restarted process must stay up for `stableAfterMs` (default 60 s) to be healthy; a process
+  that becomes ready and then dies keeps the backoff growing instead of restarting every 500 ms. After
+  `maxAttempts` consecutive restarts without a stable run the handle stops and `exited` settles (default
+  `Infinity`). `stop()` cancels a pending wait, `restart()` during one tries immediately, and a manual
+  `restart()` resets the count.
+- Lifecycle events on the server handle: `on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)`,
+  each returning an unsubscribe function. `exit` reports `code`, `signal`, `recentLogs` and `willRestart`;
+  restart events carry `reason` and `attempt`, and `restarted` also has `originChanged` (currently always
+  `false`). Listener errors are reported through `process.emitWarning`.
+- `@cpajs/cpa/binary`: a static entry that lets bundlers trace the platform packages. Every target gets a literal
+  `require.resolve('@cpajs/<target>/package.json')` in a try/catch, generated from `TARGETS` by
+  `scripts/generate-binary-table.ts` and checked for drift by a unit test. The table is CommonJS so nft follows
+  it under its default settings. `resolveBinary` and `resolveLauncher` reuse the same table, without changing
+  how a target is chosen at runtime.
+- README: a "Bundling and deploying" section with Nitro (`traceDeps`), Vite SSR (`ssr.external`) and Next.js
+  (`serverExternalPackages`) examples, plus how to drop the extra gnu/musl package that Bun installs.
 - `config.update(path, fn, options?)` reads one node, removes the read-only `auth_index` fields that GET
   injects, passes the value to `fn`, and writes the result back with `If-Match`. A 412 re-reads and calls `fn`
   again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for

@@ -4,6 +4,10 @@
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
 //   FAKE_EXIT_AFTER=<n>     only apply FAKE_EXIT from run <n> on (counted in FAKE_COUNTER)
+//   FAKE_EXIT_AFTER_HEALTH_MS=<ms>  exit <ms> after the first successful /healthz, so the
+//                           readiness probe always sees the process ready first
+//   FAKE_EXIT_AFTER_HEALTH_MAX_RUNS=<n>  only apply the previous switch to runs <= <n>
+//   FAKE_EXIT_CODE=<code>   exit code for FAKE_EXIT_AFTER_HEALTH_MS (default 0)
 //   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
 //                           port occupied from a separate process so the real bind fails
 //                           and the process exits 0, like the real binary
@@ -66,10 +70,17 @@ if (process.env.FAKE_IGNORE_TERM) process.on('SIGTERM', () => console.log('ignor
 const delayAfter = Number(process.env.FAKE_DELAY_AFTER ?? 0);
 const delayMs = delayAfter && runs <= delayAfter ? 0 : Number(process.env.FAKE_DELAY_MS ?? 0);
 setTimeout(() => {
+  let exitScheduled = false;
   const server = createServer((req, res) => {
     if (req.url === '/healthz') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{"status":"ok"}');
+      const exitAfterHealthMs = Number(process.env.FAKE_EXIT_AFTER_HEALTH_MS ?? 0);
+      const maxRuns = Number(process.env.FAKE_EXIT_AFTER_HEALTH_MAX_RUNS ?? 0);
+      if (exitAfterHealthMs > 0 && !exitScheduled && (!maxRuns || runs <= maxRuns)) {
+        exitScheduled = true;
+        setTimeout(() => process.exit(Number(process.env.FAKE_EXIT_CODE ?? 0)), exitAfterHealthMs);
+      }
       return;
     }
     res.writeHead(404);

@@ -1,10 +1,8 @@
 import { accessSync, chmodSync, constants, existsSync, readdirSync, statSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { resolvePlatformPackage } from '../binary.ts';
 import { CpaBinaryError } from './errors.ts';
 import { LAUNCHER_NAME, TARGETS, UNSUPPORTED_PLATFORMS, binaryName, packageName, type Target } from './targets.ts';
-
-const require = createRequire(import.meta.url);
 
 export type Libc = 'glibc' | 'musl';
 
@@ -106,13 +104,9 @@ export function resolveBinary(options: { binaryPath?: string; platform?: HostPla
   }
 
   for (const target of candidates) {
+    const manifest = resolvePlatformPackage(target.id);
+    if (manifest === undefined) continue;
     const name = packageName(target);
-    let manifest: string;
-    try {
-      manifest = require.resolve(`${name}/package.json`);
-    } catch {
-      continue;
-    }
     const path = join(dirname(manifest), 'bin', binaryName(target));
     ensureExecutable(path, name);
     return { path, packageName: name, target };
@@ -162,11 +156,8 @@ export function resolveLauncher(cpaPath: string, platform: HostPlatform = curren
   const mode: LauncherMode = platform.os === 'linux' ? 'exec' : 'supervise';
   const candidates = [join(dirname(cpaPath), LAUNCHER_NAME)];
   for (const target of candidateTargets(platform)) {
-    try {
-      candidates.push(join(dirname(require.resolve(`${packageName(target)}/package.json`)), 'bin', LAUNCHER_NAME));
-    } catch {
-      // Package not installed.
-    }
+    const manifest = resolvePlatformPackage(target.id);
+    if (manifest !== undefined) candidates.push(join(dirname(manifest), 'bin', LAUNCHER_NAME));
   }
   const path = candidates.find(isExecutable);
   return path === undefined ? undefined : { path, mode };
