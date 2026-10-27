@@ -1,4 +1,5 @@
 import { CpaReconcileError } from '../errors.ts';
+import { ConfigResource } from './config.ts';
 import type {
   CpaClaudeKey,
   CpaClaudeModel,
@@ -80,6 +81,12 @@ export interface ReconcileCredentialsResult {
 /** Identifies a credential by auth ID / file name or by `auth_index`. */
 export type CredentialSelector = { name: string; auth_index?: string } | { auth_index: string; name?: string };
 
+/** A status change for a file (by `name`) or a config key (by `auth_index`). */
+export type SetCredentialStatusRequest = PatchCredentialStatusRequest | { auth_index: string; name?: string; disabled: boolean };
+
+/** A delete target: file name(s), or one credential by `auth_index` (a config key or a file). */
+export type CredentialDeleteTarget = string | readonly string[] | { auth_index: string };
+
 type GroupWithoutKeys<G extends { keys?: unknown }> = Omit<G, 'keys'>;
 
 /** A config API key's group with `keys` removed. */
@@ -144,6 +151,27 @@ interface ConfigCredential {
   models: readonly ConfiguredModel[] | undefined;
   excluded: readonly string[] | undefined;
   openaiCompat: boolean;
+  /** Index of the group in `api-keys.<provider>`. */
+  groupIndex: number;
+  /** Index in the group's `keys`; undefined when an OpenAI-compatible group itself is the credential. */
+  keyIndex: number | undefined;
+}
+
+interface ConfigCredentialTarget {
+  provider: string;
+  apiKey: string | undefined;
+  baseUrl: string | undefined;
+  groupName: string | undefined;
+  openaiCompat: boolean;
+  groupAsCredential: boolean;
+}
+
+interface LocatedConfigCredential {
+  groups: unknown[];
+  group: Record<string, unknown>;
+  groupIndex: number;
+  key: Record<string, unknown>;
+  keyIndex: number | undefined;
 }
 
 /** Reserved top-level credential field that records ownership and revision. */
@@ -169,10 +197,12 @@ function toBlob(content: CredentialContent): Blob {
 /** `/v8/management/credentials*`: OAuth and API-key credential files. */
 export class CredentialsResource {
   readonly #t: Transport;
+  readonly #config: ConfigResource;
   readonly #definitions = new Map<string, Promise<ModelInfo[]>>();
 
-  constructor(transport: Transport) {
+  constructor(transport: Transport, config: ConfigResource = new ConfigResource(transport)) {
     this.#t = transport;
+    this.#config = config;
   }
 
   /** Lists credentials. Passing `page` or `page_size` enables pagination fields in the response. */
@@ -225,11 +255,37 @@ export class CredentialsResource {
     return (await this.#t.request<UploadCredentialsResponse>({ ...options, method: 'POST', path: '/credentials', body: form })).data;
   }
 
-  /** Deletes credentials by auth ID or file name. Partial failures resolve with `status: 'partial'`. */
-  async delete(names: string | readonly string[], options: RequestOptions = {}): Promise<DeleteCredentialsResponse> {
-    const list = typeof names === 'string' ? [names] : [...names];
-    if (list.length === 0) throw new TypeError('delete needs at least one name.');
-    return (await this.#t.request<DeleteCredentialsResponse>({ ...options, method: 'DELETE', path: '/credentials', query: { name: list } }))
+  /**
+   * Deletes credentials by file name, or one credential by `auth_index`.
+   *
+   * A config key has no auth file, and upstream `DELETE /credentials` does not
+   * touch the config. For an `auth_index` that resolves to a config key this
+   * removes the key from its group with {@link ConfigResource.update}, keeping
+   * an empty native-provider group (upstream accepts `keys: []`). The last key
+   * of an `openai-compatibility` group removes the whole group, because a
+   * keyless compat group is itself a credential upstream. An `auth_index` that
+   * resolves to a file deletes that file. Partial failures resolve with
+   * `status: 'partial'`.
+   */
+  async delete(target: CredentialDeleteTarget, options: RequestOptions = {}): Promise<DeleteCredentialsResponse> {
+    if (typeof target === 'string' || Array.isArray(target)) {
+      const list = typeof target === 'string' ? [target] : [...target];
+      if (list.length === 0) throw new TypeError('delete needs at least one name.');
+      return (await this.#t.request<DeleteCredentialsResponse>({ ...options, method: 'DELETE', path: '/credentials', query: { name: list } }))
+        .data;
+    }
+
+    const authIndex = readString((target as { auth_index?: unknown }).auth_index);
+    if (authIndex === undefined) throw new TypeError('delete needs a name, names or auth_index.');
+    const entry = configCredentials(await this.#readConfig(options)).find((credential) => credential.summary.auth_index === authIndex);
+    if (entry !== undefined) {
+      await this.#deleteConfigCredential(entry, options);
+      return { status: 'ok' };
+    }
+
+    const [file] = (await this.list({ auth_index: authIndex }, options)).files;
+    if (file === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    return (await this.#t.request<DeleteCredentialsResponse>({ ...options, method: 'DELETE', path: '/credentials', query: { name: [file.name] } }))
       .data;
   }
 
@@ -409,6 +465,56 @@ export class CredentialsResource {
     return { uploaded, deleted, unchanged, adopted };
   }
 
+  async #setConfigCredentialStatus(
+    entry: ConfigCredential,
+    disabled: boolean,
+    authIndex: string,
+    options: RequestOptions,
+  ): Promise<PatchCredentialStatusResponse> {
+    if (entry.openaiCompat) {
+      throw new Error(
+        `Config key "${authIndex}" belongs to an OpenAI-compatible group; upstream has no per-key disabled state, and disabling a keyless group clears its auth_index. Delete the key or group instead.`,
+      );
+    }
+    const target = configCredentialTarget(entry);
+    await this.#config.update(
+      'api-keys',
+      (current) => {
+        const found = locateConfigCredential(current, target);
+        if (found === undefined) throw new Error(`Config key with auth_index "${authIndex}" was not found.`);
+        setExcludedAll(found.key, disabled);
+        return current;
+      },
+      options,
+    );
+    return { status: 'ok', disabled, via: 'config:excluded-models', excluded_pattern: '*' };
+  }
+
+  async #deleteConfigCredential(entry: ConfigCredential, options: RequestOptions): Promise<void> {
+    const target = configCredentialTarget(entry);
+    await this.#config.update(
+      'api-keys',
+      (current) => {
+        const found = locateConfigCredential(current, target);
+        if (found === undefined) throw new Error(`Config key with auth_index "${entry.summary.auth_index}" was not found.`);
+        if (target.groupAsCredential) {
+          found.groups.splice(found.groupIndex, 1);
+          return current;
+        }
+        const keys = found.group.keys;
+        if (!Array.isArray(keys) || found.keyIndex === undefined) {
+          throw new Error(`Config key with auth_index "${entry.summary.auth_index}" was not found.`);
+        }
+        keys.splice(found.keyIndex, 1);
+        // Upstream accepts an empty native-provider group and registers no auth for it.
+        // A keyless openai-compatibility group is itself a credential, so remove it instead.
+        if (keys.length === 0 && target.openaiCompat) found.groups.splice(found.groupIndex, 1);
+        return current;
+      },
+      options,
+    );
+  }
+
   async #readConfig(options: RequestOptions): Promise<CpaConfig> {
     return (await this.#t.request<CpaConfig>({ ...options, method: 'GET', path: '/config' })).data;
   }
@@ -488,9 +594,45 @@ export class CredentialsResource {
     }
   }
 
-  /** Enables or disables a credential. */
-  async setStatus(request: PatchCredentialStatusRequest, options: RequestOptions = {}): Promise<PatchCredentialStatusResponse> {
-    return (await this.#t.request<PatchCredentialStatusResponse>({ ...options, method: 'PATCH', path: '/credentials/status', json: request })).data;
+  /**
+   * Enables or disables a credential file by `name`, or a config key by
+   * `auth_index`.
+   *
+   * Upstream `PATCH /credentials/status` can toggle native `api-keys` entries
+   * (it writes `*` to the key's `excluded-models`) but requires the runtime auth
+   * ID as `name`, which `GET /credentials` does not expose for config keys. So a
+   * request without `name` resolves the config key and edits it through
+   * {@link ConfigResource.update} instead: disable appends `*`, enable removes
+   * it, leaving the other patterns and the group untouched. A group-level
+   * `excluded-models: ["*"]` still disables the key after enabling it, matching
+   * upstream. OpenAI-compatible entries have no per-key switch and disabling a
+   * keyless group clears its auth_index, so setStatus throws for them; use
+   * `delete({ auth_index })` instead.
+   *
+   * A no-`name` request whose `auth_index` belongs to a file is forwarded to
+   * upstream with the file name.
+   */
+  async setStatus(request: SetCredentialStatusRequest, options: RequestOptions = {}): Promise<PatchCredentialStatusResponse> {
+    const name = readString(request.name);
+    if (name !== undefined) {
+      return (await this.#t.request<PatchCredentialStatusResponse>({ ...options, method: 'PATCH', path: '/credentials/status', json: request })).data;
+    }
+
+    const authIndex = readString(request.auth_index);
+    if (authIndex === undefined) throw new TypeError('setStatus needs a name or auth_index.');
+    const entry = configCredentials(await this.#readConfig(options)).find((credential) => credential.summary.auth_index === authIndex);
+    if (entry !== undefined) return this.#setConfigCredentialStatus(entry, request.disabled, authIndex, options);
+
+    const [file] = (await this.list({ auth_index: authIndex }, options)).files;
+    if (file === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    return (
+      await this.#t.request<PatchCredentialStatusResponse>({
+        ...options,
+        method: 'PATCH',
+        path: '/credentials/status',
+        json: { name: file.name, auth_index: authIndex, disabled: request.disabled },
+      })
+    ).data;
   }
 
   /**
@@ -608,6 +750,8 @@ function configCredentialFromSummary(summary: ConfigCredentialSummary): ConfigCr
     models: openaiCompat ? readModels(group.models) : (readModels(key.models) ?? readModels(group.models)),
     excluded: openaiCompat ? undefined : (readStrings(key['excluded-models']) ?? readStrings(group['excluded-models'])),
     openaiCompat,
+    groupIndex: 0,
+    keyIndex: undefined,
   };
 }
 
@@ -642,7 +786,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
   for (const provider of CONFIG_PROVIDERS) {
     const groups = apiKeys[provider];
     if (!Array.isArray(groups)) continue;
-    for (const value of groups) {
+    for (const [groupIndex, value] of groups.entries()) {
       if (!isRecord(value)) continue;
       const group = value;
       const label = readString(group.name);
@@ -650,7 +794,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       const groupExcluded = readStrings(group['excluded-models']);
       const stripped = groupWithoutKeys(group) as unknown as ConfigCredentialGroup;
       const keys = Array.isArray(group.keys) ? group.keys : [];
-      for (const item of keys) {
+      for (const [keyIndex, item] of keys.entries()) {
         if (!isRecord(item)) continue;
         const excluded = readStrings(item['excluded-models']) ?? groupExcluded;
         out.push({
@@ -668,6 +812,8 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
           models: readModels(item.models) ?? groupModels,
           excluded,
           openaiCompat: false,
+          groupIndex,
+          keyIndex,
         });
       }
     }
@@ -675,7 +821,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
 
   const compatGroups = apiKeys['openai-compatibility'];
   if (Array.isArray(compatGroups)) {
-    for (const value of compatGroups) {
+    for (const [groupIndex, value] of compatGroups.entries()) {
       if (!isRecord(value)) continue;
       const group = value;
       const name = readString(group.name);
@@ -686,7 +832,7 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
       const keys = Array.isArray(group.keys) ? group.keys : [];
       // A group without keys is one credential and carries auth_index itself.
       const entries: unknown[] = keys.length > 0 ? keys : [group];
-      for (const item of entries) {
+      for (const [entryIndex, item] of entries.entries()) {
         if (!isRecord(item)) continue;
         const summary: MarkedConfigSummary = {
           auth_index: readString(item.auth_index) ?? '',
@@ -705,9 +851,74 @@ function configCredentials(config: CpaConfig): ConfigCredential[] {
           models,
           excluded: undefined,
           openaiCompat: true,
+          groupIndex,
+          keyIndex: keys.length > 0 ? entryIndex : undefined,
         });
       }
     }
+  }
+  return out;
+}
+
+function configCredentialTarget(entry: ConfigCredential): ConfigCredentialTarget {
+  const group: Record<string, unknown> = isRecord(entry.summary.group) ? entry.summary.group : {};
+  const key: Record<string, unknown> = isRecord(entry.summary.raw) ? entry.summary.raw : {};
+  return {
+    provider: entry.openaiCompat ? 'openai-compatibility' : entry.provider,
+    apiKey: readString(key['api-key']),
+    baseUrl: readString(group['base-url']),
+    groupName: readString(group.name),
+    openaiCompat: entry.openaiCompat,
+    groupAsCredential: entry.openaiCompat && entry.keyIndex === undefined,
+  };
+}
+
+/**
+ * Finds the key again in a freshly read `api-keys` node. `config.update` strips
+ * `auth_index`, so the match uses the stable parts: the API key plus the group's
+ * base URL, and the group name for OpenAI-compatible entries.
+ */
+function locateConfigCredential(apiKeys: unknown, target: ConfigCredentialTarget): LocatedConfigCredential | undefined {
+  if (!isRecord(apiKeys)) return undefined;
+  const groups = apiKeys[target.provider];
+  if (!Array.isArray(groups)) return undefined;
+
+  for (const [groupIndex, value] of groups.entries()) {
+    if (!isRecord(value)) continue;
+    const group = value;
+    if (readString(group['base-url']) !== target.baseUrl) continue;
+    if (target.groupAsCredential) {
+      if (readString(group.name) === target.groupName) return { groups, group, groupIndex, key: group, keyIndex: undefined };
+      continue;
+    }
+    if (target.openaiCompat && readString(group.name) !== target.groupName) continue;
+    const keys = Array.isArray(group.keys) ? group.keys : [];
+    for (const [keyIndex, item] of keys.entries()) {
+      if (!isRecord(item) || readString(item['api-key']) !== target.apiKey) continue;
+      return { groups, group, groupIndex, key: item, keyIndex };
+    }
+  }
+
+  return undefined;
+}
+
+/** Adds or removes the `*` pattern on one key, mirroring upstream `NormalizeExcludedModels`. */
+function setExcludedAll(key: Record<string, unknown>, disabled: boolean): void {
+  const patterns = readStrings(key['excluded-models']) ?? [];
+  const next = normalizeExcludedModels(disabled ? [...patterns, '*'] : patterns.filter((item) => item.trim() !== '*'));
+  if (next.length === 0) delete key['excluded-models'];
+  else key['excluded-models'] = next;
+}
+
+/** Trims, lowercases and dedupes patterns; empty entries are dropped. */
+function normalizeExcludedModels(models: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of models) {
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed === '' || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
   }
   return out;
 }

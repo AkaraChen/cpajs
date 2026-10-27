@@ -1086,6 +1086,164 @@ describe('credentials', () => {
     expect(JSON.parse(calls[6]!.body)).toEqual({ auth_index: 'abc' });
     expect(JSON.parse(calls[7]!.body)).toEqual({ all: true });
   });
+
+  it('disables a native config key by auth_index without sending auth_index back', async () => {
+    const config = {
+      'config-version': 8,
+      'api-keys': {
+        claude: [
+          {
+            name: 'team',
+            'base-url': 'https://claude.test',
+            keys: [{ 'api-key': 'k1', auth_index: 'cfg-1', 'excluded-models': ['Opus-*'] }],
+          },
+        ],
+      },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json(config);
+      if (req.url.pathname === '/v8/management/config/api-keys') return Response.json(config['api-keys'], { headers: { ETag: '"v1"' } });
+      return Response.json(ok, { headers: { ETag: '"v2"' } });
+    });
+
+    await expect(client.credentials.setStatus({ auth_index: 'cfg-1', disabled: true })).resolves.toEqual({
+      status: 'ok',
+      disabled: true,
+      via: 'config:excluded-models',
+      excluded_pattern: '*',
+    });
+    expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'GET /v8/management/config/api-keys',
+      'PUT /v8/management/config/api-keys',
+    ]);
+    expect(calls[2]!.headers.get('if-match')).toBe('"v1"');
+    const body = JSON.parse(calls[2]!.body) as { claude: { name: string; keys: Record<string, unknown>[] }[] };
+    expect(body.claude[0]!.keys[0]!['excluded-models']).toEqual(['opus-*', '*']);
+    expect(body.claude[0]!.name).toBe('team');
+    expect(JSON.stringify(body)).not.toContain('auth_index');
+  });
+
+  it('enables a config key by removing only its own * pattern', async () => {
+    const config = {
+      'config-version': 8,
+      'api-keys': {
+        codex: [
+          {
+            name: 'team',
+            keys: [{ 'api-key': 'k1', auth_index: 'cfg-1', 'excluded-models': ['*', 'gpt-*'] }],
+          },
+        ],
+      },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json(config);
+      if (req.url.pathname === '/v8/management/config/api-keys') return Response.json(config['api-keys']);
+      return Response.json(ok);
+    });
+
+    await expect(client.credentials.setStatus({ auth_index: 'cfg-1', disabled: false })).resolves.toMatchObject({ status: 'ok', disabled: false });
+    const body = JSON.parse(calls[2]!.body) as { codex: { keys: Record<string, unknown>[] }[] };
+    expect(body.codex[0]!.keys[0]!['excluded-models']).toEqual(['gpt-*']);
+  });
+
+  it('removes an empty excluded-models field when re-enabling a key', async () => {
+    const config = {
+      'config-version': 8,
+      'api-keys': { codex: [{ name: 'team', keys: [{ 'api-key': 'k1', auth_index: 'cfg-1', 'excluded-models': ['*'] }] }] },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json(config);
+      if (req.url.pathname === '/v8/management/config/api-keys') return Response.json(config['api-keys']);
+      return Response.json(ok);
+    });
+
+    await client.credentials.setStatus({ auth_index: 'cfg-1', disabled: false });
+    const body = JSON.parse(calls[2]!.body) as { codex: { keys: Record<string, unknown>[] }[] };
+    expect(body.codex[0]!.keys[0]).not.toHaveProperty('excluded-models');
+  });
+
+  it('rejects setStatus for OpenAI-compatible config entries', async () => {
+    for (const keys of [[], [{ 'api-key': 'k1', auth_index: 'cfg-oai' }]]) {
+      const config = {
+        'config-version': 8,
+        'api-keys': {
+          'openai-compatibility': [{ name: 'fake', 'base-url': 'https://fake.test/v1', keys, auth_index: 'cfg-oai' }],
+        },
+      };
+      const { client, calls } = mockClient(() => Response.json(config));
+      await expect(client.credentials.setStatus({ auth_index: 'cfg-oai', disabled: true })).rejects.toThrow(
+        /no per-key disabled state/,
+      );
+      expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual(['GET /v8/management/config']);
+    }
+  });
+
+  it('deletes a config key by auth_index and keeps an empty native group', async () => {
+    const config = {
+      'config-version': 8,
+      'api-keys': { claude: [{ name: 'team', 'base-url': 'https://claude.test', keys: [{ 'api-key': 'k1', auth_index: 'cfg-1' }] }] },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json(config);
+      if (req.url.pathname === '/v8/management/config/api-keys') return Response.json(config['api-keys']);
+      return Response.json(ok);
+    });
+
+    await expect(client.credentials.delete({ auth_index: 'cfg-1' })).resolves.toEqual({ status: 'ok' });
+    expect(calls.map((call) => `${call.method} ${call.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'GET /v8/management/config/api-keys',
+      'PUT /v8/management/config/api-keys',
+    ]);
+    const body = JSON.parse(calls[2]!.body) as { claude: { name: string; keys: unknown[] }[] };
+    expect(body.claude[0]).toEqual({ name: 'team', 'base-url': 'https://claude.test', keys: [] });
+  });
+
+  it('removes an OpenAI-compatible group when its last key is deleted', async () => {
+    const config = {
+      'config-version': 8,
+      'api-keys': {
+        'openai-compatibility': [{ name: 'fake', 'base-url': 'https://fake.test/v1', keys: [{ 'api-key': 'k1', auth_index: 'cfg-oai' }] }],
+      },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json(config);
+      if (req.url.pathname === '/v8/management/config/api-keys') return Response.json(config['api-keys']);
+      return Response.json(ok);
+    });
+
+    await expect(client.credentials.delete({ auth_index: 'cfg-oai' })).resolves.toEqual({ status: 'ok' });
+    const body = JSON.parse(calls[2]!.body) as { 'openai-compatibility': unknown[] };
+    expect(body['openai-compatibility']).toEqual([]);
+  });
+
+  it('forwards a file auth_index to the upstream file routes', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') return Response.json({ 'config-version': 8 });
+      if (req.url.pathname === '/v8/management/credentials') {
+        return Response.json({ observed_at: '', files: [{ name: 'a.json', auth_index: 'file-1', source: 'file' }] });
+      }
+      return Response.json({ status: 'ok' });
+    });
+
+    await expect(client.credentials.setStatus({ auth_index: 'file-1', disabled: true })).resolves.toEqual({ status: 'ok' });
+    expect(calls[2]!.method).toBe('PATCH');
+    expect(JSON.parse(calls[2]!.body)).toEqual({ name: 'a.json', auth_index: 'file-1', disabled: true });
+
+    await client.credentials.delete({ auth_index: 'file-1' });
+    expect(calls.at(-1)!.method).toBe('DELETE');
+    expect(calls.at(-1)!.url.search).toBe('?name=a.json');
+  });
+
+  it('reports a missing auth_index for setStatus and delete', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.url.pathname === '/v8/management/config' ? Response.json({ 'config-version': 8 }) : Response.json({ observed_at: '', files: [] }),
+    );
+    await expect(client.credentials.setStatus({ auth_index: 'missing', disabled: true })).rejects.toThrow(/auth_index "missing" was not found/);
+    await expect(client.credentials.delete({ auth_index: 'missing' })).rejects.toThrow(/auth_index "missing" was not found/);
+    expect(calls.some((call) => call.method === 'PUT' || call.method === 'PATCH' || call.method === 'DELETE')).toBe(false);
+  });
 });
 
 describe('oauth', () => {

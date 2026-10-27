@@ -14,6 +14,13 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `credentials.setStatus({ auth_index, disabled })` and `credentials.delete({ auth_index })` also target config
+  keys. Upstream's status route needs a runtime auth ID that config keys do not expose, and its delete route only
+  handles files, so cpajs edits the key through `config.update` (ETag / 412 retry, `auth_index` stripped):
+  disable adds `*` to the key's `excluded-models`, enable removes it, and delete removes the key from its group
+  while keeping an empty native-provider group. The last key of an `openai-compatibility` group removes the
+  group. OpenAI-compatible entries have no per-key switch, and disabling a keyless group clears its
+  `auth_index`, so `setStatus` throws for them; `delete({ auth_index })` still works.
 - `scripts/wait-for-packages.ts` polls the abbreviated npm packument that npm, pnpm and bun use, until every
   `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
   package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)

@@ -356,6 +356,79 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       }
     });
 
+    it('disables, enables and deletes a config key by auth_index', async () => {
+      const name = 'e2e-config-status';
+      const model = 'e2e-config-model';
+      const group = {
+        name,
+        'base-url': `${upstream.url}/v1`,
+        models: [{ name: model, alias: model }],
+        keys: [{ 'api-key': 'e2e-config-key' }],
+      };
+      const modelIds = async (): Promise<string[]> => {
+        const res = await fetch(`${server.baseUrl}/models`, { headers: { Authorization: `Bearer ${MODEL_KEY}` } });
+        expect(res.status).toBe(200);
+        return ((await res.json()) as { data: { id: string }[] }).data.map((item) => item.id);
+      };
+      const findEntry = async () =>
+        (await client.credentials.listAll()).find(
+          (entry) => entry.source === 'config' && entry.provider === 'claude' && entry.label === name,
+        );
+      const removeGroup = async () => {
+        await client.config
+          .update('api-keys', (current) => {
+            const claude = current?.claude;
+            if (!Array.isArray(claude)) return current;
+            return { ...current, claude: claude.filter((item) => item.name !== name) };
+          })
+          .catch(() => {});
+      };
+
+      try {
+        await client.config.update('api-keys', (current) => ({
+          ...(current ?? {}),
+          claude: [...(current?.claude ?? []), group],
+        }));
+        await eventually(async () => (await modelIds()).includes(model));
+        await eventually(async () => (await findEntry()) !== undefined);
+
+        const added = await findEntry();
+        expect(added).toMatchObject({ source: 'config', provider: 'claude', disabled: false });
+        const authIndex = added!.auth_index;
+        expect(authIndex).not.toBe('');
+
+        await expect(client.credentials.setStatus({ auth_index: authIndex, disabled: true })).resolves.toMatchObject({
+          status: 'ok',
+          disabled: true,
+          via: 'config:excluded-models',
+        });
+        await eventually(async () => {
+          const entry = (await client.credentials.listAll()).find((item) => item.source === 'config' && item.auth_index === authIndex);
+          return entry?.disabled === true;
+        });
+        await eventually(async () => !(await modelIds()).includes(model));
+
+        await expect(client.credentials.setStatus({ auth_index: authIndex, disabled: false })).resolves.toMatchObject({
+          status: 'ok',
+          disabled: false,
+        });
+        await eventually(async () => {
+          const entry = (await client.credentials.listAll()).find((item) => item.source === 'config' && item.auth_index === authIndex);
+          return entry?.disabled === false;
+        });
+        await eventually(async () => (await modelIds()).includes(model));
+
+        await expect(client.credentials.delete({ auth_index: authIndex })).resolves.toEqual({ status: 'ok' });
+        await eventually(
+          async () =>
+            !(await client.credentials.listAll()).some((item) => item.source === 'config' && item.auth_index === authIndex),
+        );
+        await eventually(async () => !(await modelIds()).includes(model));
+      } finally {
+        await removeGroup();
+      }
+    });
+
     it('refreshes an API-key credential and reports a missing file', async () => {
       // A refresh token would call the real provider. An API key has nothing to rotate,
       // so the executor returns the credential unchanged and 200 proves the response shape.

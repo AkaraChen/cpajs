@@ -38,6 +38,7 @@ export type {
   ConfigCredentialRaw,
   ConfigCredentialSummary,
   CredentialContent,
+  CredentialDeleteTarget,
   CredentialFile,
   CredentialSelector,
   CredentialSummary,
@@ -46,6 +47,7 @@ export type {
   ReconcileCredentialFile,
   ReconcileCredentialsInput,
   ReconcileCredentialsResult,
+  SetCredentialStatusRequest,
 } from './resources/credentials.ts';
 export type { DownloadedFile } from './resources/download.ts';
 export type { WaitForOAuthOptions } from './resources/oauth.ts';
@@ -78,7 +80,7 @@ export class CpaClient {
   constructor(options: ClientOptions) {
     this.#transport = new Transport(options);
     this.config = new ConfigResource(this.#transport);
-    this.credentials = new CredentialsResource(this.#transport);
+    this.credentials = new CredentialsResource(this.#transport, this.config);
     this.oauth = new OAuthResource(this.#transport);
     this.logs = new LogsResource(this.#transport);
     this.usage = new UsageResource(this.#transport);
