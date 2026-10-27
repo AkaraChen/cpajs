@@ -48,8 +48,17 @@ const PROBE_TIMEOUT_MS = 1_000;
 const DYNAMIC_PORT_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS: readonly number[] = [500, 1_000, 5_000, 30_000];
 const DEFAULT_STABLE_AFTER_MS = 60_000;
+// Symbol.for keeps the registry shared when this module is evaluated twice,
+// e.g. by a dev server that reloads modules without restarting the process.
+const SINGLETON_SERVERS = Symbol.for('cpajs.servers');
 
 function validate(options: StartServerOptions): void {
+  if (options.singleton === true && options.configPath === undefined && options.stateDir === undefined) {
+    throw new CpaStartError(
+      'invalid-options',
+      'singleton requires an explicit stateDir or configPath so other starts can find the same server.',
+    );
+  }
   if (options.config !== undefined && options.configPath !== undefined) {
     throw new CpaStartError('invalid-options', 'config and configPath are mutually exclusive.');
   }
@@ -249,8 +258,45 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
  *
  * On any failure the child process is stopped and resources created by this
  * call (the temporary state directory) are removed before the error is thrown.
+ *
+ * With `singleton: true`, concurrent starts for the same state directory (or
+ * `configPath`) share one handle or one in-flight start. The entry is removed
+ * once the handle stops, so a later call starts a new process.
  */
 export async function startServer(options: StartServerOptions = {}): Promise<CpaServer> {
+  const key = singletonKey(options);
+  if (key === undefined) return startServerInstance(options);
+
+  const registry = singletonRegistry();
+  const existing = registry.get(key);
+  if (existing !== undefined) return existing;
+
+  let pending: Promise<CpaServer>;
+  const release = (): void => {
+    if (registry.get(key) === pending) registry.delete(key);
+  };
+  pending = startServerInstance(options, release).catch((error: unknown) => {
+    release();
+    throw error;
+  });
+  registry.set(key, pending);
+  return pending;
+}
+
+function singletonKey(options: StartServerOptions): string | undefined {
+  if (options.singleton !== true) return undefined;
+  if (options.configPath !== undefined) return `config:${resolve(options.configPath)}`;
+  // A missing stateDir is rejected by validate(); leave it to startServerInstance.
+  if (options.stateDir === undefined) return undefined;
+  return `state:${resolve(options.stateDir)}`;
+}
+
+function singletonRegistry(): Map<string, Promise<CpaServer>> {
+  const shared = globalThis as unknown as Record<symbol, Map<string, Promise<CpaServer>> | undefined>;
+  return (shared[SINGLETON_SERVERS] ??= new Map());
+}
+
+async function startServerInstance(options: StartServerOptions, onSettled?: () => void): Promise<CpaServer> {
   validate(options);
   const { signal } = options;
   if (signal?.aborted) throw abortError(signal, '');
@@ -447,6 +493,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Cpa
           stopTimeoutMs: options.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS,
           restart: options.restart,
           cleanup,
+          onSettled,
         });
       }
       if (result.kind === 'retry') continue;
@@ -511,6 +558,8 @@ interface HandleInfo {
   stopTimeoutMs: number;
   restart: RestartPolicy | undefined;
   cleanup: () => Promise<void>;
+  /** Removes the singleton entry once this handle has stopped. */
+  onSettled?: (() => void) | undefined;
 }
 
 function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer {
@@ -559,6 +608,7 @@ function createHandle(initialProc: ManagedProcess, info: HandleInfo): CpaServer 
         await info.cleanup();
       } finally {
         resolveExited(result);
+        info.onSettled?.();
       }
     })();
     return finalizePromise;

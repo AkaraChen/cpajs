@@ -8,6 +8,12 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
+  so module reloads and concurrent callers cannot start CPA twice. Concurrent starts share one promise, a handle
+  that has not stopped is returned as-is (including during auto-restart backoff/restart), and a stopped or
+  failed start is removed so the next call starts a new process. Requires an explicit `stateDir` or
+  `configPath`; the first call's options win. The registry is stored on `globalThis` under
+  `Symbol.for('cpajs.servers')`, so duplicate module instances share it.
 - Auto-restart: `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` starts CPA again after
   an unexpected exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and
   existing `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last

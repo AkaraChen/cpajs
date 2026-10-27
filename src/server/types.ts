@@ -148,6 +148,15 @@ interface CommonServerOptions {
    * clients stay valid. Disabled by default.
    */
   restart?: RestartPolicy;
+  /**
+   * Reuse one server per process for the same state directory (the absolute
+   * `configPath` in `configPath` mode). A handle that has not stopped yet is
+   * returned as-is, and a start still in progress shares its promise, so two
+   * module copies or concurrent callers cannot start CPA twice. Once the handle
+   * stops, the next call starts a new process. Requires an explicit `stateDir`
+   * or `configPath`; options from the first call win. Default `false`.
+   */
+  singleton?: boolean;
 }
 
 export interface RestartPolicy {

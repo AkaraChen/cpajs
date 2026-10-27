@@ -83,6 +83,13 @@ await server.stop();
   server and settle `exited` (default `Infinity`); a manual `restart()` resets the count. `stop()` cancels a
   pending wait, and `restart()` during one tries immediately. A port taken by another process makes that attempt
   fail and retries after the next backoff instead of changing `origin`.
+- `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
+  so a dev server that evaluates a module more than once cannot start CPA twice. Concurrent calls share the
+  in-flight start and its promise; a handle that has not stopped yet is returned as-is, including while it is
+  backing off or restarting. Once the handle stops, the next call starts a new process. It requires an explicit
+  `stateDir` or `configPath`, and the options of the first call win: options on later calls are not compared.
+  The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
+  in the same process share it.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
   unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
   `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has

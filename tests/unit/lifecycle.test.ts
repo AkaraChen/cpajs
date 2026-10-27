@@ -398,6 +398,82 @@ describe('server lifecycle (fake binary)', () => {
     if (error.code === 'exited') expect(error.exitCode).toBe(127);
   });
 
+  describe('singleton', () => {
+    it('shares one process between concurrent starts for the same stateDir', async () => {
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter } } as const;
+
+      const [first, second] = await Promise.all([startFake(options), startFake(options)]);
+
+      expect(second).toBe(first);
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      await first.stop();
+    });
+
+    it('starts a new process after the shared handle stopped', async () => {
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter } } as const;
+
+      const first = await startFake(options);
+      await first.stop();
+      const second = await startFake(options);
+
+      expect(second).not.toBe(first);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      await second.stop();
+    });
+
+    it('shares one process between concurrent starts for the same configPath', async () => {
+      const probe = createServer();
+      await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+      const port = (probe.address() as { port: number }).port;
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+      const configPath = join(dir, 'config.yaml');
+      await writeFile(configPath, `config-version: 8\nserver:\n  host: 127.0.0.1\n  port: ${port}\n`);
+      const counter = join(dir, 'runs');
+      const options = { singleton: true, configPath, env: { FAKE_COUNTER: counter } } as const;
+
+      const [first, second] = await Promise.all([startFake(options), startFake(options)]);
+
+      expect(second).toBe(first);
+      expect(first.configPath).toBe(configPath);
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      await first.stop();
+    });
+
+    it('rejects singleton without an explicit stateDir or configPath', async () => {
+      const error = await startError(startFake({ singleton: true }));
+
+      expect(error.code).toBe('invalid-options');
+      expect(error.message).toContain('singleton');
+    });
+
+    it('retries after a failed start and reuses the handle during auto-restart backoff', async () => {
+      const counter = join(dir, 'runs');
+      const failed = await startError(
+        startFake({ singleton: true, stateDir: dir, env: { FAKE_COUNTER: counter, FAKE_EXIT: '3' } }),
+      );
+      expect(failed.code).toBe('exited');
+
+      const options = {
+        singleton: true,
+        stateDir: dir,
+        env: { FAKE_COUNTER: counter },
+        restart: { onUnexpectedExit: true, backoffMs: [10_000] },
+      } as const;
+      const server = await startFake(options);
+      const exitedEvent = new Promise<ExitEvent>((resolve) => server.on('exit', resolve));
+
+      process.kill(server.pid, 'SIGKILL');
+      expect((await exitedEvent).willRestart).toBe(true);
+
+      const reused = await startFake(options);
+      expect(reused).toBe(server);
+      expect(await readFile(counter, 'utf8')).toBe('2');
+      await reused.stop();
+    });
+  });
+
   describe('restart', () => {
     it('keeps the handle and port, swaps process details, and preserves stateDir and config', async () => {
       const counter = join(dir, 'runs');
