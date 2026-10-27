@@ -1,4 +1,4 @@
-import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, parseApiCallBody } from '../errors.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaResponseError, CpaUpstreamError } from '../errors.ts';
 import type { ApiCallRequest, ApiCallResponse } from '../types/requests.ts';
 import type { RequestOptions, Transport } from '../transport.ts';
 
@@ -29,8 +29,9 @@ export class RequestsResource {
    * Like `apiCall`, but throws on failures and parses the upstream body.
    *
    * A non-2xx upstream status throws `CpaUpstreamError`; a CPA 400 caused by an
-   * unresolvable `$TOKEN$` throws `CpaCredentialTokenError`. `data` is the JSON
-   * body when it parses, the raw text otherwise, and `undefined` when empty.
+   * unresolvable `$TOKEN$` throws `CpaCredentialTokenError`. `data` is the parsed
+   * JSON body, or `undefined` when it is empty; a 2xx body that is not JSON throws
+   * `CpaResponseError`. Use `apiCall` for text upstreams.
    */
   async apiCallJson<T = unknown>(
     request: ApiCallRequest,
@@ -50,6 +51,19 @@ export class RequestsResource {
         body: response.body,
       });
     }
-    return { status: response.status_code, headers: response.header, data: parseApiCallBody(response.body) as T };
+    let data: unknown;
+    try {
+      data = response.body === '' ? undefined : JSON.parse(response.body);
+    } catch (cause) {
+      // A JSON endpoint answering 2xx with text is an error, not a string result.
+      throw new CpaResponseError(
+        `${request.method} ${request.url} returned upstream ${response.status_code} with a non-JSON body`,
+        { method: request.method, url: request.url },
+        response.status_code,
+        response.body,
+        { cause },
+      );
+    }
+    return { status: response.status_code, headers: response.header, data: data as T };
   }
 }
