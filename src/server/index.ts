@@ -416,10 +416,42 @@ function singletonRegistry(): Map<string, Promise<CpaServer>> {
   return (shared[SINGLETON_SERVERS] ??= new Map());
 }
 
+interface InFlightStart {
+  controller: AbortController;
+  /** Resolves once the start has settled, successfully or not. */
+  settled: Promise<void>;
+}
+
+// First starts that have not produced a handle yet, for stopAllServers().
+const inFlightStarts = new Set<InFlightStart>();
+
 async function startServerInstance(options: StartServerOptions, onSettled?: () => void): Promise<CpaServer> {
   validate(options);
-  const { signal } = options;
-  if (signal?.aborted) throw abortError(signal, '');
+  const callerSignal = options.signal;
+  if (callerSignal?.aborted) throw abortError(callerSignal, '');
+
+  const controller = new AbortController();
+  const signal = callerSignal === undefined ? controller.signal : AbortSignal.any([callerSignal, controller.signal]);
+  let resolveSettled!: () => void;
+  const settled = new Promise<void>((resolve) => {
+    resolveSettled = resolve;
+  });
+  const inFlight: InFlightStart = { controller, settled };
+  inFlightStarts.add(inFlight);
+  try {
+    return await startServerLoop(options, signal, onSettled);
+  } finally {
+    inFlightStarts.delete(inFlight);
+    resolveSettled();
+  }
+}
+
+async function startServerLoop(
+  options: StartServerOptions,
+  signal: AbortSignal,
+  onSettled?: () => void,
+): Promise<CpaServer> {
+  if (signal.aborted) throw abortError(signal, '');
   const events = createEventBus();
   if (options.on !== undefined) {
     for (const [event, listener] of Object.entries(options.on)) {
@@ -750,6 +782,14 @@ async function startServerInstance(options: StartServerOptions, onSettled?: () =
               if (await retryStart(error, startAttempt, true)) continue startAttempt;
               throw error;
             }
+          }
+          // An abort may have landed just as this attempt became ready (e.g. a
+          // concurrent stopAllServers()). Stop the new process instead of
+          // returning a handle to a caller that is already shutting down.
+          if (signal.aborted) {
+            const output = handle.recentLogs.map((log) => log.line).join('\n');
+            await handle.stop();
+            throw abortError(signal, output);
           }
           return handle;
         }
@@ -1270,6 +1310,13 @@ const liveServers = new Set<CpaServer>();
  * Stops every server started by this process and still running, using each
  * handle's `stop()` (so temporary state directories are removed too).
  *
+ * A first start that is still in flight (for example while
+ * `restart.onStartFailure` waits between attempts) has no handle yet. It is
+ * aborted instead, and this call waits for `startServer` to reject and clean up
+ * its process and temporary directory before returning. The same happens to a
+ * start that becomes ready while it is being aborted, so nothing is left
+ * running after this resolves.
+ *
  * The library does not install signal handlers. A host that should not leave
  * CPA processes behind on SIGTERM/SIGINT calls this from its own handler:
  *
@@ -1283,5 +1330,12 @@ const liveServers = new Set<CpaServer>();
  * ```
  */
 export async function stopAllServers(options: StopOptions = {}): Promise<ExitResult[]> {
+  const starts = [...inFlightStarts];
+  for (const start of starts) {
+    start.controller.abort(new Error('stopAllServers() was called.'));
+  }
+  // Wait before snapshotting liveServers: a start that became ready just as it
+  // was aborted has already added its handle there by now, so it is stopped too.
+  await Promise.allSettled(starts.map((start) => start.settled));
   return Promise.all([...liveServers].map((server) => server.stop(options)));
 }

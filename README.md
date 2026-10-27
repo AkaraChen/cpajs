@@ -75,7 +75,7 @@ await server.stop();
   options, an aborted signal and a missing binary still reject immediately. While those retries run,
   `startServer` has not resolved and no handle exists yet: abort them with `startServer({ signal })`, which
   rejects with code `aborted` after stopping any child and removing the temporary directory. `stopAllServers()`
-  only knows handles that already started, so it cannot stop a retrying first start.
+  also aborts every retrying first start and waits for it to settle before returning.
 - `stop()` is idempotent: on POSIX it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On
   Windows Node cannot deliver a graceful shutdown signal, so `stop()` terminates the process forcefully (equivalent
   to SIGKILL), `stopTimeoutMs` has no effect, and CPA gets no chance to flush state or update auth files. The same
@@ -100,10 +100,10 @@ await server.stop();
   run stop the server and settle `exited` (default `Infinity`); a manual `restart()` resets the count.
   `onStartFailure` applies the same backoff/attempt policy to failures of the first start. A failed first start
   is reported with `phase: 'start'`; a manual or automatic restart reports `phase: 'restart'`. While the first
-  start is retrying, `startServer` stays pending and has no handle, so pass a `signal` to abort it (see above).
-  `stop()` cancels a pending wait, and `restart()` during one tries immediately. A port taken by another process
-  makes that attempt fail and retries after the next backoff, unless `allowNewPort` moves a dynamic port as
-  described above.
+  start is retrying, `startServer` stays pending and has no handle, so pass a `signal` to abort it (see above);
+  `stopAllServers()` does the same for all retrying starts. `stop()` cancels a pending wait, and `restart()`
+  during one tries immediately. A port taken by another process makes that attempt fail and retries after the
+  next backoff, unless `allowNewPort` moves a dynamic port as described above.
 - `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
   so a dev server that evaluates a module more than once cannot start CPA twice. Concurrent calls share the
   in-flight start and its promise; a handle that has not stopped yet is returned as-is, including while it is
@@ -144,9 +144,9 @@ await server.stop();
 
   Pass `launcher: false` to start CPA directly. With a custom `binaryPath`, the launcher is looked up next to
   that binary and then in the installed platform package; if none is found, CPA starts directly. A graceful stop
-  is still nicer than a kill, and `stopAllServers()` stops every server this process started. A first start
-  that is still retrying with `restart.onStartFailure` has no handle, so `stopAllServers()` does not see it;
-  abort that start through its own `signal` instead. A host signal handler looks like this:
+  is still nicer than a kill, and `stopAllServers()` stops every server this process started, including a first
+  start that is still retrying with `restart.onStartFailure` (it aborts it and waits for cleanup). A host signal
+  handler looks like this:
 
   ```ts
   import { stopAllServers } from '@cpajs/cpa/server';

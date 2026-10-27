@@ -236,9 +236,8 @@ export interface RestartPolicy {
    * While these retries run, `startServer` has not resolved and there is no
    * handle yet. Abort them with `startServer({ signal })`: it rejects with
    * `CpaStartError` code `aborted` after stopping any child process and
-   * removing the temporary state directory. `stopAllServers()` only stops
-   * handles that already started, so it cannot stop a retrying first start.
-   * Default `false`.
+   * removing the temporary state directory. `stopAllServers()` also aborts
+   * retrying first starts and waits for them to settle. Default `false`.
    */
   onStartFailure?: boolean;
   /**

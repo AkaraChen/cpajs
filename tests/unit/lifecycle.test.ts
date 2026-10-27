@@ -13,6 +13,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   CpaStartError,
   startServer,
+  stopAllServers,
   type CpaConfig,
   type CpaServer,
   type ExitEvent,
@@ -759,6 +760,78 @@ describe('server lifecycle (fake binary)', () => {
 
       expect(error.code).toBe('aborted');
       expect(error.cause).toEqual(new Error('stop it'));
+    });
+
+    it('aborts a retry backoff from stopAllServers and releases the singleton', async () => {
+      const counter = join(dir, 'runs');
+      const pids: number[] = [];
+      const failures: RestartFailedEvent[] = [];
+      let stopping: Promise<unknown> | undefined;
+      const pending = startFake({
+        stateDir: dir,
+        singleton: true,
+        env: { FAKE_COUNTER: counter, FAKE_EXIT: '3' },
+        onLog: ({ line }) => {
+          const match = /^fake cpa pid (\d+)$/.exec(line);
+          if (match) pids.push(Number(match[1]));
+        },
+        on: {
+          'restart-failed': (event) => {
+            failures.push(event);
+            stopping ??= stopAllServers();
+          },
+        },
+        restart: { onStartFailure: true, backoffMs: [10_000], maxAttempts: 3 },
+      });
+
+      const error = await startError(pending);
+      expect(error.code).toBe('aborted');
+      expect(error.cause).toEqual(new Error('stopAllServers() was called.'));
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toMatchObject({ phase: 'start', attempt: 1, willRetry: true });
+      // No later attempt ran and the failed attempt left no process behind.
+      expect(await readFile(counter, 'utf8')).toBe('1');
+      expect(pids).toHaveLength(1);
+      expect(() => process.kill(pids[0]!, 0)).toThrow();
+      expect(await stopping).toEqual([]);
+
+      // The rejected singleton entry was released, so the same stateDir can start again.
+      const server = await startFake({ stateDir: dir, singleton: true });
+      expect(server.stateDir).toBe(dir);
+      await server.stop();
+    });
+
+    it('stops a first start that becomes ready while stopAllServers aborts it', async () => {
+      let releaseHook!: () => void;
+      let enteredHook!: () => void;
+      const hookEntered = new Promise<void>((resolve) => {
+        enteredHook = resolve;
+      });
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      let stateDir: string | undefined;
+      let pid: number | undefined;
+      const pending = startFake({
+        hooks: {
+          afterStart: async (ctx) => {
+            stateDir = ctx.server.stateDir;
+            pid = ctx.server.pid;
+            enteredHook();
+            await hookGate;
+          },
+        },
+      });
+
+      await hookEntered;
+      const stopping = stopAllServers();
+      releaseHook();
+
+      const error = await startError(pending);
+      expect(error.code).toBe('aborted');
+      expect(await stopping).toEqual([]);
+      expect(existsSync(stateDir!)).toBe(false);
+      expect(() => process.kill(pid!, 0)).toThrow();
     });
   });
 

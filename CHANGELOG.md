@@ -16,8 +16,13 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 - Documented that `startServer` stays pending while `restart.onStartFailure` retries a first start: abort it with
   `startServer({ signal })`, which rejects with code `aborted` after stopping the child and removing the
-  temporary directory. `stopAllServers()` only stops handles that already started, so it cannot stop a retrying
-  first start.
+  temporary directory. `stopAllServers()` also aborts retrying first starts and waits for them to settle.
+
+### Fixed
+
+- `stopAllServers()` now aborts first starts that are still in flight, including a start waiting between
+  `restart.onStartFailure` attempts, and waits for each `startServer` promise to reject and clean up. Previously
+  it returned immediately while those starts kept retrying and could spawn CPA after the host had shut down.
 
 ## 0.1.0-rc.6
 
