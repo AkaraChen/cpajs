@@ -213,6 +213,15 @@ const { data: config, etag } = await client.config.get();
 await client.config.patch({ routing: { strategy: 'round-robin' } }, { ifMatch: etag });
 await client.config.set('routing/retry/request-retry', 2); // value typed by path: number
 
+// Read → change → write with If-Match. `auth_index` (injected on reads) is removed,
+// a 412 re-reads and retries, and returning undefined skips the write.
+await client.config.update('routing/strategy', (current) => current ?? 'fill-first');
+
+// Deep-compares each top-level section and replaces only the ones that differ.
+// A listed section is written wholesale, so nested keys absent from it are removed;
+// sections not listed are untouched.
+await client.config.reconcile({ routing: { strategy: 'fill-first' } });
+
 const { files } = await client.credentials.list();
 await client.credentials.upload({ name: 'codex-me.json', content: credentialJson });
 
@@ -241,7 +250,7 @@ mutated.
 
 | Group | Routes |
 | --- | --- |
-| `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match` |
+| `config` | `/config`, `/config.yaml`, `/config/*path`, with ETag / `If-Match`, plus `update` / `reconcile` |
 | `credentials` | list, upload (raw or multipart), reconcile by owner/revision, delete, models, download, status, fields, refresh, SIWC status |
 | `oauth` | auth URL, status / wait, cancel, callback, Vertex import, SIWC bind |
 | `logs` | main log with cursor, clear, error logs, request logs |
@@ -254,7 +263,9 @@ mutated.
 `requests.apiCallJson()` is the throwing variant of `apiCall`: a JSON string body becomes `data`, a non-2xx
 upstream status throws `CpaUpstreamError`, and an unresolvable `$TOKEN$` throws `CpaCredentialTokenError`.
 
-Every method takes `{ signal, timeoutMs, headers }`. Errors:
+Every method takes `{ signal, timeoutMs, headers }`. GET requests retry CPA's transient
+`500 invalid_config` (a read landing while `config.yaml` is rewritten) up to three times after
+100/200/400 ms; writes never retry. Pass `retryInvalidConfig: false` to `createClient` to disable it. Errors:
 
 - `CpaHttpError` for a non-2xx response. It carries `status`, the raw `body`, parsed `data`, and `errorCode` /
   `errorMessage`.

@@ -8,6 +8,18 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `config.update(path, fn, options?)` reads one node, removes the read-only `auth_index` fields that GET
+  injects, passes the value to `fn`, and writes the result back with `If-Match`. A 412 re-reads and calls `fn`
+  again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for
+  the same path on one client instance run one at a time. A missing node passes `undefined` and is created.
+- `config.reconcile(partial, options?)` deep-compares each top-level section against the stored config,
+  ignoring `auth_index`, and replaces only the sections that differ. Each changed section is written
+  wholesale with PUT `/config/<key>` (so nested keys absent from the target are removed) and ETags are
+  chained across writes; a 412 re-reads and recomputes. Sections not listed are untouched, and a target
+  value of `undefined` is skipped.
+- GET requests retry CPA's transient `500 invalid_config` (a read landing while `config.yaml` is rewritten
+  non-atomically) up to three times after 100/200/400 ms. Writes never retry. Disable with
+  `retryInvalidConfig: false` on `createClient`.
 - `credentials.reconcile({ owner, files, prune? })` aligns a managed set of credential files by owner and
   revision. Uploads carry a reserved `x-cpajs: { owner, revision }` field; only the revision is compared, so a
   CPA token refresh that rewrites a file does not upload it again. By default files owned by `owner` but no
