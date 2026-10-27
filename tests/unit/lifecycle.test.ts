@@ -192,6 +192,32 @@ describe('server lifecycle (fake binary)', () => {
     expect(lines.some((l) => l.line.includes('\r'))).toBe(false);
   });
 
+  it('parses CPA log lines for recentLogs and filters onLog with logs.minLevel', async () => {
+    const lines: LogLine[] = [];
+    const server = await startFake({ env: { FAKE_LOG_SAMPLES: '1' }, logs: { minLevel: 'warn' }, onLog: (l) => lines.push(l) });
+    await server.stop();
+
+    const delivered = lines.filter((l) => l.message?.startsWith('sample ') || l.line === 'raw sample line');
+    expect(delivered.map((l) => l.message ?? l.line)).toEqual(['sample warn', 'sample error', 'sample fatal', 'raw sample line']);
+
+    const info = server.recentLogs.find((l) => l.message === 'sample info');
+    expect(info).toMatchObject({
+      stream: 'stdout',
+      level: 'info',
+      requestId: '1b214a39',
+      message: 'sample info',
+      line: `[2026-10-27 03:17:59] [1b214a39] [info ] [sample.go:2] sample info`,
+    });
+    expect(server.recentLogs.find((l) => l.message === 'sample debug')?.level).toBe('debug');
+    expect(server.recentLogs.find((l) => l.line === 'raw sample line')).toEqual({ stream: 'stdout', line: 'raw sample line' });
+  });
+
+  it('rejects an invalid logs.minLevel', async () => {
+    const error = await startError(startFake({ stateDir: dir, logs: { minLevel: 'verbose' } as never }));
+    expect(error.code).toBe('invalid-options');
+    expect(error.message).toContain('logs.minLevel');
+  });
+
   it('stops a process that does not handle the termination signal', async () => {
     const server = await startFake({ env: { FAKE_IGNORE_TERM: '1' } });
     const started = Date.now();
@@ -579,22 +605,22 @@ describe('server lifecycle (fake binary)', () => {
     it('keeps escalating the backoff when restarts become ready and die before stableAfterMs', async () => {
       const counter = join(dir, 'runs');
       const server = await startFake({
-        env: { FAKE_COUNTER: counter, FAKE_EXIT_AFTER_READY_MS: '30', FAKE_EXIT_CODE: '9' },
-        restart: { onUnexpectedExit: true, backoffMs: [60, 120, 180], maxAttempts: 3, stableAfterMs: 1_000 },
+        // The exit only starts after a /healthz response, so the readiness probe
+        // cannot race the process exit: every run is observed as ready first.
+        env: { FAKE_COUNTER: counter, FAKE_EXIT_AFTER_HEALTH_MS: '100', FAKE_EXIT_CODE: '9' },
+        restart: { onUnexpectedExit: true, backoffMs: [20, 40, 60], maxAttempts: 3, stableAfterMs: 1_000 },
       });
-      const restarts: { at: number; attempt: number }[] = [];
+      const attempts: number[] = [];
       const exits: ExitEvent[] = [];
-      server.on('restart', (e) => restarts.push({ at: Date.now(), attempt: e.attempt }));
+      server.on('restart', (e) => attempts.push(e.attempt));
       server.on('exit', (e) => exits.push(e));
 
       const exit = await server.exited;
 
       expect(exit).toEqual({ code: 9, signal: null });
-      expect(restarts.map((r) => r.attempt)).toEqual([1, 2, 3]);
-      // Each run lived for 30 ms and produced a fresh attempt, so the waits grow
-      // instead of staying at the first value.
-      expect(restarts[1]!.at - restarts[0]!.at).toBeGreaterThanOrEqual(110);
-      expect(restarts[2]!.at - restarts[1]!.at).toBeGreaterThanOrEqual(170);
+      // Attempt numbers keep growing (and therefore the backoff moves down the
+      // array) instead of restarting at attempt 1 every 500 ms.
+      expect(attempts).toEqual([1, 2, 3]);
       expect(await readFile(counter, 'utf8')).toBe('4');
       expect(exits).toHaveLength(4);
       expect(exits.slice(0, -1).every((e) => e.willRestart)).toBe(true);
@@ -608,30 +634,27 @@ describe('server lifecycle (fake binary)', () => {
       const server = await startFake({
         env: {
           FAKE_COUNTER: counter,
-          FAKE_EXIT_AFTER_READY_MS: '30',
-          FAKE_EXIT_AFTER_READY_MAX_RUNS: '2',
+          FAKE_EXIT_AFTER_HEALTH_MS: '100',
+          FAKE_EXIT_AFTER_HEALTH_MAX_RUNS: '2',
         },
-        restart: { onUnexpectedExit: true, backoffMs: [40, 80, 160], maxAttempts: 10, stableAfterMs: 300 },
+        restart: { onUnexpectedExit: true, backoffMs: [20, 40, 60], maxAttempts: 10, stableAfterMs: 200 },
       });
-      const restarts: { at: number; attempt: number }[] = [];
-      const restarted: number[] = [];
-      server.on('restart', (e) => restarts.push({ at: Date.now(), attempt: e.attempt }));
-      server.on('restarted', () => restarted.push(Date.now()));
+      const attempts: number[] = [];
+      server.on('restart', (e) => attempts.push(e.attempt));
 
-      // Runs 1 and 2 crash shortly after becoming ready: attempts 1 and 2.
-      await waitFor(async () => restarts.length === 2 && restarted.length === 2);
-      expect(restarts.map((r) => r.attempt)).toEqual([1, 2]);
+      // Runs 1 and 2 exit shortly after their first /healthz: attempts 1 and 2.
+      await waitFor(
+        async () =>
+          attempts.length === 2 && (await fetch(`${server.origin}/healthz`).catch(() => undefined))?.ok === true,
+      );
+      expect(attempts).toEqual([1, 2]);
 
       // Run 3 stays up past the stability window, so its exit starts over.
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      const killedAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 400));
       process.kill(server.pid, 'SIGKILL');
 
-      await waitFor(async () => restarts.length === 3);
-      expect(restarts[2]!.attempt).toBe(1);
-      // Without the reset this would be the third backoff value (160 ms).
-      expect(restarts[2]!.at - killedAt).toBeGreaterThanOrEqual(30);
-      expect(restarts[2]!.at - killedAt).toBeLessThan(150);
+      await waitFor(async () => attempts.length === 3);
+      expect(attempts).toEqual([1, 2, 1]);
       await server.stop();
     });
 

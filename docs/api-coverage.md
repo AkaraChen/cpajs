@@ -49,8 +49,15 @@ v8 and hot-reload it.
 Transient read failure: CPA rewrites `config.yaml` non-atomically. It truncates and then writes
 (`os.WriteFile` in `internal/config/config_yaml.go:138` when the watcher hashes a plaintext secret, `O_TRUNC` in
 `WriteConfig`), and every config read goes to disk. A read that lands inside that window answers
-`500 {"error":"invalid_config","message":"empty config"}`. Retry that specific error after a short delay. The
-client does not retry automatically, because other 500s are real failures.
+`500 {"error":"invalid_config","message":"empty config"}`. GET requests retry that specific error up to three
+times after 100/200/400 ms; writes do not retry, because other 500s are real failures. Pass
+`retryInvalidConfig: false` to `createClient` to turn the retry off.
+
+`config.update` and `config.reconcile` compose these routes: they read (stripping the injected `auth_index`),
+write with `If-Match`, and re-read on 412. `reconcile` compares top-level sections with a deep equality and
+replaces only the changed ones wholesale with PUT `/config/<key>` (chaining the returned ETags), so nested
+keys absent from the target are removed. It never replaces the whole document, because `GET /config` strips
+TURN `username`/`credential`.
 
 Path rules: segments are dash-case YAML keys. List indices cannot be addressed, so lists are replaced whole.
 `%2F` is split, which means a key that contains `/` cannot be addressed. `encodePath` rejects such segments

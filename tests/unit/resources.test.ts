@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CpaHttpError, type CpaConfig } from '../../src/client/index.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -93,6 +93,200 @@ describe('config', () => {
     expect(calls[6]!.body).toBe('');
   });
 
+  it('update reads, strips auth_index, writes with If-Match and retries a 412', async () => {
+    let reads = 0;
+    let writes = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') {
+        reads++;
+        return Response.json(
+          { claude: [{ keys: [{ 'api-key': `k${reads}`, auth_index: 'key-id' }], auth_index: 'group-id' }] },
+          { headers: { ETag: `"read-${reads}"` } },
+        );
+      }
+      writes++;
+      if (writes === 1) return Response.json({ error: 'precondition_failed' }, { status: 412 });
+      return Response.json(ok, { headers: { ETag: '"written"' } });
+    });
+    const seen: unknown[] = [];
+    const result = await client.config.update('api-keys', (current) => {
+      seen.push(current);
+      return current;
+    });
+    expect(reads).toBe(2);
+    expect(writes).toBe(2);
+    expect(result).toEqual({ written: true, etag: '"written"' });
+    expect(JSON.stringify(seen)).not.toContain('auth_index');
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT', 'GET', 'PUT']);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read-1"');
+    expect(calls[3]!.headers.get('if-match')).toBe('"read-2"');
+    expect(calls[3]!.body).not.toContain('auth_index');
+  });
+
+  it('update skips the write when fn returns undefined', async () => {
+    const { client, calls } = mockClient(() => Response.json({ strategy: 'fill-first' }, { headers: { ETag: '"current"' } }));
+    await expect(client.config.update('routing/strategy', () => undefined)).resolves.toEqual({
+      written: false,
+      etag: '"current"',
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('update passes undefined for a missing node and writes without If-Match', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.method === 'GET'
+        ? Response.json({ error: 'not_found' }, { status: 404 })
+        : Response.json(ok, { headers: { ETag: '"created"' } }),
+    );
+    const seen: unknown[] = [];
+    await expect(
+      client.config.update('routing/strategy', (current) => {
+        seen.push(current);
+        return 'fill-first';
+      }),
+    ).resolves.toEqual({ written: true, etag: '"created"' });
+    expect(seen).toEqual([undefined]);
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT']);
+    expect(calls[1]!.headers.get('if-match')).toBeNull();
+    expect(calls[1]!.body).toBe('"fill-first"');
+  });
+
+  it('update serialises concurrent calls for the same path', async () => {
+    const events: string[] = [];
+    let release = (): void => {};
+    let firstRead = (): void => {};
+    const readStarted = new Promise<void>((resolve) => {
+      firstRead = resolve;
+    });
+    let reads = 0;
+    const { client } = mockClient((req) => {
+      if (req.method !== 'GET') return Response.json(ok, { headers: { ETag: '"written"' } });
+      const response = Response.json({}, { headers: { ETag: `"e${++reads}"` } });
+      if (reads === 1) firstRead();
+      return response;
+    });
+    const one = client.config.update('routing', async () => {
+      events.push('one-start');
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      events.push('one-end');
+      return {};
+    });
+    await readStarted;
+    const two = client.config.update('routing', () => {
+      events.push('two-start');
+      return undefined;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toEqual(['one-start']);
+    release();
+    await one;
+    await two;
+    expect(events).toEqual(['one-start', 'one-end', 'two-start']);
+  });
+
+  it('reconcile writes nothing when the values match, ignoring auth_index', async () => {
+    const { client, calls } = mockClient(() =>
+      Response.json(
+        {
+          'config-version': 8,
+          routing: { strategy: 'fill-first' },
+          'api-keys': { claude: [{ keys: [{ 'api-key': 'k', auth_index: 'injected' }], auth_index: 'group' }] },
+        },
+        { headers: { ETag: '"same"' } },
+      ),
+    );
+    await expect(
+      client.config.reconcile({
+        'config-version': 8,
+        routing: { strategy: 'fill-first' },
+        'api-keys': { claude: [{ keys: [{ 'api-key': 'k' }] }] },
+      }),
+    ).resolves.toEqual({ written: false, changed: [], etag: '"same"' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reconcile replaces sections wholesale, removes nested keys and then converges', async () => {
+    let doc: CpaConfig = {
+      'config-version': 8,
+      'api-keys': {
+        claude: [{ name: 'a', keys: [{ 'api-key': 'k', auth_index: 'injected' }] }],
+        codex: [{ name: 'b', keys: [{ 'api-key': 'k2' }] }],
+      },
+    };
+    let version = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') return Response.json(structuredClone(doc), { headers: { ETag: `"v${version}"` } });
+      expect(req.method).toBe('PUT');
+      expect(req.url.pathname).toBe('/v8/management/config/api-keys');
+      doc = { ...doc, 'api-keys': JSON.parse(req.body) };
+      version++;
+      return Response.json(ok, { headers: { ETag: `"v${version}"` } });
+    });
+    const target: CpaConfig = { 'api-keys': { claude: [{ name: 'a', keys: [{ 'api-key': 'k' }] }] } };
+    await expect(client.config.reconcile(target)).resolves.toEqual({ written: true, changed: ['api-keys'], etag: '"v1"' });
+    expect(doc['api-keys']).toEqual(target['api-keys']);
+    expect(doc['api-keys']).not.toHaveProperty('codex');
+
+    await expect(client.config.reconcile(target)).resolves.toEqual({ written: false, changed: [], etag: '"v1"' });
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT', 'GET']);
+  });
+
+  it('reconcile chains the ETag across two changed sections', async () => {
+    const doc = { 'config-version': 8, routing: { strategy: 'round-robin' }, access: { 'api-keys': ['old'] } };
+    let writes = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') return Response.json(doc, { headers: { ETag: '"read"' } });
+      writes++;
+      return Response.json(ok, { headers: { ETag: writes === 1 ? '"one"' : '"two"' } });
+    });
+    await expect(
+      client.config.reconcile({ routing: { strategy: 'fill-first' }, access: { 'api-keys': ['new'] } }),
+    ).resolves.toEqual({ written: true, changed: ['routing', 'access'], etag: '"two"' });
+    expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'PUT /v8/management/config/routing',
+      'PUT /v8/management/config/access',
+    ]);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read"');
+    expect(calls[2]!.headers.get('if-match')).toBe('"one"');
+    expect(JSON.parse(calls[1]!.body)).toEqual({ strategy: 'fill-first' });
+    expect(JSON.parse(calls[2]!.body)).toEqual({ 'api-keys': ['new'] });
+  });
+
+  it('reconcile re-reads and recomputes when a later write gets 412', async () => {
+    const doc: CpaConfig = { 'config-version': 8, routing: { strategy: 'round-robin' }, access: { 'api-keys': ['old'] } };
+    let reads = 0;
+    let writes = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') {
+        reads++;
+        return Response.json(structuredClone(doc), { headers: { ETag: `"read-${reads}"` } });
+      }
+      writes++;
+      if (writes === 2) return Response.json({ error: 'precondition_failed' }, { status: 412 });
+      const key = req.url.pathname.split('/').at(-1)!;
+      (doc as Record<string, unknown>)[key] = JSON.parse(req.body);
+      return Response.json(ok, { headers: { ETag: `"write-${writes}"` } });
+    });
+    await expect(
+      client.config.reconcile({ routing: { strategy: 'fill-first' }, access: { 'api-keys': ['new'] } }),
+    ).resolves.toEqual({ written: true, changed: ['routing', 'access'], etag: '"write-3"' });
+    expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'PUT /v8/management/config/routing',
+      'PUT /v8/management/config/access',
+      'GET /v8/management/config',
+      'PUT /v8/management/config/access',
+    ]);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read-1"');
+    expect(calls[2]!.headers.get('if-match')).toBe('"write-1"');
+    expect(calls[4]!.headers.get('if-match')).toBe('"read-2"');
+    expect(doc.routing).toEqual({ strategy: 'fill-first' });
+    expect(doc.access).toEqual({ 'api-keys': ['new'] });
+  });
+
   it('refuses an empty path for node operations', async () => {
     const { client } = mockClient();
     expect(() => client.config.delete('')).toThrow(/must not be empty/);
@@ -118,6 +312,104 @@ describe('credentials', () => {
     const files = calls[0]!.formData!.getAll('file') as File[];
     expect(files.map((f) => f.name)).toEqual(['a.json', 'b.json']);
     expect(await files[1]!.text()).toBe('{"type":"codex"}');
+  });
+
+  it('reconciles owned files by revision and prunes the rest', async () => {
+    const markers: Record<string, Record<string, unknown>> = {
+      'chat-a.json': { owner: 'chat', revision: 'r1' },
+      'chat-b.json': { owner: 'chat', revision: 'r1' },
+      'chat-stale.json': { owner: 'chat', revision: 'r1' },
+      'other.json': { owner: 'other', revision: 'r1' },
+    };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-b.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+            { name: 'chat-memory', source: 'memory' },
+          ],
+        });
+      }
+      if (req.url.pathname.endsWith('/download')) {
+        const name = req.url.searchParams.get('name')!;
+        return Response.json({ type: 'claude', email: `${name}@example.com`, 'x-cpajs': markers[name] });
+      }
+      return Response.json({ status: 'ok' });
+    });
+
+    const added = { type: 'claude', email: 'added@example.com' };
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [
+        // Same revision: CPA may have rewritten the tokens, but this must not be re-uploaded.
+        { name: 'chat-a.json', content: { type: 'claude', access_token: 'rewritten-by-cpa' }, revision: 'r1' },
+        { name: 'chat-b.json', content: { type: 'claude', email: 'b@example.com' }, revision: 'r2' },
+        { name: 'chat-c.json', content: added, revision: 'r9' },
+      ],
+    });
+
+    expect(result).toEqual({ uploaded: ['chat-b.json', 'chat-c.json'], deleted: ['chat-stale.json'], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual([
+      'chat-a.json',
+      'chat-b.json',
+      'chat-stale.json',
+      'other.json',
+    ]);
+    const uploads = calls.filter((c) => c.method === 'POST');
+    expect(uploads.map((c) => c.url.search)).toEqual(['?name=chat-b.json', '?name=chat-c.json']);
+    expect(JSON.parse(uploads[1]!.body)).toEqual({ type: 'claude', email: 'added@example.com', 'x-cpajs': { owner: 'chat', revision: 'r9' } });
+    expect(added).toEqual({ type: 'claude', email: 'added@example.com' });
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url.search)).toEqual(['?name=chat-stale.json']);
+  });
+
+  it('leaves unmanaged files alone when prune is off', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'chat-a.json', source: 'file' },
+            { name: 'chat-stale.json', source: 'file' },
+            { name: 'other.json', source: 'file' },
+          ],
+        });
+      }
+      return Response.json({ type: 'claude', 'x-cpajs': { owner: 'chat', revision: 'r1' } });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' }],
+      prune: false,
+    });
+
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-a.json'] });
+    expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual(['chat-a.json']);
+    expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
+  });
+
+  it('refuses to overwrite a file owned by someone else', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.url.pathname.endsWith('/download')
+        ? Response.json({ type: 'claude', 'x-cpajs': { owner: 'other', revision: 'r1' } })
+        : Response.json({ observed_at: '', files: [{ name: 'other.json', source: 'file' }] }),
+    );
+
+    await expect(
+      client.credentials.reconcile({ owner: 'chat', files: [{ name: 'other.json', content: { type: 'claude' }, revision: 'r2' }] }),
+    ).rejects.toThrow(/belongs to owner "other", not "chat"/);
+    expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+  });
+
+  it('rejects duplicate file names before making requests', async () => {
+    const { client, calls } = mockClient();
+    const file = { name: 'chat-a.json', content: { type: 'claude' }, revision: 'r1' };
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file, file] })).rejects.toThrow(/more than once/);
+    expect(calls).toEqual([]);
   });
 
   it('maps the remaining routes', async () => {
@@ -262,5 +554,61 @@ describe('ops resources', () => {
     expect(calls[0]!.url.pathname).toBe('/prefix/healthz');
     expect(calls[0]!.headers.get('authorization')).toBeNull();
     expect(calls[1]!.url.pathname).toBe('/prefix/v8/management/server/latest-version');
+  });
+});
+
+describe('apiCallJson', () => {
+  const call = { method: 'GET', url: 'https://upstream.test/data', auth_index: 'abc' };
+
+  it('returns status, headers and a parsed JSON body', async () => {
+    const { client, calls } = mockClient(() =>
+      Response.json({ status_code: 200, header: { 'X-Upstream': ['yes'] }, body: '{"ok":true,"value":1}' }),
+    );
+    const result = await client.requests.apiCallJson<{ ok: boolean; value: number }>(call);
+    expect(result).toEqual({ status: 200, headers: { 'X-Upstream': ['yes'] }, data: { ok: true, value: 1 } });
+    expect(calls[0]!.url.pathname).toBe('/v8/management/requests/api-call');
+    expect(JSON.parse(calls[0]!.body)).toEqual(call);
+  });
+
+  it('throws CpaUpstreamError with the upstream status, headers and parsed body', async () => {
+    const { client } = mockClient(() =>
+      Response.json({ status_code: 401, header: { 'WWW-Authenticate': ['Bearer'] }, body: '{"error":"unauthorized"}' }),
+    );
+    const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaUpstreamError;
+    expect(error).toBeInstanceOf(CpaUpstreamError);
+    expect(error.status).toBe(401);
+    expect(error.headers).toEqual({ 'WWW-Authenticate': ['Bearer'] });
+    expect(error.body).toEqual({ error: 'unauthorized' });
+    expect(error.message).toContain('upstream 401');
+  });
+
+  it('throws CpaCredentialTokenError for CPA token-resolution failures', async () => {
+    for (const code of ['auth token not found', 'auth credential not found for auth_index', 'auth token refresh failed']) {
+      const { client } = mockClient(() => Response.json({ error: code }, { status: 400 }));
+      const error = (await client.requests.apiCallJson(call).catch((e: unknown) => e)) as CpaCredentialTokenError;
+      expect(error).toBeInstanceOf(CpaCredentialTokenError);
+      expect(error.status).toBe(400);
+      expect(error.errorCode).toBe(code);
+      expect(error.cause).toBeInstanceOf(CpaHttpError);
+    }
+  });
+
+  it('keeps other CPA errors as CpaHttpError', async () => {
+    const { client } = mockClient(() => Response.json({ error: 'invalid url' }, { status: 400 }));
+    const error = await client.requests.apiCallJson(call).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect(error).not.toBeInstanceOf(CpaCredentialTokenError);
+  });
+
+  it('keeps a non-JSON body as text and returns undefined for an empty one', async () => {
+    const plain = mockClient(() => Response.json({ status_code: 200, header: {}, body: 'pong' }));
+    await expect(plain.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: 'pong' });
+    const empty = mockClient(() => Response.json({ status_code: 200, header: {}, body: '' }));
+    await expect(empty.client.requests.apiCallJson(call)).resolves.toEqual({ status: 200, headers: {}, data: undefined });
+  });
+
+  it('leaves apiCall resolving on an upstream error', async () => {
+    const { client } = mockClient(() => Response.json({ status_code: 401, header: {}, body: 'no' }));
+    await expect(client.requests.apiCall(call)).resolves.toEqual({ status_code: 401, header: {}, body: 'no' });
   });
 });

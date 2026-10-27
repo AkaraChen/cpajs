@@ -3,10 +3,22 @@ import type { CpaClient, ClientOptions } from '../client/index.ts';
 import type { CpaConfig } from '../client/types/config.ts';
 import type { CpaWarning, SuppressWarnings } from './warnings.ts';
 
+/** Severity names used by CPA's logrus formatter. */
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+
+/** Levels accepted by `logs.minLevel`; `fatal` is always delivered. */
+export type LogMinLevel = Exclude<LogLevel, 'fatal'>;
+
 export interface LogLine {
   stream: 'stdout' | 'stderr';
   /** One line of output with secrets redacted and the trailing newline removed. */
   line: string;
+  /** Parsed severity, when the line uses CPA's log format. */
+  level?: LogLevel;
+  /** CPA's short (8-character) request ID, when the line has one. */
+  requestId?: string;
+  /** The text after CPA's timestamp, request ID, level and caller prefixes. */
+  message?: string;
 }
 
 /** Options for `server.client()`: everything except the origin and the key. */
@@ -115,8 +127,17 @@ interface CommonServerOptions {
    * to stderr as `CpaWarning`). CPA's own output goes to `onLog`.
    */
   onWarning?: (warning: CpaWarning) => void;
-  /** Receives every line CPA prints, redacted. */
+  /**
+   * Receives every line CPA prints, redacted, with parsed `level`, `requestId`
+   * and `message` when the line uses CPA's log format.
+   */
   onLog?: (log: LogLine) => void;
+  /**
+   * Structured log filtering for `onLog`. `minLevel` drops lower-severity lines
+   * (default: no filtering). `recentLogs` still keeps every line, and lines whose
+   * level cannot be parsed are always delivered.
+   */
+  logs?: { minLevel?: LogMinLevel };
   /** Additional strings to redact from logs and errors. */
   redact?: readonly string[];
   /** Default grace period for `stop()` before the process is killed. Ignored on Windows, where `stop()` terminates forcefully. Default 10 000 ms. */
