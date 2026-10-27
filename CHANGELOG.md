@@ -21,6 +21,14 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 - `restart.allowNewPort` moves a restart to a new free port when the original dynamic port was taken, updating
   `origin`, `baseUrl`, `port`, the managed config's `server.port` and already-created `server.client()`
   instances. `restarted` then reports `originChanged: true`; a fixed port is never changed.
+- `scripts/wait-for-packages.ts` polls the abbreviated npm packument that npm, pnpm and bun use, until every
+  `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
+  package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)
+  fails the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
 - `credentials.modelsFor` also accepts a `listAll()` entry, skipping the `GET /credentials` and `GET /config`
   lookups for config keys. Its `details: true` model definitions are cached for the lifetime of the
   `CredentialsResource`; concurrent calls share one request, `refreshDefinitions: true` fetches them again,
@@ -43,10 +51,6 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   JSON-serialisable value. Runtime behaviour is unchanged.
 - `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
   variable.
-- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
-  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
-- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
-  hard-coded target.
 - `exit` events now include `reason: 'stop' | 'restart' | 'unexpected'`: `stop` when `stop()` stopped the
   process, `restart` when a manual or automatic restart replaced it, and `unexpected` when the process exited
   by itself. `willRestart` is unchanged.
@@ -66,6 +70,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 - `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
   is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
   string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
+- The release workflow publishes the platform packages, waits for all of them to resolve, and only then
+  publishes `@cpajs/cpa`. A platform package can still return a cached 404 minutes after its publish;
+  publishing the main package during that window lets package managers silently skip the optional
+  dependency and write an incomplete lockfile.
 
 ### Fixed
 
