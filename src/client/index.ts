@@ -34,10 +34,14 @@ export type {
   Versioned,
 } from './resources/config.ts';
 export type {
+  ConfigCredentialGroup,
+  ConfigCredentialRaw,
+  ConfigCredentialSummary,
   CredentialContent,
   CredentialFile,
   CredentialSelector,
   CredentialSummary,
+  FileCredentialSummary,
   ModelsForOptions,
   ReconcileCredentialFile,
   ReconcileCredentialsInput,
