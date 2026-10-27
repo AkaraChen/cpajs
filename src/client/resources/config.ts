@@ -53,11 +53,27 @@ export interface ConfigReconcileResult extends ConfigUpdateResult {
  */
 export type ConfigPath = string | readonly string[];
 
+/** Joins a tuple path into the slash-separated form `CpaConfigPath` uses. */
+type JoinConfigPath<T extends readonly string[]> = T extends readonly [infer Head extends string, ...infer Tail extends readonly string[]]
+  ? Tail extends readonly []
+    ? Head
+    : `${Head}/${JoinConfigPath<Tail>}`
+  : T extends readonly []
+    ? ''
+    : string;
+
+/** A string path, or a tuple path joined into one; unions are preserved. */
+type PathString<P extends ConfigPath> = P extends readonly string[] ? JoinConfigPath<P> : P extends string ? P : never;
+
+type ConfigPathValueAt<S extends string> = S extends CpaConfigPath ? CpaConfigValue<S> : JsonInput;
+
 /**
- * The value accepted at `P`: the {@link CpaConfig} type for a known string path,
- * any JSON-serialisable value otherwise (array paths, plugin options, computed strings).
+ * The value accepted at `P`: the {@link CpaConfig} type for a known path
+ * (`'api-keys/gemini'` or `['api-keys', 'gemini']`), any JSON-serialisable value
+ * otherwise (plugin options, computed strings, broad `string` / `string[]` paths).
+ * A union path takes the union of its branches' value types.
  */
-export type ConfigPathValue<P extends ConfigPath> = P extends CpaConfigPath ? CpaConfigValue<P> : JsonInput;
+export type ConfigPathValue<P extends ConfigPath> = ConfigPathValueAt<PathString<P>>;
 
 /** JSON-serialisable input. Unlike {@link JsonValue} it accepts interfaces such as `CpaConfig['routing']`. */
 export type JsonInput = string | number | boolean | null | object;
@@ -269,7 +285,7 @@ export class ConfigResource {
    * (GET injects them into API keys), so it is safe to write back.
    * Calls for the same path on one client instance run one at a time.
    */
-  update<P extends ConfigPath>(
+  update<const P extends ConfigPath>(
     path: P,
     fn: (current: ConfigPathValue<P> | undefined) => ConfigPathValue<P> | undefined | Promise<ConfigPathValue<P> | undefined>,
     options: ConfigMutationOptions = {},
@@ -293,12 +309,12 @@ export class ConfigResource {
   }
 
   /** Replaces or creates one node. Missing parent objects are created. */
-  set<P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
+  set<const P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
     return this.#write('PUT', nodePath(path), { json: value }, options);
   }
 
   /** Deep-merges into one node (see {@link patch}). */
-  patchPath<P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
+  patchPath<const P extends ConfigPath>(path: P, value: ConfigPathValue<P>, options: ConfigWriteOptions = {}): Promise<Versioned<ConfigWriteResult>> {
     return this.#write('PATCH', nodePath(path), { json: value }, options);
   }
 
