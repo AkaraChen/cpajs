@@ -8,9 +8,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
-- `scripts/wait-for-packages.ts` polls the npm registry until every `@cpajs/<target>@<version>` resolves.
-  Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds) fails
-  the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
+- `scripts/wait-for-packages.ts` polls the abbreviated npm packument that npm, pnpm and bun use, until every
+  `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
+  package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)
+  fails the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
 
 ### Changed
 

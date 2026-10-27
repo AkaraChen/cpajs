@@ -4,9 +4,12 @@
  * The release workflow publishes the platform packages first and runs this
  * before the main package. `@cpajs/cpa` lists every platform package as an
  * optional dependency, so all of them must be installable when a consumer
- * resolves the main package. Registry metadata (including 404s) is cached by
- * the CDN and can lag behind the publish, so each probe sends no-cache headers
- * and a unique query parameter.
+ * resolves the main package. Installers resolve a package from the abbreviated
+ * packument (`GET /<pkg>`, not `/<pkg>/<version>`), so that is what we probe:
+ * the packument must contain `versions[version]`. Registry metadata (including
+ * 404s) is cached by the CDN and different edges can lag independently, so each
+ * probe sends no-cache headers and a unique query parameter, and a package
+ * needs two consecutive successful polls before it counts as resolved.
  *
  *   node scripts/wait-for-packages.ts --version 0.1.0-rc.5
  *   node scripts/wait-for-packages.ts --version 0.0.0-does-not-exist --timeout 5 --interval 1
@@ -24,6 +27,10 @@ const REGISTRY = 'https://registry.npmjs.org';
 const DEFAULT_TIMEOUT_SECONDS = 10 * 60;
 const DEFAULT_INTERVAL_SECONDS = 10;
 const MAX_REQUEST_TIMEOUT_MS = 30_000;
+/** The same representation npm, pnpm and bun ask for when they install a package. */
+const INSTALL_ACCEPT = 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*';
+const REQUIRED_CONFIRMATIONS = 2;
+const REQUEST_TIMEOUT_DETAIL = 'request timed out';
 
 interface Probe {
   ok: boolean;
@@ -51,11 +58,11 @@ let probeCount = 0;
 
 async function probe(name: string, version: string, timeoutMs: number): Promise<Probe> {
   // The timestamp alone can collide for parallel probes in the same millisecond.
-  const url = `${REGISTRY}/${encodePackage(name)}/${encodeURIComponent(version)}?cpajs=${Date.now()}-${probeCount++}`;
+  const url = `${REGISTRY}/${encodePackage(name)}?cpajs=${Date.now()}-${probeCount++}`;
   try {
     const response = await fetch(url, {
       headers: {
-        accept: 'application/json',
+        accept: INSTALL_ACCEPT,
         'cache-control': 'no-cache',
         pragma: 'no-cache',
       },
@@ -69,13 +76,20 @@ async function probe(name: string, version: string, timeoutMs: number): Promise<
       await response.body?.cancel();
       return { ok: false, detail: `HTTP ${response.status}` };
     }
-    const manifest = (await response.json()) as { name?: unknown; version?: unknown };
-    if (manifest.version !== version || (manifest.name !== undefined && manifest.name !== name)) {
-      return { ok: false, detail: `unexpected manifest ${String(manifest.name)}@${String(manifest.version)}` };
+    const packument = (await response.json()) as { name?: unknown; versions?: unknown };
+    if (packument.name !== undefined && packument.name !== name) {
+      return { ok: false, detail: `unexpected packument for ${String(packument.name)}` };
+    }
+    const versions = packument.versions;
+    if (typeof versions !== 'object' || versions === null || Array.isArray(versions)) {
+      return { ok: false, detail: 'packument has no versions' };
+    }
+    if (!Object.hasOwn(versions, version)) {
+      return { ok: false, detail: `version ${version} is missing from the packument` };
     }
     return { ok: true, detail: '' };
   } catch (error) {
-    return { ok: false, detail: (error as Error).message };
+    return { ok: false, detail: (error as Error).name === 'TimeoutError' ? REQUEST_TIMEOUT_DETAIL : (error as Error).message };
   }
 }
 
@@ -92,6 +106,7 @@ if (import.meta.main) {
 
   const packages = TARGETS.map(packageName);
   const resolved = new Set<string>();
+  const confirmations = new Map<string, number>();
   const details = new Map<string, string>();
   const deadline = Date.now() + timeoutMs;
 
@@ -104,18 +119,28 @@ if (import.meta.main) {
     const results = await Promise.all(pending.map(async (name) => [name, await probe(name, version, requestTimeout)] as const));
     for (const [name, result] of results) {
       if (result.ok) {
+        const count = (confirmations.get(name) ?? 0) + 1;
+        if (count < REQUIRED_CONFIRMATIONS) {
+          confirmations.set(name, count);
+          details.set(name, 'packument resolved once; awaiting a second consecutive poll');
+          continue;
+        }
+        confirmations.delete(name);
         resolved.add(name);
         details.delete(name);
         log(`resolved ${name}@${version} (${resolved.size}/${packages.length})`);
       } else {
-        details.set(name, result.detail);
+        // One bad poll breaks the streak: the next success starts over at one.
+        confirmations.delete(name);
+        // Keep a concrete earlier result when the last probe merely ran out of budget.
+        if (result.detail !== REQUEST_TIMEOUT_DETAIL || !details.has(name)) details.set(name, result.detail);
       }
     }
     if (resolved.size === packages.length) break;
 
     const left = deadline - Date.now();
     if (left <= 0) break;
-    log(`${packages.length - resolved.size} platform package(s) still not resolving; retrying in ${formatDuration(intervalMs)}`);
+    log(`${packages.length - resolved.size} platform package(s) not yet confirmed; retrying in ${formatDuration(intervalMs)}`);
     await delay(Math.min(intervalMs, left));
   }
 
