@@ -1,4 +1,4 @@
-import type { LogLevel, LogMinLevel, LogLine } from './types.ts';
+import type { LogLevel, LogLine, LogOptions } from './types.ts';
 
 const LEVEL_RANK: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3, fatal: 4 };
 
@@ -27,8 +27,17 @@ export function parseLogLine(line: string): Pick<LogLine, 'level' | 'requestId' 
   };
 }
 
-/** Lines without a parsed level always pass, so unknown output is never hidden. */
-export function passesMinLevel(level: LogLevel | undefined, minLevel: LogMinLevel | undefined): boolean {
-  if (level === undefined || minLevel === undefined) return true;
-  return LEVEL_RANK[level] >= LEVEL_RANK[minLevel];
+/**
+ * True when `log` reaches `onLog`. Without `minLevel` everything passes; with it,
+ * lines without a parsed level follow `unleveled` (default `'all'`), so unknown
+ * output is not hidden unless asked.
+ */
+export function passesLogFilter(log: Pick<LogLine, 'level' | 'stream'>, options: LogOptions | undefined): boolean {
+  const minLevel = options?.minLevel;
+  if (minLevel === undefined) return true;
+  if (log.level === undefined) {
+    const unleveled = options?.unleveled ?? 'all';
+    return unleveled === 'all' || (unleveled === 'stderr' && log.stream === 'stderr');
+  }
+  return LEVEL_RANK[log.level] >= LEVEL_RANK[minLevel];
 }

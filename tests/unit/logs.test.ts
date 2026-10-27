@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { parseLogLine, passesMinLevel } from '../../src/server/logs.ts';
+import { parseLogLine, passesLogFilter } from '../../src/server/logs.ts';
+import type { LogLevel } from '../../src/server/types.ts';
 
 // Samples captured from CLIProxyAPI v8.0.43 (`internal/logging/global_logger.go`).
 const TIMESTAMP = '2026-10-27 03:18:01';
@@ -53,16 +54,29 @@ describe('log line parsing', () => {
 });
 
 describe('log level filtering', () => {
+  const out = (level?: LogLevel) => ({ stream: 'stdout' as const, ...(level ? { level } : {}) });
+  const err = (level?: LogLevel) => ({ stream: 'stderr' as const, ...(level ? { level } : {}) });
+
   it('drops lower levels and keeps equal or higher ones', () => {
-    expect(passesMinLevel('debug', 'warn')).toBe(false);
-    expect(passesMinLevel('info', 'warn')).toBe(false);
-    expect(passesMinLevel('warn', 'warn')).toBe(true);
-    expect(passesMinLevel('error', 'warn')).toBe(true);
-    expect(passesMinLevel('fatal', 'error')).toBe(true);
+    expect(passesLogFilter(out('debug'), { minLevel: 'warn' })).toBe(false);
+    expect(passesLogFilter(out('info'), { minLevel: 'warn' })).toBe(false);
+    expect(passesLogFilter(out('warn'), { minLevel: 'warn' })).toBe(true);
+    expect(passesLogFilter(out('error'), { minLevel: 'warn' })).toBe(true);
+    expect(passesLogFilter(out('fatal'), { minLevel: 'error' })).toBe(true);
   });
 
-  it('lets unparsed lines and lines without a minimum through', () => {
-    expect(passesMinLevel(undefined, 'error')).toBe(true);
-    expect(passesMinLevel('debug', undefined)).toBe(true);
+  it('lets unparsed lines and lines without a minimum through by default', () => {
+    expect(passesLogFilter(out(), { minLevel: 'error' })).toBe(true);
+    expect(passesLogFilter(out('debug'), {})).toBe(true);
+    expect(passesLogFilter(out('debug'), undefined)).toBe(true);
+  });
+
+  it('filters unparsed lines by stream with unleveled', () => {
+    expect(passesLogFilter(out(), { minLevel: 'warn', unleveled: 'stderr' })).toBe(false);
+    expect(passesLogFilter(err(), { minLevel: 'warn', unleveled: 'stderr' })).toBe(true);
+    expect(passesLogFilter(err(), { minLevel: 'warn', unleveled: 'none' })).toBe(false);
+    expect(passesLogFilter(err('error'), { minLevel: 'warn', unleveled: 'none' })).toBe(true);
+    // Without minLevel nothing is filtered, unleveled included.
+    expect(passesLogFilter(out(), { unleveled: 'none' })).toBe(true);
   });
 });
