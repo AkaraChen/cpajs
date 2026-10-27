@@ -100,15 +100,23 @@ await server.stop();
   The registry lives on `globalThis` (keyed by `Symbol.for('cpajs.servers')`), so duplicate module instances
   in the same process share it.
 - Lifecycle events: `server.on('exit' | 'restart' | 'restarted' | 'restart-failed', listener)` returns an
-  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs` and `willRestart`; `restart` and
-  `restarted` carry `reason` (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has
-  `originChanged` (currently always `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A
-  listener that throws is reported through `process.emitWarning` and never disturbs the server.
-- `hooks.afterStart({ server, client, reason })` runs after each process is ready: the first start and every
-  restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is `server.client()` when cpajs
-  knows the plaintext management key and `undefined` otherwise. If it throws, the first start rejects with
-  `CpaStartError` code `hook-failed` after stopping the process, while a restart fails like any other
-  (`restart-failed`, then backoff or a rejected `restart()`).
+  unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs`, `willRestart` and `reason`:
+  `'stop'` when `stop()` stopped the process, `'restart'` when a manual or automatic restart replaced it, and
+  `'unexpected'` when the process exited by itself. `restart` and `restarted` carry `reason`
+  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (currently always
+  `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A listener that throws is reported through
+  `process.emitWarning` and never disturbs the server. Pass `on` to `startServer` to subscribe before the first
+  process is watched; with `singleton: true` only the first call's listeners are registered.
+- `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
+  start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
+  `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`
+  narrows `client` to `CpaClient` unless `management: false` or `configPath` is used, or an object `config`
+  sets `management['secret-key']` in a way its type can see; `requireClient()` returns it or throws with the
+  reason it is unavailable. The hook may return a cleanup function (or a promise of one), which cpajs calls once
+  when that process exits: before the replacement starts on a restart, or after the final stop. A cleanup that
+  throws is reported through `process.emitWarning` and does not change the lifecycle. If the hook throws, the
+  first start rejects with `CpaStartError` code `hook-failed` after stopping the process, while a restart fails
+  like any other (`restart-failed`, then backoff or a rejected `restart()`).
 - Shutdown: CPA does not outlive your process, even if it is killed with SIGKILL, crashes, or is restarted by
   `tsx watch` / `nodemon`. Each platform package ships a small `cpa-launcher` (pure Go, in `launcher/`) that
   relies only on operating-system facilities:

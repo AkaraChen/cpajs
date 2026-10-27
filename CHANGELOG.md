@@ -4,6 +4,23 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- `exit` events now include `reason: 'stop' | 'restart' | 'unexpected'`: `stop` when `stop()` stopped the
+  process, `restart` when a manual or automatic restart replaced it, and `unexpected` when the process exited
+  by itself. `willRestart` is unchanged.
+- `hooks.afterStart` may return a cleanup function (or a promise of one). cpajs calls it once when the process
+  that the hook observed exits: before the replacement starts on a restart, or after the final stop. A cleanup
+  that throws is reported as a `CpaWarning` and does not change the restart or stop outcome.
+- `startServer({ on })` registers lifecycle listeners as soon as the handle is created, so they also see an
+  immediate exit. With `singleton: true` only the first call's listeners are registered, like `hooks`.
+- `AfterStartContext.requireClient()` returns the management client or throws a clear error explaining why it
+  is unavailable. `startServer` types `ctx.client` as `CpaClient` when neither `management: false` nor
+  `configPath` is used (and no visible object `config.management['secret-key']`), while the other cases keep
+  `CpaClient | undefined`.
+
 ## 0.1.0-rc.5
 
 ### Added
