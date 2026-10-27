@@ -14,6 +14,15 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   failed start is removed so the next call starts a new process. Requires an explicit `stateDir` or
   `configPath`; the first call's options win. The registry is stored on `globalThis` under
   `Symbol.for('cpajs.servers')`, so duplicate module instances share it.
+- `credentials.listAll(options?)` returns credential files and config `api-keys` entries together, each with
+  its `auth_index`, `provider`, `source: 'file' | 'config'`, file `name` or config group `label`, `disabled`
+  and the raw entry. Config keys come from `GET /config` because `/credentials` only exposes a runtime view of
+  them; config-key cooldown state is not included.
+- `credentials.modelsFor(selector, { details? })` lists the models one file or config key can serve. Config
+  keys follow upstream resolution: a key's `models` replaces the channel defaults, `alias` becomes the
+  client-facing ID, a key's `excluded-models` overrides its group's and supports `*` wildcards, and
+  `display-name` / `max-context-length` / `thinking` override the defaults. With `details: true` the channel's
+  `GET /routing/model-definitions/:channel` is merged into each model, requesting each channel once per call.
 - Auto-restart: `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` starts CPA again after
   an unexpected exit through the same path as `restart()`, so `origin`, `port`, the handle, the config file and
   existing `server.client()` instances stay valid. Backoff defaults to `[500, 1000, 5000, 30_000]` and the last

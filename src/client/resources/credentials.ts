@@ -1,6 +1,8 @@
+import type { CpaConfig, CpaModelBase, CpaOpenAICompatModel, CpaThinkingSupport } from '../types/config.ts';
 import type {
   AuthFileEntry,
   CoreAuth,
+  CredentialModel,
   CredentialModelsResponse,
   DeleteCredentialsResponse,
   ForceRefreshResult,
@@ -13,6 +15,7 @@ import type {
   SIWCStatusResponse,
   UploadCredentialsResponse,
 } from '../types/credentials.ts';
+import type { ModelDefinitionsResponse, ModelInfo, ThinkingSupport } from '../types/routing.ts';
 import type { RequestOptions, Transport } from '../transport.ts';
 
 /** Credential file content: a parsed JSON object, JSON text, or raw bytes. */
@@ -50,6 +53,40 @@ export interface ReconcileCredentialsResult {
 /** Identifies a credential by auth ID / file name or by `auth_index`. */
 export type CredentialSelector = { name: string; auth_index?: string } | { auth_index: string; name?: string };
 
+/** One credential file or one config API key, as returned by {@link CredentialsResource.listAll}. */
+export interface CredentialSummary {
+  /** Runtime auth index. Empty when CPA does not expose one (e.g. an invalid config key). */
+  auth_index: string;
+  provider: string;
+  source: 'file' | 'config';
+  /** File name, for `source: 'file'`. */
+  name?: string;
+  /** Config group name, for `source: 'config'`. */
+  label?: string;
+  disabled: boolean;
+  /** The source entry: an {@link AuthFileEntry}, a config key, or a keyless OpenAI-compatible group. */
+  raw: unknown;
+}
+
+export interface ModelsForOptions extends RequestOptions {
+  /**
+   * Merge the channel's `model-definitions` into each model, so the result carries
+   * context limits, thinking support and the other static metadata.
+   */
+  details?: boolean;
+}
+
+type ConfiguredModel = (CpaModelBase | CpaOpenAICompatModel) & { 'max-context-length'?: number };
+
+interface ConfigCredential {
+  summary: CredentialSummary;
+  provider: string;
+  channel: string | undefined;
+  models: readonly ConfiguredModel[] | undefined;
+  excluded: readonly string[] | undefined;
+  openaiCompat: boolean;
+}
+
 /** Reserved top-level credential field that records ownership and revision. */
 const RECONCILE_MARKER = 'x-cpajs';
 
@@ -76,6 +113,21 @@ export class CredentialsResource {
   /** Lists credentials. Passing `page` or `page_size` enables pagination fields in the response. */
   async list(query: ListCredentialsQuery = {}, options: RequestOptions = {}): Promise<ListCredentialsResponse> {
     return (await this.#t.request<ListCredentialsResponse>({ ...options, method: 'GET', path: '/credentials', query: { ...query } })).data;
+  }
+
+  /**
+   * Lists credential files and config `api-keys` entries together. Files come from
+   * `GET /credentials`; config keys come from `GET /config`, because `/credentials`
+   * only exposes a runtime view of them. Runtime state (cooldowns and so on) is not
+   * included for config keys.
+   */
+  async listAll(options: RequestOptions = {}): Promise<CredentialSummary[]> {
+    const { files } = await this.list({}, options);
+    const config = await this.#readConfig(options);
+    return [
+      ...files.filter((entry) => entry.source === 'file').map(fileSummary),
+      ...configCredentials(config).map((entry) => entry.summary),
+    ];
   }
 
   /** Finds one credential by auth ID / file name, or returns undefined. */
@@ -125,6 +177,48 @@ export class CredentialsResource {
   /** Models available through one credential. */
   async models(name: string, options: RequestOptions = {}): Promise<CredentialModelsResponse> {
     return (await this.#t.request<CredentialModelsResponse>({ ...options, method: 'GET', path: '/credentials/models', query: { name } })).data;
+  }
+
+  /**
+   * Models one credential can serve, for a file or a config API key.
+   *
+   * For config keys the resolution follows upstream: the key's `models` list
+   * replaces the channel defaults, `alias` is the client-facing ID, a key's
+   * `excluded-models` overrides its group's and accepts `*` wildcards, and
+   * `display-name` / `max-context-length` / `thinking` override the defaults.
+   * File credentials ask `GET /credentials/models`.
+   *
+   * With `details: true` the channel's `GET /routing/model-definitions/:channel`
+   * is merged into each model. A channel is requested at most once per call.
+   *
+   * Mirrors CLIProxyAPI v8.0.43 `sdk/cliproxy/service_models.go`
+   * (`registerModelsForAuthWithConfigAndCache`, `buildConfigModels`,
+   * `applyExcludedModels`, `matchWildcard`) and
+   * `internal/watcher/synthesizer/config.go`; key fields inherit from their group in
+   * `internal/config/config_v8.go` (`expandV8Groups`).
+   */
+  async modelsFor(selector: CredentialSelector, options: ModelsForOptions = {}): Promise<ModelInfo[]> {
+    const { details = false, ...requestOptions } = options;
+    const name = selector.name?.trim() || undefined;
+    const authIndex = selector.auth_index?.trim() || undefined;
+    if (name === undefined && authIndex === undefined) throw new TypeError('modelsFor needs a name or auth_index.');
+
+    const query: ListCredentialsQuery = name === undefined ? { auth_index: authIndex! } : { name };
+    const { files } = await this.list(query, requestOptions);
+    const file = files.find(
+      (entry) =>
+        entry.source === 'file' &&
+        (name === undefined || entry.name === name) &&
+        (authIndex === undefined || entry.auth_index === authIndex),
+    );
+    if (file !== undefined) return this.#modelsForFile(file, details, requestOptions);
+    if (authIndex === undefined) throw new Error(`Credential "${name}" was not found.`);
+
+    const entry = configCredentials(await this.#readConfig(requestOptions)).find(
+      (credential) => credential.summary.auth_index === authIndex && (name === undefined || credential.summary.name === name),
+    );
+    if (entry === undefined) throw new Error(`Credential with auth_index "${authIndex}" was not found.`);
+    return this.#modelsForConfig(entry, details, requestOptions);
   }
 
   /** Downloads a credential file by file name. The content includes tokens. */
@@ -193,6 +287,70 @@ export class CredentialsResource {
     return { uploaded, deleted, unchanged };
   }
 
+  async #readConfig(options: RequestOptions): Promise<CpaConfig> {
+    return (await this.#t.request<CpaConfig>({ ...options, method: 'GET', path: '/config' })).data;
+  }
+
+  async #modelDefinitions(channel: string, options: RequestOptions): Promise<ModelInfo[]> {
+    return (
+      await this.#t.request<ModelDefinitionsResponse>({
+        ...options,
+        method: 'GET',
+        path: `/routing/model-definitions/${encodeURIComponent(channel)}`,
+      })
+    ).data.models;
+  }
+
+  async #modelsForFile(entry: AuthFileEntry, details: boolean, options: RequestOptions): Promise<ModelInfo[]> {
+    const { models } = await this.models(entry.name, options);
+    const basic = models.map((model) => fileModelInfo(model, entry));
+    if (!details) return basic;
+    const channel = channelForProvider(entry.provider) ?? channelForProvider(entry.type);
+    if (channel === undefined) return basic;
+    const definitions = await this.#modelDefinitions(channel, options);
+    const byId = new Map(definitions.map((model) => [model.id.toLowerCase(), model]));
+    return basic.map((model) => mergeFileModel(model, byId.get(model.id.toLowerCase())));
+  }
+
+  async #modelsForConfig(entry: ConfigCredential, details: boolean, options: RequestOptions): Promise<ModelInfo[]> {
+    const definitions = new Map<string, Promise<ModelInfo[]>>();
+    const loadDefinitions = (channel: string): Promise<ModelInfo[]> => {
+      let pending = definitions.get(channel);
+      if (pending === undefined) {
+        pending = this.#modelDefinitions(channel, options);
+        definitions.set(channel, pending);
+      }
+      return pending;
+    };
+
+    let models: { upstreamName: string; info: ModelInfo }[] = [];
+    if (entry.openaiCompat) {
+      models = configuredModels(entry.models ?? [], entry.provider, (model) =>
+        'image' in model && model.image ? 'openai-image' : 'openai-compatibility',
+      );
+    } else {
+      const meta = providerModelMeta(entry.provider);
+      if (meta !== undefined) {
+        if ((entry.models?.length ?? 0) > 0) {
+          models = configuredModels(entry.models!, meta.ownedBy, meta.type);
+          if (details && entry.channel !== undefined) {
+            const byId = new Map((await loadDefinitions(entry.channel)).map((model) => [model.id.toLowerCase(), model]));
+            models = models.map((item) => ({
+              upstreamName: item.upstreamName,
+              info: mergeConfiguredModel(item.info, byId.get(item.upstreamName.toLowerCase()) ?? byId.get(item.info.id.toLowerCase())),
+            }));
+          }
+        } else if (entry.channel !== undefined) {
+          models = (await loadDefinitions(entry.channel)).map((info) => ({ upstreamName: info.id, info }));
+        }
+      }
+    }
+    return excludeModels(
+      models.map((item) => item.info),
+      entry.excluded ?? [],
+    );
+  }
+
   async #readReconcileMarker(name: string, options: RequestOptions): Promise<ReconcileMarker | undefined> {
     const text = await (await this.download(name, options)).text();
     let content: unknown;
@@ -239,6 +397,276 @@ export class CredentialsResource {
   async siwcStatus(selector: CredentialSelector, options: RequestOptions = {}): Promise<SIWCStatusResponse> {
     return (await this.#t.request<SIWCStatusResponse>({ ...options, method: 'GET', path: '/credentials/siwc/status', query: { ...selector } })).data;
   }
+}
+
+const CONFIG_PROVIDERS = ['gemini', 'interactions', 'claude', 'codex', 'xai', 'meta', 'vertex'] as const;
+
+const PROVIDER_MODEL_META: Record<string, { ownedBy: string; type: string; channel: string }> = {
+  gemini: { ownedBy: 'google', type: 'gemini', channel: 'gemini' },
+  interactions: { ownedBy: 'google', type: 'gemini', channel: 'gemini-interactions' },
+  vertex: { ownedBy: 'google', type: 'vertex', channel: 'vertex' },
+  claude: { ownedBy: 'anthropic', type: 'claude', channel: 'claude' },
+  codex: { ownedBy: 'openai', type: 'openai', channel: 'codex' },
+  xai: { ownedBy: 'xai', type: 'xai', channel: 'xai' },
+  meta: { ownedBy: 'meta', type: 'meta', channel: 'meta' },
+};
+
+/** Model-definition channel for a credential provider. */
+const PROVIDER_CHANNELS: Record<string, string> = {
+  gemini: 'gemini',
+  'gemini-cli': 'gemini',
+  interactions: 'gemini-interactions',
+  'gemini-interactions': 'gemini-interactions',
+  vertex: 'vertex',
+  claude: 'claude',
+  codex: 'codex',
+  xai: 'xai',
+  'x-ai': 'xai',
+  grok: 'xai',
+  meta: 'meta',
+  muse: 'meta',
+  kimi: 'kimi',
+  'kimi-ai': 'kimi',
+  'kimi.ai': 'kimi',
+  'kimi.com': 'kimi',
+  antigravity: 'antigravity',
+  aistudio: 'aistudio',
+  devin: 'devin',
+};
+
+function channelForProvider(provider: string): string | undefined {
+  return PROVIDER_CHANNELS[provider.trim().toLowerCase()];
+}
+
+function providerModelMeta(provider: string): { ownedBy: string; type: string; channel: string } | undefined {
+  return PROVIDER_MODEL_META[provider.trim().toLowerCase()];
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
+}
+
+function readStrings(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((item): item is string => typeof item === 'string');
+}
+
+function readModels(value: unknown): ConfiguredModel[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter(isRecord) as unknown as ConfiguredModel[];
+}
+
+function fileSummary(entry: AuthFileEntry): CredentialSummary {
+  return {
+    auth_index: entry.auth_index,
+    provider: entry.provider,
+    source: 'file',
+    name: entry.name,
+    disabled: entry.disabled,
+    raw: entry,
+  };
+}
+
+/**
+ * Flattens the v8 `api-keys` groups into one entry per key. `expandV8Groups` in
+ * upstream config_v8.go copies group fields onto each key, so a key-level value
+ * replaces the group's and a missing (or null) one inherits it.
+ */
+function configCredentials(config: CpaConfig): ConfigCredential[] {
+  const apiKeys = config['api-keys'] as Record<string, unknown> | undefined;
+  if (apiKeys === undefined) return [];
+  const out: ConfigCredential[] = [];
+
+  for (const provider of CONFIG_PROVIDERS) {
+    const groups = apiKeys[provider];
+    if (!Array.isArray(groups)) continue;
+    for (const value of groups) {
+      if (!isRecord(value)) continue;
+      const group = value;
+      const label = readString(group.name);
+      const groupModels = readModels(group.models);
+      const groupExcluded = readStrings(group['excluded-models']);
+      const keys = Array.isArray(group.keys) ? group.keys : [];
+      for (const item of keys) {
+        if (!isRecord(item)) continue;
+        out.push({
+          summary: {
+            auth_index: readString(item.auth_index) ?? '',
+            provider,
+            source: 'config',
+            ...(label === undefined ? {} : { label }),
+            disabled: false,
+            raw: item,
+          },
+          provider,
+          channel: channelForProvider(provider),
+          models: readModels(item.models) ?? groupModels,
+          excluded: readStrings(item['excluded-models']) ?? groupExcluded,
+          openaiCompat: false,
+        });
+      }
+    }
+  }
+
+  const compatGroups = apiKeys['openai-compatibility'];
+  if (Array.isArray(compatGroups)) {
+    for (const value of compatGroups) {
+      if (!isRecord(value)) continue;
+      const group = value;
+      const name = readString(group.name);
+      const provider = name ?? 'openai-compatibility';
+      const models = readModels(group.models);
+      const keys = Array.isArray(group.keys) ? group.keys : [];
+      // A group without keys is one credential and carries auth_index itself.
+      const entries: unknown[] = keys.length > 0 ? keys : [group];
+      for (const item of entries) {
+        if (!isRecord(item)) continue;
+        out.push({
+          summary: {
+            auth_index: readString(item.auth_index) ?? '',
+            provider,
+            source: 'config',
+            ...(name === undefined ? {} : { label: name }),
+            disabled: group.disabled === true,
+            raw: item,
+          },
+          provider,
+          channel: undefined,
+          models,
+          excluded: undefined,
+          openaiCompat: true,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function configuredModels(
+  models: readonly ConfiguredModel[],
+  ownedBy: string,
+  type: string | ((model: ConfiguredModel) => string),
+): { upstreamName: string; info: ModelInfo }[] {
+  const out: { upstreamName: string; info: ModelInfo }[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    const modelType = typeof type === 'function' ? type(model) : type;
+    const info = configuredModelInfo(model, ownedBy, modelType);
+    if (info === undefined) continue;
+    const key = info.id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ upstreamName: readString(model.name) ?? '', info });
+  }
+  return out;
+}
+
+function configuredModelInfo(model: ConfiguredModel, ownedBy: string, type: string): ModelInfo | undefined {
+  const name = readString(model.name) ?? '';
+  const alias = readString(model.alias) ?? '';
+  const id = alias || name;
+  if (id === '') return undefined;
+  const info: ModelInfo = {
+    id,
+    object: 'model',
+    created: Math.floor(Date.now() / 1000),
+    owned_by: ownedBy,
+    type,
+    display_name: readString(model['display-name']) ?? (name || alias),
+  };
+  if (typeof model['max-context-length'] === 'number' && model['max-context-length'] > 0) {
+    info.context_length = model['max-context-length'];
+  }
+  const thinking = toThinkingSupport(model.thinking);
+  if (thinking !== undefined) info.thinking = thinking;
+  return info;
+}
+
+function toThinkingSupport(thinking: CpaThinkingSupport | null | undefined): ThinkingSupport | undefined {
+  if (thinking === null || thinking === undefined) return undefined;
+  const out: ThinkingSupport = {};
+  if (typeof thinking.min === 'number') out.min = thinking.min;
+  if (typeof thinking.max === 'number') out.max = thinking.max;
+  if (typeof thinking['zero-allowed'] === 'boolean') out.zero_allowed = thinking['zero-allowed'];
+  if (typeof thinking['dynamic-allowed'] === 'boolean') out.dynamic_allowed = thinking['dynamic-allowed'];
+  if (typeof thinking['disable-type'] === 'string') out.disable_type = thinking['disable-type'];
+  if (Array.isArray(thinking.levels)) {
+    const levels = thinking.levels.filter((level): level is string => typeof level === 'string' && level.trim() !== '');
+    if (levels.length > 0) out.levels = levels;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function fileModelInfo(model: CredentialModel, entry: AuthFileEntry): ModelInfo {
+  const info: ModelInfo = {
+    id: model.id,
+    object: 'model',
+    created: 0,
+    owned_by: model.owned_by ?? '',
+    type: model.type ?? '',
+    ...(model.display_name === undefined ? {} : { display_name: model.display_name }),
+  };
+  if (info.owned_by === '') info.owned_by = entry.provider;
+  if (info.type === '') info.type = entry.type || entry.provider;
+  return info;
+}
+
+function mergeFileModel(model: ModelInfo, definitions: ModelInfo | undefined): ModelInfo {
+  if (definitions === undefined) return model;
+  return {
+    ...definitions,
+    ...model,
+    created: definitions.created,
+    owned_by: definitions.owned_by || model.owned_by,
+    type: definitions.type || model.type,
+  };
+}
+
+function mergeConfiguredModel(model: ModelInfo, definitions: ModelInfo | undefined): ModelInfo {
+  if (definitions === undefined) return model;
+  return {
+    ...definitions,
+    ...model,
+    created: definitions.created,
+    owned_by: definitions.owned_by || model.owned_by,
+    type: definitions.type || model.type,
+  };
+}
+
+function excludeModels(models: readonly ModelInfo[], excluded: readonly string[]): ModelInfo[] {
+  const patterns = excluded.map((item) => item.trim().toLowerCase()).filter((item) => item !== '');
+  if (patterns.length === 0) return [...models];
+  return models.filter((model) => {
+    const id = model.id.trim().toLowerCase();
+    return !patterns.some((pattern) => matchWildcard(pattern, id));
+  });
+}
+
+/** Case-insensitive wildcard match where `*` matches any substring. Mirrors upstream `matchWildcard`. */
+function matchWildcard(pattern: string, value: string): boolean {
+  if (pattern === '') return false;
+  if (!pattern.includes('*')) return pattern === value;
+
+  const parts = pattern.split('*');
+  let rest = value;
+  const prefix = parts[0]!;
+  if (prefix !== '') {
+    if (!rest.startsWith(prefix)) return false;
+    rest = rest.slice(prefix.length);
+  }
+  const suffix = parts[parts.length - 1]!;
+  if (suffix !== '') {
+    if (!rest.endsWith(suffix)) return false;
+    rest = rest.slice(0, -suffix.length);
+  }
+  for (let index = 1; index < parts.length - 1; index++) {
+    const segment = parts[index]!;
+    if (segment === '') continue;
+    const found = rest.indexOf(segment);
+    if (found < 0) return false;
+    rest = rest.slice(found + segment.length);
+  }
+  return true;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

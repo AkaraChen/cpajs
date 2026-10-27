@@ -35,6 +35,8 @@ export type {
   CredentialContent,
   CredentialFile,
   CredentialSelector,
+  CredentialSummary,
+  ModelsForOptions,
   ReconcileCredentialFile,
   ReconcileCredentialsInput,
   ReconcileCredentialsResult,
