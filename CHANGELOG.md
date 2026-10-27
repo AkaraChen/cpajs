@@ -8,6 +8,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `credentials.reconcile({ owner, files, prune? })` aligns a managed set of credential files by owner and
+  revision. Uploads carry a reserved `x-cpajs: { owner, revision }` field; only the revision is compared, so a
+  CPA token refresh that rewrites a file does not upload it again. By default files owned by `owner` but no
+  longer listed are deleted, while files owned by anyone else are never touched.
 - Structured log lines: `LogLine` now carries `level`, `requestId` and `message` when CPA's logrus format could
   be parsed, while `line` and `stream` stay unchanged. Pass `logs: { minLevel: 'warn' }` to drop lower-severity
   lines from `onLog` instead of re-parsing text; `recentLogs` still keeps every line, and lines without a parsed
