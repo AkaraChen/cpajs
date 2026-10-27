@@ -4,6 +4,7 @@
 // Behaviour switches (environment):
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
 //   FAKE_EXIT_AFTER=<n>     only apply FAKE_EXIT from run <n> on (counted in FAKE_COUNTER)
+//   FAKE_EXIT_MAX_RUNS=<n>  only apply FAKE_EXIT to runs <= <n>
 //   FAKE_EXIT_AFTER_HEALTH_MS=<ms>  exit <ms> after the first successful /healthz, so the
 //                           readiness probe always sees the process ready first
 //   FAKE_EXIT_AFTER_HEALTH_MAX_RUNS=<n>  only apply the previous switch to runs <= <n>
@@ -61,7 +62,10 @@ if (process.env.FAKE_LOG_SAMPLES) {
 const runs = process.env.FAKE_COUNTER && existsSync(process.env.FAKE_COUNTER) ? Number(readFileSync(process.env.FAKE_COUNTER, 'utf8')) + 1 : 1;
 if (process.env.FAKE_COUNTER) writeFileSync(process.env.FAKE_COUNTER, String(runs));
 const exitAfter = Number(process.env.FAKE_EXIT_AFTER ?? 0);
-if (process.env.FAKE_EXIT && (!exitAfter || runs >= exitAfter)) process.exit(Number(process.env.FAKE_EXIT));
+const exitMaxRuns = Number(process.env.FAKE_EXIT_MAX_RUNS ?? 0);
+if (process.env.FAKE_EXIT && (!exitAfter || runs >= exitAfter) && (!exitMaxRuns || runs <= exitMaxRuns)) {
+  process.exit(Number(process.env.FAKE_EXIT));
+}
 if (process.env.FAKE_BIND_ERROR && runs <= Number(process.env.FAKE_BIND_ERROR)) {
   await holdPort(host, port);
 }

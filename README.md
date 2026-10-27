@@ -69,7 +69,10 @@ await server.stop();
   the port it already has.
 - `startServer` resolves only once `/healthz` answers. It rejects with `CpaStartError` on early exit, port
   conflict, timeout (`startupTimeoutMs`, default 30 s), `signal` abort, or an `afterStart` hook failure. In every
-  failure case the process is stopped and the temporary directory removed.
+  failure case the process is stopped and the temporary directory removed. With `restart.onStartFailure`, the
+  retryable failures (early exit, timeout, port conflict, a failing `afterStart`, or a config function that
+  throws) are retried with `restart.backoffMs`/`restart.maxAttempts` before the last error is thrown; invalid
+  options, an aborted signal and a missing binary still reject immediately.
 - `stop()` is idempotent: on POSIX it sends SIGTERM and then SIGKILL after `stopTimeoutMs` (default 10 s). On
   Windows Node cannot deliver a graceful shutdown signal, so `stop()` terminates the process forcefully (equivalent
   to SIGKILL), `stopTimeoutMs` has no effect, and CPA gets no chance to flush state or update auth files. The same
@@ -80,18 +83,21 @@ await server.stop();
   new process. With an object `config`, the existing `config.yaml` is reused and never rewritten, so changes made
   through the management API survive. A function `config` is evaluated again before each restart and its result
   replaces the file. A dynamic port is reused too; if another process took it meanwhile, restart fails with
-  `CpaStartError` code `port-in-use` instead of changing `origin`. Concurrent `restart()` calls share one
-  operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A failed restart leaves
-  the handle stopped and cleans up a temporary state directory like `startServer` does.
-- `restart: { onUnexpectedExit, backoffMs, stableAfterMs, maxAttempts }` restarts CPA by itself after an
-  unexpected exit. It goes through the same path as `restart()`, so `origin`, `port`, the handle, the existing
-  config file and already-created `server.client()` instances keep working. `backoffMs` defaults to
-  `[500, 1000, 5000, 30_000]` and its last value repeats. A restarted process must stay up for `stableAfterMs`
-  (default 60 s) to count as healthy; one that exits before it keeps the backoff position, so a crash loop
-  escalates instead of restarting every 500 ms. `maxAttempts` consecutive restarts without a stable run stop the
-  server and settle `exited` (default `Infinity`); a manual `restart()` resets the count. `stop()` cancels a
+  `CpaStartError` code `port-in-use` instead of changing `origin`, unless `restart.allowNewPort` is set: then a
+  new free port is picked, `origin`, `baseUrl` and `port` move, the managed config's `server.port` follows, and
+  existing `server.client()` instances use the new origin. A fixed port is never changed. Concurrent `restart()`
+  calls share one operation, `stop()` during a restart aborts it, and `restart()` after `stop()` rejects. A
+  failed restart leaves the handle stopped and cleans up a temporary state directory like `startServer` does.
+- `restart: { onUnexpectedExit, onStartFailure, backoffMs, stableAfterMs, maxAttempts, allowNewPort }` restarts
+  CPA by itself after an unexpected exit. It goes through the same path as `restart()`, so `origin`, `port`, the
+  handle, the existing config file and already-created `server.client()` instances keep working. `backoffMs`
+  defaults to `[500, 1000, 5000, 30_000]` and its last value repeats. A restarted process must stay up for
+  `stableAfterMs` (default 60 s) to count as healthy; one that exits before it keeps the backoff position, so a
+  crash loop escalates instead of restarting every 500 ms. `maxAttempts` consecutive restarts without a stable
+  run stop the server and settle `exited` (default `Infinity`); a manual `restart()` resets the count.
+  `onStartFailure` applies the same backoff/attempt policy to failures of the first start. `stop()` cancels a
   pending wait, and `restart()` during one tries immediately. A port taken by another process makes that attempt
-  fail and retries after the next backoff instead of changing `origin`.
+  fail and retries after the next backoff, unless `allowNewPort` moves a dynamic port as described above.
 - `singleton: true` reuses one server per process for the same resolved `stateDir` (or absolute `configPath`),
   so a dev server that evaluates a module more than once cannot start CPA twice. Concurrent calls share the
   in-flight start and its promise; a handle that has not stopped yet is returned as-is, including while it is
@@ -103,10 +109,12 @@ await server.stop();
   unsubscribe function. An `exit` payload has `code`, `signal`, `recentLogs`, `willRestart` and `reason`:
   `'stop'` when `stop()` stopped the process, `'restart'` when a manual or automatic restart replaced it, and
   `'unexpected'` when the process exited by itself. `restart` and `restarted` carry `reason`
-  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (currently always
-  `false`); `restart-failed` has `error`, `attempt` and `willRetry`. A listener that throws is reported through
-  `process.emitWarning` and never disturbs the server. Pass `on` to `startServer` to subscribe before the first
-  process is watched; with `singleton: true` only the first call's listeners are registered.
+  (`'unexpected-exit' | 'manual'`) and `attempt`, and `restarted` also has `originChanged` (`true` when
+  `allowNewPort` moved the server); `restart-failed` has `error`, `attempt` and `willRetry`. A failed first
+  start retried by `onStartFailure` is also reported as `restart-failed`, with `attempt` counting failed start
+  attempts. A listener that throws is reported through `process.emitWarning` and never disturbs the server. Pass
+  `on` to `startServer` to subscribe before the first process is watched; with `singleton: true` only the first
+  call's listeners are registered.
 - `hooks.afterStart({ server, client, reason, requireClient })` runs after each process is ready: the first
   start and every restart, manual or automatic. `reason` is `'start'` or `'restart'`; `client` is
   `server.client()` when cpajs knows the plaintext management key and `undefined` otherwise. `startServer`

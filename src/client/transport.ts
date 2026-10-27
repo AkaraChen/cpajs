@@ -7,12 +7,17 @@ export type FetchLike = (input: Request) => Promise<Response>;
 export type QueryValue = string | number | boolean | null | undefined | readonly (string | number | boolean)[];
 export type Query = Readonly<Record<string, QueryValue>>;
 
+/** A server root, or a function that returns the current one (used by `server.client()` across restarts). */
+export type BaseUrl = string | URL | (() => string | URL);
+
 export interface ClientOptions {
   /**
    * Server root, e.g. `http://127.0.0.1:8317` or `https://example.com/cpa`.
    * A path prefix (reverse proxy) is kept; `/v8/management` is appended to it.
+   * A function is called for each request, so a client can follow a server that
+   * changes its dynamic port.
    */
-  baseUrl: string | URL;
+  baseUrl: BaseUrl;
   /** Management key (`management.secret-key` or `MANAGEMENT_PASSWORD`), not a model API key. */
   managementKey: string;
   /** Custom fetch. Defaults to the global `fetch`. */
@@ -87,8 +92,16 @@ function delay(ms: number): Promise<void> {
   });
 }
 
+function resolveBaseUrl(baseUrl: BaseUrl): URL {
+  const url = new URL(typeof baseUrl === 'function' ? baseUrl() : baseUrl);
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new TypeError(`baseUrl must be http(s), got ${url.protocol}`);
+  }
+  return url;
+}
+
 export class Transport {
-  readonly #baseUrl: URL;
+  readonly #baseUrl: BaseUrl;
   readonly #managementKey: string;
   readonly #fetch: FetchLike;
   readonly #headers: Headers;
@@ -98,10 +111,8 @@ export class Transport {
   constructor(options: ClientOptions) {
     if (!options.baseUrl) throw new TypeError('baseUrl is required.');
     if (!options.managementKey) throw new TypeError('managementKey is required.');
-    this.#baseUrl = new URL(options.baseUrl);
-    if (this.#baseUrl.protocol !== 'http:' && this.#baseUrl.protocol !== 'https:') {
-      throw new TypeError(`baseUrl must be http(s), got ${this.#baseUrl.protocol}`);
-    }
+    resolveBaseUrl(options.baseUrl);
+    this.#baseUrl = options.baseUrl;
     this.#managementKey = options.managementKey;
     const custom = options.fetch;
     this.#fetch = custom ? (request) => custom(request) : (request) => fetch(request);
@@ -111,11 +122,11 @@ export class Transport {
   }
 
   get baseUrl(): URL {
-    return new URL(this.#baseUrl);
+    return resolveBaseUrl(this.#baseUrl);
   }
 
   async request<T>(req: RawRequest): Promise<TransportResponse<T>> {
-    const url = managementUrl(this.#baseUrl, req.path, req.root);
+    const url = managementUrl(resolveBaseUrl(this.#baseUrl), req.path, req.root);
     appendQuery(url, req.query);
     const target = { method: req.method, url: url.toString() };
 
