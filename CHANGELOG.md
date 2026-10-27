@@ -4,7 +4,7 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
-## Unreleased
+## 0.1.0-rc.7
 
 ### Breaking
 
