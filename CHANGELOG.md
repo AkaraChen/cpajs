@@ -44,10 +44,6 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   JSON-serialisable value. Runtime behaviour is unchanged.
 - `CpaApiKeyProvider`, the set of keys under `api-keys`, for building `['api-keys', provider]` paths from a
   variable.
-- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
-  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
-- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
-  hard-coded target.
 - `exit` events now include `reason: 'stop' | 'restart' | 'unexpected'`: `stop` when `stop()` stopped the
   process, `restart` when a manual or automatic restart replaced it, and `unexpected` when the process exited
   by itself. `willRestart` is unchanged.
