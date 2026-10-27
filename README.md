@@ -203,7 +203,9 @@ await client.config.set('routing/retry/request-retry', 2); // value typed by pat
 // a 412 re-reads and retries, and returning undefined skips the write.
 await client.config.update('routing/strategy', (current) => current ?? 'fill-first');
 
-// Deep-compares each top-level section and PATCHes only the ones that differ.
+// Deep-compares each top-level section and replaces only the ones that differ.
+// A listed section is written wholesale, so nested keys absent from it are removed;
+// sections not listed are untouched.
 await client.config.reconcile({ routing: { strategy: 'fill-first' } });
 
 const { files } = await client.credentials.list();

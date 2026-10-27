@@ -55,7 +55,9 @@ times after 100/200/400 ms; writes do not retry, because other 500s are real fai
 
 `config.update` and `config.reconcile` compose these routes: they read (stripping the injected `auth_index`),
 write with `If-Match`, and re-read on 412. `reconcile` compares top-level sections with a deep equality and
-PATCHes only the changed ones.
+replaces only the changed ones wholesale with PUT `/config/<key>` (chaining the returned ETags), so nested
+keys absent from the target are removed. It never replaces the whole document, because `GET /config` strips
+TURN `username`/`credential`.
 
 Path rules: segments are dash-case YAML keys. List indices cannot be addressed, so lists are replaced whole.
 `%2F` is split, which means a key that contains `/` cannot be addressed. `encodePath` rejects such segments

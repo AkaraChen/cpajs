@@ -192,19 +192,29 @@ export class ConfigResource {
 
   async #reconcile(partial: CpaConfig, maxAttempts: number, options: RequestOptions): Promise<ConfigReconcileResult> {
     const target = withoutAuthIndex(partial);
+    // A target value of `undefined` is skipped, so an omitted value never deletes a section.
+    const keys = Object.keys(target).filter((key) => target[key as keyof CpaConfig] !== undefined);
+    const writtenKeys = new Set<string>();
     for (let attempt = 1; ; attempt++) {
       const read = await this.#read<CpaConfig>('/config', 'json', options);
       const current = withoutAuthIndex(read.data);
-      const changed = Object.keys(target).filter((key) => !deepEqual(current[key as keyof CpaConfig], target[key as keyof CpaConfig]));
-      if (changed.length === 0) return { written: false, changed, etag: read.etag };
-      const patch: Record<string, unknown> = {};
-      for (const key of changed) patch[key] = target[key as keyof CpaConfig];
+      const changed = keys.filter((key) => !deepEqual(current[key as keyof CpaConfig], target[key as keyof CpaConfig]));
+      if (changed.length === 0) {
+        return { written: writtenKeys.size > 0, changed: [...writtenKeys], etag: read.etag };
+      }
+      let etag = read.etag;
       try {
-        const written = await this.#write('PATCH', '/config', { json: patch }, {
-          ...options,
-          ...(read.etag === undefined ? {} : { ifMatch: read.etag }),
-        });
-        return { written: true, changed, etag: written.etag };
+        for (const key of changed) {
+          // Replace the top-level section wholesale. PATCH would merge and could never
+          // remove a nested key, so a target that drops one would never converge.
+          const written = await this.#write('PUT', nodePath(key), { json: target[key as keyof CpaConfig] }, {
+            ...options,
+            ...(etag === undefined ? {} : { ifMatch: etag }),
+          });
+          writtenKeys.add(key);
+          etag = written.etag;
+        }
+        return { written: true, changed: [...writtenKeys], etag };
       } catch (error) {
         if (attempt < maxAttempts && error instanceof CpaHttpError && error.status === 412) continue;
         throw error;
@@ -269,10 +279,14 @@ export class ConfigResource {
   }
 
   /**
-   * Writes only the top-level sections in `partial` whose stored value differs,
+   * Replaces each top-level section in `partial` whose stored value differs,
    * after a deep comparison that ignores the injected `auth_index` fields.
-   * Sections are written with PATCH semantics (objects merge, arrays and scalars
-   * replace) and share one `If-Match`; a 412 re-reads and retries.
+   * Each changed section is written wholesale with PUT `/config/<key>`, so
+   * nested keys absent from the target are removed. Sections not listed are
+   * left untouched, and a target value of `undefined` is skipped.
+   *
+   * The first write uses the read's ETag; each later write uses the previous
+   * write's ETag. A 412 at any point re-reads and recomputes from scratch.
    */
   reconcile(partial: CpaConfig, options: ConfigMutationOptions = {}): Promise<ConfigReconcileResult> {
     return this.#serialize('/config', () => this.#reconcile(partial, resolveMaxAttempts(options), requestOptions(options)));

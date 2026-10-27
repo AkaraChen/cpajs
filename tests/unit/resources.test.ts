@@ -207,45 +207,84 @@ describe('config', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('reconcile writes only changed top-level keys with one If-Match', async () => {
-    const { client, calls } = mockClient((req) =>
-      req.method === 'GET'
-        ? Response.json(
-            { 'config-version': 8, routing: { strategy: 'fill-first' }, access: { 'api-keys': ['old'] } },
-            { headers: { ETag: '"read"' } },
-          )
-        : Response.json(ok, { headers: { ETag: '"written"' } }),
-    );
-    await expect(
-      client.config.reconcile({
-        'config-version': 8,
-        routing: { strategy: 'fill-first' },
-        access: { 'api-keys': ['new'] },
-      }),
-    ).resolves.toEqual({ written: true, changed: ['access'], etag: '"written"' });
-    expect(calls.map((c) => c.method)).toEqual(['GET', 'PATCH']);
-    expect(calls[1]!.headers.get('if-match')).toBe('"read"');
-    expect(JSON.parse(calls[1]!.body)).toEqual({ access: { 'api-keys': ['new'] } });
+  it('reconcile replaces sections wholesale, removes nested keys and then converges', async () => {
+    let doc: CpaConfig = {
+      'config-version': 8,
+      'api-keys': {
+        claude: [{ name: 'a', keys: [{ 'api-key': 'k', auth_index: 'injected' }] }],
+        codex: [{ name: 'b', keys: [{ 'api-key': 'k2' }] }],
+      },
+    };
+    let version = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') return Response.json(structuredClone(doc), { headers: { ETag: `"v${version}"` } });
+      expect(req.method).toBe('PUT');
+      expect(req.url.pathname).toBe('/v8/management/config/api-keys');
+      doc = { ...doc, 'api-keys': JSON.parse(req.body) };
+      version++;
+      return Response.json(ok, { headers: { ETag: `"v${version}"` } });
+    });
+    const target: CpaConfig = { 'api-keys': { claude: [{ name: 'a', keys: [{ 'api-key': 'k' }] }] } };
+    await expect(client.config.reconcile(target)).resolves.toEqual({ written: true, changed: ['api-keys'], etag: '"v1"' });
+    expect(doc['api-keys']).toEqual(target['api-keys']);
+    expect(doc['api-keys']).not.toHaveProperty('codex');
+
+    await expect(client.config.reconcile(target)).resolves.toEqual({ written: false, changed: [], etag: '"v1"' });
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT', 'GET']);
   });
 
-  it('reconcile re-reads and retries on 412', async () => {
+  it('reconcile chains the ETag across two changed sections', async () => {
+    const doc = { 'config-version': 8, routing: { strategy: 'round-robin' }, access: { 'api-keys': ['old'] } };
+    let writes = 0;
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET') return Response.json(doc, { headers: { ETag: '"read"' } });
+      writes++;
+      return Response.json(ok, { headers: { ETag: writes === 1 ? '"one"' : '"two"' } });
+    });
+    await expect(
+      client.config.reconcile({ routing: { strategy: 'fill-first' }, access: { 'api-keys': ['new'] } }),
+    ).resolves.toEqual({ written: true, changed: ['routing', 'access'], etag: '"two"' });
+    expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'PUT /v8/management/config/routing',
+      'PUT /v8/management/config/access',
+    ]);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read"');
+    expect(calls[2]!.headers.get('if-match')).toBe('"one"');
+    expect(JSON.parse(calls[1]!.body)).toEqual({ strategy: 'fill-first' });
+    expect(JSON.parse(calls[2]!.body)).toEqual({ 'api-keys': ['new'] });
+  });
+
+  it('reconcile re-reads and recomputes when a later write gets 412', async () => {
+    const doc: CpaConfig = { 'config-version': 8, routing: { strategy: 'round-robin' }, access: { 'api-keys': ['old'] } };
     let reads = 0;
     let writes = 0;
-    const { client } = mockClient((req) => {
+    const { client, calls } = mockClient((req) => {
       if (req.method === 'GET') {
         reads++;
-        return Response.json({ routing: { strategy: 'round-robin' } }, { headers: { ETag: `"read-${reads}"` } });
+        return Response.json(structuredClone(doc), { headers: { ETag: `"read-${reads}"` } });
       }
       writes++;
-      if (writes === 1) return Response.json({ error: 'precondition_failed' }, { status: 412 });
-      return Response.json(ok, { headers: { ETag: '"written"' } });
+      if (writes === 2) return Response.json({ error: 'precondition_failed' }, { status: 412 });
+      const key = req.url.pathname.split('/').at(-1)!;
+      (doc as Record<string, unknown>)[key] = JSON.parse(req.body);
+      return Response.json(ok, { headers: { ETag: `"write-${writes}"` } });
     });
-    await expect(client.config.reconcile({ routing: { strategy: 'fill-first' } })).resolves.toEqual({
-      written: true,
-      changed: ['routing'],
-      etag: '"written"',
-    });
-    expect([reads, writes]).toEqual([2, 2]);
+    await expect(
+      client.config.reconcile({ routing: { strategy: 'fill-first' }, access: { 'api-keys': ['new'] } }),
+    ).resolves.toEqual({ written: true, changed: ['routing', 'access'], etag: '"write-3"' });
+    expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual([
+      'GET /v8/management/config',
+      'PUT /v8/management/config/routing',
+      'PUT /v8/management/config/access',
+      'GET /v8/management/config',
+      'PUT /v8/management/config/access',
+    ]);
+    expect(calls[1]!.headers.get('if-match')).toBe('"read-1"');
+    expect(calls[2]!.headers.get('if-match')).toBe('"write-1"');
+    expect(calls[4]!.headers.get('if-match')).toBe('"read-2"');
+    expect(doc.routing).toEqual({ strategy: 'fill-first' });
+    expect(doc.access).toEqual({ 'api-keys': ['new'] });
   });
 
   it('refuses an empty path for node operations', async () => {

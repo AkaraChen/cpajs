@@ -13,7 +13,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for
   the same path on one client instance run one at a time. A missing node passes `undefined` and is created.
 - `config.reconcile(partial, options?)` deep-compares each top-level section against the stored config,
-  ignoring `auth_index`, and PATCHes only the sections that differ with one `If-Match` and the same retry.
+  ignoring `auth_index`, and replaces only the sections that differ. Each changed section is written
+  wholesale with PUT `/config/<key>` (so nested keys absent from the target are removed) and ETags are
+  chained across writes; a 412 re-reads and recomputes. Sections not listed are untouched, and a target
+  value of `undefined` is skipped.
 - GET requests retry CPA's transient `500 invalid_config` (a read landing while `config.yaml` is rewritten
   non-atomically) up to three times after 100/200/400 ms. Writes never retry. Disable with
   `retryInvalidConfig: false` on `createClient`.
