@@ -44,7 +44,8 @@ describe('transport', () => {
   it('serialises JSON bodies, including strings and null', async () => {
     const { client, calls } = mockClient(() => Response.json({ status: 'ok', 'config-version': 8 }));
     await client.config.set('routing/strategy', 'fill-first');
-    await client.config.set(['routing', 'strategy'], null);
+    const path: readonly string[] = ['routing', 'strategy'];
+    await client.config.set(path, null);
     expect(calls[0]!.body).toBe('"fill-first"');
     expect(calls[0]!.contentType).toBe('application/json');
     expect(calls[1]!.body).toBe('null');

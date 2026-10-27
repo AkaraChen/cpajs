@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { CpaCredentialTokenError, CpaHttpError, CpaResponseError, CpaUpstreamError, type CpaConfig } from '../../src/client/index.ts';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import {
+  CpaCredentialTokenError,
+  CpaHttpError,
+  CpaReconcileError,
+  CpaResponseError,
+  CpaUpstreamError,
+  type CpaApiKeyProvider,
+  type CpaConfig,
+  type CredentialContent,
+} from '../../src/client/index.ts';
 import { attachmentFilename } from '../../src/client/resources/download.ts';
 import { mockClient } from './helpers.ts';
 
@@ -68,6 +77,51 @@ describe('config', () => {
       'routing/retry/request-retry',
       'routing',
     ]);
+  });
+
+  it('types tuple and union paths by the value at that path', async () => {
+    const { client } = mockClient(() => Response.json(ok));
+    type ApiKeys = NonNullable<CpaConfig['api-keys']>;
+    type Routing = NonNullable<CpaConfig['routing']>;
+
+    // A tuple path gets the same value type as its slash-separated form.
+    await client.config.set(['api-keys', 'gemini'], [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.patchPath(['routing', 'retry'], { 'request-retry': 2 });
+    await client.config.update(['routing', 'strategy'], (current) => {
+      expectTypeOf(current).toEqualTypeOf<Routing['strategy'] | undefined>();
+      return current;
+    });
+    const tuplePath = ['api-keys', 'claude'] as const;
+    await client.config.set(tuplePath, [{ keys: [{ 'api-key': 'k' }] }]);
+
+    // Template-literal unions take the union of the branches' value types.
+    const channel = 'gemini' as 'gemini' | 'claude';
+    await client.config.set(`api-keys/${channel}`, [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.update(`api-keys/${channel}`, (current) => {
+      expectTypeOf(current).toEqualTypeOf<ApiKeys['gemini' | 'claude'] | undefined>();
+      return current;
+    });
+
+    // Tuple unions resolve per branch too.
+    const provider = 'gemini' as CpaApiKeyProvider;
+    await client.config.set(['api-keys', provider], [{ keys: [{ 'api-key': 'k' }] }]);
+    await client.config.update(['api-keys', provider], (current) => {
+      expectTypeOf(current).toEqualTypeOf<ApiKeys[CpaApiKeyProvider] | undefined>();
+      return current;
+    });
+
+    // Broad strings and arrays still accept any JSON-serialisable value.
+    const dynamic: string = 'routing/strategy';
+    const dynamicProvider: string = 'gemini';
+    const broad: readonly string[] = ['api-keys', 'gemini'];
+    await client.config.set(dynamic, 1);
+    await client.config.set(`api-keys/${dynamicProvider}`, { anything: true });
+    await client.config.set(broad, [1, 2, 3]);
+
+    // @ts-expect-error a known tuple path takes its own value type
+    await client.config.set(['routing', 'retry', 'request-retry'], 'two');
+    // @ts-expect-error a union of known paths takes the union of their value types
+    await client.config.set(['api-keys', channel], 'not-a-group');
   });
 
   it('maps every route', async () => {
@@ -352,7 +406,7 @@ describe('credentials', () => {
       ],
     });
 
-    expect(result).toEqual({ uploaded: ['chat-b.json', 'chat-c.json'], deleted: ['chat-stale.json'], unchanged: ['chat-a.json'] });
+    expect(result).toEqual({ uploaded: ['chat-b.json', 'chat-c.json'], deleted: ['chat-stale.json'], unchanged: ['chat-a.json'], adopted: [] });
     expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual([
       'chat-a.json',
       'chat-b.json',
@@ -387,7 +441,7 @@ describe('credentials', () => {
       prune: false,
     });
 
-    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-a.json'] });
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-a.json'], adopted: [] });
     expect(calls.filter((c) => c.url.pathname.endsWith('/download')).map((c) => c.url.searchParams.get('name'))).toEqual(['chat-a.json']);
     expect(calls.filter((c) => c.method === 'DELETE')).toEqual([]);
   });
@@ -399,10 +453,145 @@ describe('credentials', () => {
         : Response.json({ observed_at: '', files: [{ name: 'other.json', source: 'file' }] }),
     );
 
-    await expect(
-      client.credentials.reconcile({ owner: 'chat', files: [{ name: 'other.json', content: { type: 'claude' }, revision: 'r2' }] }),
-    ).rejects.toThrow(/belongs to owner "other", not "chat"/);
+    const error = (await client.credentials
+      .reconcile({ owner: 'chat', files: [{ name: 'other.json', content: { type: 'claude' }, revision: 'r2' }] })
+      .catch((e: unknown) => e)) as CpaReconcileError;
+    expect(error).toBeInstanceOf(CpaReconcileError);
+    expect(error).toMatchObject({ code: 'owned-by-other', file: 'other.json' });
+    expect(error.message).toMatch(/belongs to owner "other", not "chat"/);
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([]);
+  });
+
+  it('refuses to overwrite an unmarked file by default', async () => {
+    const legacy = { type: 'claude', chat_seed: 'seed-token', email: 'legacy@example.com' };
+    const { client, calls } = mockClient((req) =>
+      req.url.pathname.endsWith('/download')
+        ? Response.json(legacy)
+        : Response.json({ observed_at: '', files: [{ name: 'chat-legacy.json', source: 'file' }] }),
+    );
+
+    const error = (await client.credentials
+      .reconcile({
+        owner: 'chat',
+        files: [{ name: 'chat-legacy.json', content: { type: 'claude', api_key: 'new' }, revision: 'r1' }],
+      })
+      .catch((e: unknown) => e)) as CpaReconcileError;
+
+    expect(error).toBeInstanceOf(CpaReconcileError);
+    expect(error).toMatchObject({ code: 'unmarked', file: 'chat-legacy.json' });
+    expect(error.message).toMatch(/pass adopt/);
+    expect(calls.filter((call) => call.method !== 'GET')).toEqual([]);
+  });
+
+  it('adopts an unmarked file in place and keeps its tokens', async () => {
+    const legacy = { type: 'claude', chat_seed: 'seed-token', email: 'legacy@example.com' };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({ observed_at: '', files: [{ name: 'chat-legacy.json', source: 'file' }] });
+      }
+      if (req.url.pathname.endsWith('/download')) return Response.json(legacy);
+      return Response.json({ status: 'ok' });
+    });
+    const seen: unknown[] = [];
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-legacy.json', content: { type: 'claude', api_key: 'new' }, revision: 'r1' }],
+      adopt: (name, body) => {
+        seen.push([name, body]);
+        return 'r1';
+      },
+    });
+
+    expect(seen).toEqual([['chat-legacy.json', legacy]]);
+    expect(result).toEqual({ uploaded: [], deleted: [], unchanged: ['chat-legacy.json'], adopted: ['chat-legacy.json'] });
+    const posts = calls.filter((call) => call.method === 'POST');
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0]!.body)).toEqual({ ...legacy, 'x-cpajs': { owner: 'chat', revision: 'r1' } });
+    expect(legacy).toEqual({ type: 'claude', chat_seed: 'seed-token', email: 'legacy@example.com' });
+  });
+
+  it('uploads the desired content after adoption when the revision differs', async () => {
+    const legacy = { type: 'claude', chat_seed: 'seed-token' };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({ observed_at: '', files: [{ name: 'chat-legacy.json', source: 'file' }] });
+      }
+      if (req.url.pathname.endsWith('/download')) return Response.json(legacy);
+      return Response.json({ status: 'ok' });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [{ name: 'chat-legacy.json', content: { type: 'claude', api_key: 'new' }, revision: 'r2' }],
+      adopt: () => 'legacy-r1',
+    });
+
+    expect(result).toEqual({ uploaded: ['chat-legacy.json'], deleted: [], unchanged: [], adopted: ['chat-legacy.json'] });
+    const posts = calls.filter((call) => call.method === 'POST');
+    expect(posts.map((call) => JSON.parse(call.body))).toEqual([
+      { ...legacy, 'x-cpajs': { owner: 'chat', revision: 'legacy-r1' } },
+      { type: 'claude', api_key: 'new', 'x-cpajs': { owner: 'chat', revision: 'r2' } },
+    ]);
+  });
+
+  it('adopts an unmarked file in the prune range and then deletes it', async () => {
+    const legacy = { type: 'claude', chat_seed: 'seed-token' };
+    const { client, calls } = mockClient((req) => {
+      if (req.method === 'GET' && req.url.pathname === '/v8/management/credentials') {
+        return Response.json({ observed_at: '', files: [{ name: 'chat-old.json', source: 'file' }] });
+      }
+      if (req.url.pathname.endsWith('/download')) return Response.json(legacy);
+      return Response.json({ status: 'ok' });
+    });
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [],
+      adopt: (name) => (name === 'chat-old.json' ? 'r1' : undefined),
+    });
+
+    expect(result).toEqual({ uploaded: [], deleted: ['chat-old.json'], unchanged: [], adopted: ['chat-old.json'] });
+    expect(calls.map((call) => `${call.method} ${call.url.search}`)).toEqual([
+      'GET ',
+      'GET ?name=chat-old.json',
+      'POST ?name=chat-old.json',
+      'DELETE ?name=chat-old.json',
+    ]);
+  });
+
+  it('accepts JSON text and raw bytes as reconcile content', async () => {
+    const { client, calls } = mockClient((req) =>
+      req.method === 'GET' && req.url.pathname === '/v8/management/credentials'
+        ? Response.json({ observed_at: '', files: [] })
+        : Response.json({ status: 'ok' }),
+    );
+
+    const result = await client.credentials.reconcile({
+      owner: 'chat',
+      files: [
+        { name: 'text.json', content: '{"type":"claude","api_key":"text"}', revision: 'r1' },
+        { name: 'bytes.json', content: new TextEncoder().encode('{"type":"codex","api_key":"bytes"}'), revision: 'r1' },
+      ],
+    });
+
+    expect(result).toEqual({ uploaded: ['text.json', 'bytes.json'], deleted: [], unchanged: [], adopted: [] });
+    expect(calls.filter((call) => call.method === 'POST').map((call) => JSON.parse(call.body))).toEqual([
+      { type: 'claude', api_key: 'text', 'x-cpajs': { owner: 'chat', revision: 'r1' } },
+      { type: 'codex', api_key: 'bytes', 'x-cpajs': { owner: 'chat', revision: 'r1' } },
+    ]);
+  });
+
+  it('rejects content that does not resolve to a JSON object before any request', async () => {
+    const { client, calls } = mockClient();
+    const file = (content: CredentialContent) => ({ name: 'bad.json', content, revision: 'r1' });
+
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file('[1,2]')] })).rejects.toThrow(TypeError);
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file('not json')] })).rejects.toThrow(
+      /"bad.json" must be a JSON object/,
+    );
+    await expect(client.credentials.reconcile({ owner: 'chat', files: [file(new TextEncoder().encode('null'))] })).rejects.toThrow(TypeError);
+    expect(calls).toEqual([]);
   });
 
   it('rejects duplicate file names before making requests', async () => {
