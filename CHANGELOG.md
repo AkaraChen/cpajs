@@ -4,6 +4,43 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Breaking
+
+- `credentials.reconcile` no longer overwrites an existing same-name file that has no `x-cpajs` marker.
+  It throws `CpaReconcileError` with code `unmarked` (files owned by another caller now use the same class with
+  code `owned-by-other`), so a legacy `chat-openai-*.json` that CPA has already refreshed is not replaced with a
+  seed token. Pass the new `adopt(name, body)` callback to claim such files in place: return a revision to keep
+  the stored content (tokens included) and write only the marker, or `undefined` to leave the file unmanaged.
+  The adopted revision then follows the normal comparison — equal leaves the file alone, different uploads the
+  desired content. `adopt` is also called for unmarked files in the prune range, so a recognized legacy file can
+  be claimed and deleted. Migration from a helper that stamped legacy fields itself:
+
+  ```ts
+  const revisions = new Map(files.map((file) => [file.name, file.revision]));
+  await client.credentials.reconcile({
+    owner: 'chat',
+    files,
+    // Returning the desired revision keeps the token CPA already rotated;
+    // returning a different revision uploads the desired content instead.
+    adopt: (name, body) => (name.startsWith('chat-openai-') && body.chat_seed !== undefined ? revisions.get(name) : undefined),
+  });
+  ```
+
+### Added
+
+- `credentials.reconcile` returns `adopted: string[]` alongside `uploaded`, `deleted` and `unchanged`. `adopted`
+  lists files claimed through `adopt`, which may also appear in one of the other lists.
+- `files[].content` in `credentials.reconcile` accepts `CredentialContent` — a parsed object, JSON text, a
+  `Blob`, or raw bytes — like `credentials.upload`.
+
+### Fixed
+
+- `credentials.reconcile` no longer expands JSON string or byte content into `{"0":"{","1":"\n",…}`, which
+  produced a file CPA could not read and made the account disappear from its model list. Non-object content is
+  parsed and rejected with a `TypeError` before any request is sent.
+
 ## 0.1.0-rc.5
 
 ### Added
