@@ -12,6 +12,10 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   `@cpajs/<target>@<version>` appears in its `versions`, requiring two consecutive successful polls per
   package. Requests bypass the registry CDN cache, a timeout (10 minutes by default, `--timeout` in seconds)
   fails the run, and `--version` plus `--interval` allow local dry runs and shorter polls.
+- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
+  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
+- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
+  hard-coded target.
 
 ### Changed
 
@@ -19,18 +23,9 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   publishes `@cpajs/cpa`. A platform package can still return a cached 404 minutes after its publish;
   publishing the main package during that window lets package managers silently skip the optional
   dependency and write an incomplete lockfile.
-### Changed
-
 - `requests.apiCallJson` throws `CpaResponseError` (with the upstream `status` and raw `body`) when a 2xx body
   is not JSON, instead of returning the text as `data`. A JSON endpoint answering with text is a failure, and a
   string result was easy to mistake for an empty response. Use `apiCall` for text upstreams.
-
-### Added
-
-- `logs.unleveled: 'all' | 'stderr' | 'none'` chooses which lines without a parseable level still reach `onLog`
-  when `minLevel` is set. Default `'all'` (unchanged); `'stderr'` keeps Go panics but drops CPA's stdout banner.
-- README: the Nitro example derives the platform package from `resolveBinary().packageName` instead of a
-  hard-coded target.
 
 ## 0.1.0-rc.5
 
