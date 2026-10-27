@@ -13,6 +13,8 @@
 //   FAKE_ECHO=<text>        print <text> on stdout and stderr at startup
 //   FAKE_CRLF=1             print a CRLF-terminated line on stdout and stderr
 //   FAKE_LONG_LINE=<n>      print one stdout line of <n> 'x' characters, then a short marker line
+//   FAKE_LOG_SAMPLES=1      print CPA-formatted lines at every level, with and without a request
+//                           id, plus one unformatted line
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -40,6 +42,17 @@ if (process.env.FAKE_LONG_LINE) {
 if (process.env.FAKE_CRLF) {
   process.stdout.write('crlf stdout line\r\n');
   process.stderr.write('crlf stderr line\r\n');
+}
+if (process.env.FAKE_LOG_SAMPLES) {
+  const samples = [
+    '[2026-10-27 03:17:59] [--------] [debug] [sample.go:1] sample debug',
+    '[2026-10-27 03:17:59] [1b214a39] [info ] [sample.go:2] sample info',
+    '[2026-10-27 03:17:59] [--------] [warn ] [sample.go:3] sample warn',
+    '[2026-10-27 03:17:59] [7fda6985] [error] [sample.go:4] sample error',
+    '[2026-10-27 03:17:59] [--------] [fatal] [sample.go:5] sample fatal',
+    'raw sample line',
+  ];
+  process.stdout.write(`${samples.join('\n')}\n`);
 }
 const runs = process.env.FAKE_COUNTER && existsSync(process.env.FAKE_COUNTER) ? Number(readFileSync(process.env.FAKE_COUNTER, 'utf8')) + 1 : 1;
 if (process.env.FAKE_COUNTER) writeFileSync(process.env.FAKE_COUNTER, String(runs));

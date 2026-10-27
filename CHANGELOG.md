@@ -4,6 +4,15 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+### Added
+
+- Structured log lines: `LogLine` now carries `level`, `requestId` and `message` when CPA's logrus format could
+  be parsed, while `line` and `stream` stay unchanged. Pass `logs: { minLevel: 'warn' }` to drop lower-severity
+  lines from `onLog` instead of re-parsing text; `recentLogs` still keeps every line, and lines without a parsed
+  level always pass. No new runtime dependencies.
+
 ## 0.1.0-rc.4
 
 ### Added

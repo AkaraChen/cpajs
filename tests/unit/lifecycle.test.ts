@@ -188,6 +188,32 @@ describe('server lifecycle (fake binary)', () => {
     expect(lines.some((l) => l.line.includes('\r'))).toBe(false);
   });
 
+  it('parses CPA log lines for recentLogs and filters onLog with logs.minLevel', async () => {
+    const lines: LogLine[] = [];
+    const server = await startFake({ env: { FAKE_LOG_SAMPLES: '1' }, logs: { minLevel: 'warn' }, onLog: (l) => lines.push(l) });
+    await server.stop();
+
+    const delivered = lines.filter((l) => l.message?.startsWith('sample ') || l.line === 'raw sample line');
+    expect(delivered.map((l) => l.message ?? l.line)).toEqual(['sample warn', 'sample error', 'sample fatal', 'raw sample line']);
+
+    const info = server.recentLogs.find((l) => l.message === 'sample info');
+    expect(info).toMatchObject({
+      stream: 'stdout',
+      level: 'info',
+      requestId: '1b214a39',
+      message: 'sample info',
+      line: `[2026-10-27 03:17:59] [1b214a39] [info ] [sample.go:2] sample info`,
+    });
+    expect(server.recentLogs.find((l) => l.message === 'sample debug')?.level).toBe('debug');
+    expect(server.recentLogs.find((l) => l.line === 'raw sample line')).toEqual({ stream: 'stdout', line: 'raw sample line' });
+  });
+
+  it('rejects an invalid logs.minLevel', async () => {
+    const error = await startError(startFake({ stateDir: dir, logs: { minLevel: 'verbose' } as never }));
+    expect(error.code).toBe('invalid-options');
+    expect(error.message).toContain('logs.minLevel');
+  });
+
   it('stops a process that does not handle the termination signal', async () => {
     const server = await startFake({ env: { FAKE_IGNORE_TERM: '1' } });
     const started = Date.now();
