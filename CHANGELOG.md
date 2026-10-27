@@ -8,6 +8,15 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 
 ### Added
 
+- `credentials.listAll(options?)` returns credential files and config `api-keys` entries together, each with
+  its `auth_index`, `provider`, `source: 'file' | 'config'`, file `name` or config group `label`, `disabled`
+  and the raw entry. Config keys come from `GET /config` because `/credentials` only exposes a runtime view of
+  them; config-key cooldown state is not included.
+- `credentials.modelsFor(selector, { details? })` lists the models one file or config key can serve. Config
+  keys follow upstream resolution: a key's `models` replaces the channel defaults, `alias` becomes the
+  client-facing ID, a key's `excluded-models` overrides its group's and supports `*` wildcards, and
+  `display-name` / `max-context-length` / `thinking` override the defaults. With `details: true` the channel's
+  `GET /routing/model-definitions/:channel` is merged into each model, requesting each channel once per call.
 - `config.update(path, fn, options?)` reads one node, removes the read-only `auth_index` fields that GET
   injects, passes the value to `fn`, and writes the result back with `If-Match`. A 412 re-reads and calls `fn`
   again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for

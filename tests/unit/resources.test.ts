@@ -412,6 +412,262 @@ describe('credentials', () => {
     expect(calls).toEqual([]);
   });
 
+  it('lists file and config credentials together', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/credentials') {
+        return Response.json({
+          observed_at: '',
+          files: [
+            { name: 'claude-a.json', auth_index: 'file-1', provider: 'claude', type: 'claude', label: 'a@example.com', disabled: false, source: 'file' },
+            { name: 'runtime', auth_index: 'mem-1', provider: 'claude', type: 'claude', label: '', disabled: false, source: 'memory' },
+          ],
+        });
+      }
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [{ name: 'team', keys: [{ 'api-key': 'k', auth_index: 'cfg-claude', models: [{ name: 'claude-sonnet', alias: 'sonnet' }] }] }],
+            codex: [{ name: 'codex group', 'base-url': 'https://codex.test', keys: [{ 'api-key': 'k2' }] }],
+            'openai-compatibility': [
+              {
+                name: 'fake',
+                'base-url': 'https://fake.test/v1',
+                keys: [],
+                auth_index: 'cfg-openai',
+                disabled: true,
+                models: [{ name: 'fake-model', alias: 'fake' }],
+              },
+            ],
+          },
+        });
+      }
+      return Response.json({});
+    });
+
+    const entries = await client.credentials.listAll();
+    expect(entries).toHaveLength(4);
+    expect(entries[0]).toMatchObject({ source: 'file', name: 'claude-a.json', auth_index: 'file-1', provider: 'claude' });
+    expect(entries[0]!.raw).toMatchObject({ name: 'claude-a.json', source: 'file' });
+    expect(entries[1]).toMatchObject({ source: 'config', provider: 'claude', label: 'team', auth_index: 'cfg-claude', disabled: false });
+    expect(entries[1]!.name).toBeUndefined();
+    expect(entries[2]).toMatchObject({ source: 'config', provider: 'codex', label: 'codex group', auth_index: '', disabled: false });
+    expect(entries[3]).toMatchObject({ source: 'config', provider: 'fake', label: 'fake', auth_index: 'cfg-openai', disabled: true });
+    expect(entries[3]!.raw).toMatchObject({ name: 'fake' });
+    expect(calls.map((c) => `${c.method} ${c.url.pathname}`)).toEqual(['GET /v8/management/credentials', 'GET /v8/management/config']);
+  });
+
+  it('resolves config models with alias, key exclusions and overrides', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [
+              {
+                name: 'team',
+                'excluded-models': ['*'],
+                keys: [
+                  {
+                    'api-key': 'k',
+                    auth_index: 'cfg-claude',
+                    'excluded-models': ['op*'],
+                    models: [
+                      { name: 'claude-sonnet-4', alias: 'sonnet', 'display-name': 'Sonnet', 'max-context-length': 200_000 },
+                      { name: 'claude-opus-4', alias: 'opus' },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const models = await client.credentials.modelsFor({ auth_index: 'cfg-claude' });
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      id: 'sonnet',
+      display_name: 'Sonnet',
+      owned_by: 'anthropic',
+      type: 'claude',
+      context_length: 200_000,
+    });
+    expect(calls.map((c) => c.url.pathname)).toEqual(['/v8/management/credentials', '/v8/management/config']);
+  });
+
+  it('merges config model details by upstream name and requests a channel once', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            claude: [
+              {
+                'base-url': 'https://claude.test',
+                keys: [
+                  {
+                    'api-key': 'k',
+                    auth_index: 'cfg-claude',
+                    models: [{ name: 'claude-upstream', alias: 'friendly', 'display-name': 'Friendly' }],
+                  },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/claude') {
+        return Response.json({
+          channel: 'claude',
+          models: [
+            {
+              id: 'claude-upstream',
+              object: 'model',
+              created: 1,
+              owned_by: 'anthropic',
+              type: 'claude',
+              display_name: 'Upstream Name',
+              context_length: 500_000,
+              max_completion_tokens: 64_000,
+            },
+          ],
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const models = await client.credentials.modelsFor({ auth_index: 'cfg-claude' }, { details: true });
+    expect(models).toEqual([
+      expect.objectContaining({
+        id: 'friendly',
+        display_name: 'Friendly',
+        context_length: 500_000,
+        max_completion_tokens: 64_000,
+        owned_by: 'anthropic',
+        type: 'claude',
+      }),
+    ]);
+    expect(calls.filter((c) => c.url.pathname.includes('/model-definitions/'))).toHaveLength(1);
+  });
+
+  it('uses channel defaults for config keys and applies group exclusions', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            codex: [
+              {
+                'base-url': 'https://codex.test',
+                'excluded-models': ['*codex*'],
+                keys: [{ 'api-key': 'k', auth_index: 'cfg-codex' }],
+              },
+            ],
+          },
+        });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/codex') {
+        return Response.json({
+          channel: 'codex',
+          models: [
+            { id: 'gpt-5', object: 'model', created: 1, owned_by: 'openai', type: 'openai', display_name: 'GPT-5' },
+            { id: 'gpt-5-codex', object: 'model', created: 1, owned_by: 'openai', type: 'openai', display_name: 'GPT-5 Codex' },
+            { id: 'gpt-5-mini', object: 'model', created: 1, owned_by: 'openai', type: 'openai', display_name: 'GPT-5 mini' },
+          ],
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const models = await client.credentials.modelsFor({ auth_index: 'cfg-codex' }, { details: true });
+    expect(models.map((model) => model.id)).toEqual(['gpt-5', 'gpt-5-mini']);
+    expect(calls.filter((c) => c.url.pathname.includes('/model-definitions/'))).toHaveLength(1);
+  });
+
+  it('returns configured models for OpenAI-compatible config keys', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/config') {
+        return Response.json({
+          'config-version': 8,
+          'api-keys': {
+            'openai-compatibility': [
+              {
+                name: 'fake',
+                'base-url': 'https://fake.test/v1',
+                keys: [{ 'api-key': 'k', auth_index: 'cfg-openai' }],
+                models: [{ name: 'fake-model', alias: 'fake', 'display-name': 'Fake', 'max-context-length': 1000, image: true }],
+              },
+            ],
+          },
+        });
+      }
+      return Response.json({ observed_at: '', files: [] });
+    });
+
+    const models = await client.credentials.modelsFor({ auth_index: 'cfg-openai' });
+    expect(models).toEqual([
+      expect.objectContaining({ id: 'fake', display_name: 'Fake', type: 'openai-image', owned_by: 'fake', context_length: 1000 }),
+    ]);
+    expect(calls.some((c) => c.url.pathname.includes('/model-definitions/'))).toBe(false);
+  });
+
+  it('enriches file credential models from model definitions only when asked', async () => {
+    const { client, calls } = mockClient((req) => {
+      if (req.url.pathname === '/v8/management/credentials/models') {
+        return Response.json({ models: [{ id: 'claude-sonnet', display_name: 'Custom Sonnet' }, { id: 'custom-only' }] });
+      }
+      if (req.url.pathname === '/v8/management/routing/model-definitions/claude') {
+        return Response.json({
+          channel: 'claude',
+          models: [
+            {
+              id: 'claude-sonnet',
+              object: 'model',
+              created: 1,
+              owned_by: 'anthropic',
+              type: 'claude',
+              display_name: 'Static Sonnet',
+              context_length: 200_000,
+            },
+          ],
+        });
+      }
+      return Response.json({
+        observed_at: '',
+        files: [{ name: 'a.json', auth_index: 'file-1', provider: 'claude', type: 'claude', disabled: false, source: 'file' }],
+      });
+    });
+
+    const basic = await client.credentials.modelsFor({ name: 'a.json' });
+    expect(basic).toEqual([
+      { id: 'claude-sonnet', object: 'model', created: 0, owned_by: 'claude', type: 'claude', display_name: 'Custom Sonnet' },
+      { id: 'custom-only', object: 'model', created: 0, owned_by: 'claude', type: 'claude' },
+    ]);
+    expect(calls.some((c) => c.url.pathname.includes('/model-definitions/'))).toBe(false);
+
+    const detailed = await client.credentials.modelsFor({ name: 'a.json' }, { details: true });
+    expect(detailed[0]).toMatchObject({
+      id: 'claude-sonnet',
+      display_name: 'Custom Sonnet',
+      context_length: 200_000,
+      owned_by: 'anthropic',
+      type: 'claude',
+    });
+    expect(detailed[1]).toMatchObject({ id: 'custom-only', owned_by: 'claude', type: 'claude' });
+    expect(calls.filter((c) => c.url.pathname.includes('/model-definitions/'))).toHaveLength(1);
+  });
+
+  it('reports a missing credential for modelsFor', async () => {
+    const { client } = mockClient((req) =>
+      req.url.pathname === '/v8/management/config' ? Response.json({ 'config-version': 8 }) : Response.json({ observed_at: '', files: [] }),
+    );
+    await expect(client.credentials.modelsFor({ auth_index: 'missing' })).rejects.toThrow(/auth_index "missing" was not found/);
+    await expect(client.credentials.modelsFor({ name: 'missing.json' })).rejects.toThrow(/Credential "missing.json" was not found/);
+  });
+
   it('maps the remaining routes', async () => {
     const { client, calls } = mockClient((req) =>
       req.url.pathname.endsWith('/download') ? new Response('{"type":"codex"}', { headers: { 'Content-Type': 'application/json' } }) : Response.json({ status: 'ok' }),
