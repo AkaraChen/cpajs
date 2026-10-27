@@ -21,6 +21,12 @@ export interface ClientOptions {
   headers?: HeadersInit;
   /** Default per-request timeout in ms. `0` or omitted disables it. */
   timeoutMs?: number;
+  /**
+   * Retry GET requests that fail with CPA's transient `500 invalid_config`
+   * (a config read landed while `config.yaml` was being rewritten). Defaults to
+   * `true`: up to three retries after 100, 200 and 400 ms. Writes never retry.
+   */
+  retryInvalidConfig?: boolean;
 }
 
 /** Per-call options accepted by every client method. */
@@ -75,12 +81,19 @@ export function managementUrl(baseUrl: string | URL, path: string, root = false)
   return url;
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export class Transport {
   readonly #baseUrl: URL;
   readonly #managementKey: string;
   readonly #fetch: FetchLike;
   readonly #headers: Headers;
   readonly #timeoutMs: number;
+  readonly #retryInvalidConfig: boolean;
 
   constructor(options: ClientOptions) {
     if (!options.baseUrl) throw new TypeError('baseUrl is required.');
@@ -94,6 +107,7 @@ export class Transport {
     this.#fetch = custom ? (request) => custom(request) : (request) => fetch(request);
     this.#headers = new Headers(options.headers);
     this.#timeoutMs = options.timeoutMs ?? 0;
+    this.#retryInvalidConfig = options.retryInvalidConfig ?? true;
   }
 
   get baseUrl(): URL {
@@ -163,19 +177,26 @@ export class Transport {
     if (body !== undefined) init.body = body;
 
     const responseType = req.responseType ?? 'json';
+    // A config read can land while CPA rewrites config.yaml non-atomically. Retry
+    // only that transient 500, and only for GET: writes are not idempotent here.
+    const retries = this.#retryInvalidConfig && req.method === 'GET' ? 3 : 0;
     // Set once a Response is handed to the caller, who then owns reading its body.
     let handedOff = false;
     try {
       let response: Response;
-      try {
-        response = await guard(this.#fetch(new Request(url, init)));
-      } catch (error) {
-        throw error instanceof CpaAbortError || error instanceof CpaTimeoutError ? error : classify(error);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          response = await guard(this.#fetch(new Request(url, init)));
+        } catch (error) {
+          throw error instanceof CpaAbortError || error instanceof CpaTimeoutError ? error : classify(error);
+        }
+        if (response.ok) break;
+        const httpError = new CpaHttpError(target, response, await guard(response.text()));
+        const transient = httpError.status === 500 && httpError.errorCode === 'invalid_config';
+        if (!transient || attempt >= retries) throw httpError;
+        await guard(delay(100 * 2 ** attempt));
       }
 
-      if (!response.ok) {
-        throw new CpaHttpError(target, response, await guard(response.text()));
-      }
       if (responseType === 'response') {
         handedOff = true;
         return { data: response as T, status: response.status, headers: response.headers };

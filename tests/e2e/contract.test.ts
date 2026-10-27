@@ -9,7 +9,7 @@ import { crc32 } from 'node:zlib';
 import { compareSync } from 'bcryptjs';
 import { parse, stringify } from 'yaml';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CpaHttpError, createClient, type CpaClient } from '../../src/client/index.ts';
+import { CpaCredentialTokenError, CpaHttpError, CpaUpstreamError, createClient, type CpaClient } from '../../src/client/index.ts';
 import { CPA_RELEASE, startServer, type CpaServer } from '../../src/server/index.ts';
 import { findFreePort } from '../../src/server/readiness.ts';
 import { eventually, findBinary, startFakeUpstream, type FakeUpstream } from './helpers.ts';
@@ -158,6 +158,33 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       const error = (await client.config.set('routing/strategy', 'fill-first', { ifMatch: etag! }).catch((e: unknown) => e)) as CpaHttpError;
       expect(error.status).toBe(412);
       expect(error.errorCode).toBe('precondition_failed');
+    });
+
+    it('updates a node with If-Match and reconciles changed sections wholesale', async () => {
+      const apiKeys = await client.config.getPath('api-keys');
+      expect(JSON.stringify(apiKeys.data)).toContain('auth_index');
+
+      // Writing the read value back succeeds only because update strips auth_index.
+      const updated = await client.config.update('api-keys', (current) => current);
+      expect(updated.written).toBe(true);
+      expect(updated.etag).toMatch(/^"[0-9a-f]{64}"$/);
+
+      const current = await client.config.get();
+      await expect(client.config.reconcile(current.data)).resolves.toEqual({ written: false, changed: [], etag: current.etag });
+
+      const changed = await client.config.reconcile({ routing: { strategy: 'fill-first', 'session-affinity-ttl': '1h' } });
+      expect(changed.written).toBe(true);
+      expect(changed.changed).toEqual(['routing']);
+      expect((await client.config.getPath('routing/session-affinity-ttl')).data).toBe('1h');
+
+      // Sections are replaced wholesale: dropping the key removes it, and the next run converges.
+      const removed = await client.config.reconcile({ routing: { strategy: 'fill-first' } });
+      expect(removed.changed).toEqual(['routing']);
+      await expect(client.config.getPath('routing/session-affinity-ttl')).rejects.toMatchObject({ status: 404 });
+      await expect(client.config.reconcile({ routing: { strategy: 'fill-first' } })).resolves.toMatchObject({
+        written: false,
+        changed: [],
+      });
     });
 
     it('rejects invalid documents with the native error', async () => {
@@ -309,6 +336,43 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(missing.status).toBe(404);
       expect(missing.errorCode).toBe('auth file not found');
     });
+
+    it('reconciles by owner and revision across a CPA rewrite', async () => {
+      const owner = 'e2e-reconcile';
+      const files = [
+        { name: 'e2e-reconcile-a.json', content: { type: 'claude', email: 'reconcile-a@example.com', api_key: 'sk-a' }, revision: 'r1' },
+        { name: 'e2e-reconcile-b.json', content: { type: 'claude', email: 'reconcile-b@example.com', api_key: 'sk-b' }, revision: 'r1' },
+      ];
+      try {
+        await expect(client.credentials.reconcile({ owner, files })).resolves.toEqual({
+          uploaded: ['e2e-reconcile-a.json', 'e2e-reconcile-b.json'],
+          deleted: [],
+          unchanged: [],
+        });
+        await client.credentials.upload({
+          name: 'e2e-reconcile-other.json',
+          content: { type: 'claude', email: 'other@example.com', api_key: 'sk-other', 'x-cpajs': { owner: 'someone-else', revision: 'r1' } },
+        });
+
+        // A management write makes CPA rewrite the file. The unknown marker must survive.
+        await client.credentials.patchFields({ name: 'e2e-reconcile-a.json', priority: 9 });
+        const rewritten = JSON.parse(await (await client.credentials.download('e2e-reconcile-a.json')).text()) as Record<string, unknown>;
+        expect(rewritten['x-cpajs']).toEqual({ owner, revision: 'r1' });
+
+        await expect(
+          client.credentials.reconcile({ owner, files: [files[0]!, { ...files[1]!, revision: 'r2' }] }),
+        ).resolves.toEqual({ uploaded: ['e2e-reconcile-b.json'], deleted: [], unchanged: ['e2e-reconcile-a.json'] });
+
+        await expect(client.credentials.reconcile({ owner, files: [files[0]!] })).resolves.toEqual({
+          uploaded: [],
+          deleted: ['e2e-reconcile-b.json'],
+          unchanged: ['e2e-reconcile-a.json'],
+        });
+        expect(await client.credentials.get('e2e-reconcile-other.json')).toBeDefined();
+      } finally {
+        await client.credentials.delete(['e2e-reconcile-a.json', 'e2e-reconcile-b.json', 'e2e-reconcile-other.json']).catch(() => {});
+      }
+    });
   });
 
   describe('oauth', () => {
@@ -431,6 +495,27 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       expect(res.status_code).toBe(201);
       expect(res.header['X-Echo']).toEqual(['yes']);
       expect(JSON.parse(res.body)).toEqual({ method: 'POST', auth: 'Bearer abc', body: '{"x":1}' });
+
+      const parsed = await client.requests.apiCallJson<{ method: string; auth: string; body: string }>({
+        method: 'post',
+        url: `${upstream.url}/echo`,
+        header: { Authorization: 'Bearer abc' },
+        data: '{"x":1}',
+      });
+      expect(parsed).toMatchObject({ status: 201, data: { method: 'POST', auth: 'Bearer abc', body: '{"x":1}' } });
+
+      const missingToken = (await client.requests
+        .apiCallJson({ auth_index: '0000000000000000', method: 'GET', url: `${upstream.url}/echo`, header: { Authorization: 'Bearer $TOKEN$' } })
+        .catch((e: unknown) => e)) as CpaCredentialTokenError;
+      expect(missingToken).toBeInstanceOf(CpaCredentialTokenError);
+      expect(missingToken.status).toBe(400);
+      expect(missingToken.errorCode).toBe('auth credential not found for auth_index');
+
+      const upstreamError = (await client.requests
+        .apiCallJson({ method: 'GET', url: `${upstream.url}/missing` })
+        .catch((e: unknown) => e)) as CpaUpstreamError;
+      expect(upstreamError).toBeInstanceOf(CpaUpstreamError);
+      expect(upstreamError.status).toBe(404);
     });
 
     it('lists plugins', async () => {

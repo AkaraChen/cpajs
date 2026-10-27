@@ -53,6 +53,46 @@ export class CpaHttpError extends CpaClientError {
   }
 }
 
+/**
+ * The upstream call made through `requests.apiCallJson` returned a non-2xx status.
+ *
+ * `headers` and `body` are the upstream response's; `body` is parsed when it is
+ * JSON, the raw text when it is not, and `undefined` when it is empty.
+ */
+export class CpaUpstreamError extends CpaClientError {
+  override readonly name = 'CpaUpstreamError';
+  readonly status: number;
+  readonly headers: Record<string, string[]>;
+  readonly body: unknown;
+
+  constructor(request: { method: string; url: string }, response: { status: number; headers: Record<string, string[]>; body: string }) {
+    const body = parseApiCallBody(response.body);
+    const detail = describeErrorBody(body);
+    super(`${request.method} ${request.url} failed with upstream ${response.status}${detail ? `: ${detail}` : ''}`, request);
+    this.status = response.status;
+    this.headers = response.headers;
+    this.body = body;
+  }
+}
+
+/**
+ * CPA answered 400 because it could not resolve the credential token behind
+ * `$TOKEN$`. `errorCode` is CPA's error, e.g. `"auth token not found"`;
+ * `cause` is the original `CpaHttpError`.
+ */
+export class CpaCredentialTokenError extends CpaClientError {
+  override readonly name = 'CpaCredentialTokenError';
+  readonly status: number;
+  readonly errorCode: string;
+
+  constructor(error: CpaHttpError) {
+    const code = error.errorCode ?? 'unknown error';
+    super(`${error.method} ${error.url} could not resolve a credential token: ${code}`, error, { cause: error });
+    this.status = error.status;
+    this.errorCode = code;
+  }
+}
+
 /** The request could not be sent or the response could not be read. */
 export class CpaNetworkError extends CpaClientError {
   override readonly name = 'CpaNetworkError';
@@ -93,6 +133,16 @@ function parseJsonOrUndefined(text: string): unknown {
     return JSON.parse(text);
   } catch {
     return undefined;
+  }
+}
+
+/** Parses an `api-call` body: JSON when possible, raw text otherwise, `undefined` when empty. */
+export function parseApiCallBody(text: string): unknown {
+  if (text === '') return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
   }
 }
 

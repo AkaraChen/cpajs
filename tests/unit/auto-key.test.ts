@@ -51,6 +51,8 @@ describe('generated management key', () => {
       const config = parseYaml(text);
       expect(config.management['allow-remote']).toBe(false);
       expect(compareSync(key, config.management['secret-key'])).toBe(true);
+      // CPA re-hashes at the stored cost on every management request; keep it cheap.
+      expect(config.management['secret-key']).toMatch(/^\$2[aby]\$04\$/);
       expect('managementKey' in server).toBe(false);
     } finally {
       await server.stop();

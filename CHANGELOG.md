@@ -15,6 +15,38 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
   how a target is chosen at runtime.
 - README: a "Bundling and deploying" section with Nitro (`traceDeps`), Vite SSR (`ssr.external`) and Next.js
   (`serverExternalPackages`) examples, plus how to drop the extra gnu/musl package that Bun installs.
+- `config.update(path, fn, options?)` reads one node, removes the read-only `auth_index` fields that GET
+  injects, passes the value to `fn`, and writes the result back with `If-Match`. A 412 re-reads and calls `fn`
+  again (5 attempts by default, `maxAttempts` to change it); returning `undefined` skips the write. Calls for
+  the same path on one client instance run one at a time. A missing node passes `undefined` and is created.
+- `config.reconcile(partial, options?)` deep-compares each top-level section against the stored config,
+  ignoring `auth_index`, and replaces only the sections that differ. Each changed section is written
+  wholesale with PUT `/config/<key>` (so nested keys absent from the target are removed) and ETags are
+  chained across writes; a 412 re-reads and recomputes. Sections not listed are untouched, and a target
+  value of `undefined` is skipped.
+- GET requests retry CPA's transient `500 invalid_config` (a read landing while `config.yaml` is rewritten
+  non-atomically) up to three times after 100/200/400 ms. Writes never retry. Disable with
+  `retryInvalidConfig: false` on `createClient`.
+- `credentials.reconcile({ owner, files, prune? })` aligns a managed set of credential files by owner and
+  revision. Uploads carry a reserved `x-cpajs: { owner, revision }` field; only the revision is compared, so a
+  CPA token refresh that rewrites a file does not upload it again. By default files owned by `owner` but no
+  longer listed are deleted, while files owned by anyone else are never touched.
+- Structured log lines: `LogLine` now carries `level`, `requestId` and `message` when CPA's logrus format could
+  be parsed, while `line` and `stream` stay unchanged. Pass `logs: { minLevel: 'warn' }` to drop lower-severity
+  lines from `onLog` instead of re-parsing text; `recentLogs` still keeps every line, and lines without a parsed
+  level always pass. No new runtime dependencies.
+- `requests.apiCallJson(request, options)` wraps `apiCall` for JSON upstreams: a JSON string body is parsed,
+  a non-2xx upstream status throws `CpaUpstreamError` (upstream `status`, `headers`, parsed `body`), and a CPA
+  400 caused by an unresolvable `$TOKEN$` throws `CpaCredentialTokenError` with CPA's `errorCode`
+  (`auth token not found`, `auth credential not found for auth_index`, or `auth token refresh failed`).
+  `apiCall` is unchanged and still returns the raw result.
+
+### Changed
+
+- A generated management key is hashed at bcrypt cost 4 (upstream's `bcrypt.MinCost`) instead of 10. CPA
+  checks the key against the hash on every management request at the stored cost, so cost 10 spent about
+  65 ms of CPU per request, which adds up for hosts that poll the management API. The key is 256 random
+  bits, so the cheaper hash does not make it easier to guess. An explicit `management.key` keeps cost 10.
 
 ## 0.1.0-rc.4
 
