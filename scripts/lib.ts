@@ -4,10 +4,12 @@ import { createReadStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { TARGETS, type Target } from '../src/server/targets.ts';
+import { CPA_RELEASE } from '../packages/cpa/src/server/cpa-version.ts';
+import { TARGETS, type Target } from '../packages/cpa/src/server/targets.ts';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+/** The published @cpajs/cpa package. */
+export const CPA_DIR = join(ROOT, 'packages', 'cpa');
 export const CACHE_DIR = join(ROOT, '.cache');
 export const DEFAULT_SOURCE_DIR = join(CACHE_DIR, 'cpa-src', CPA_RELEASE.tag);
 export const DEFAULT_BIN_DIR = join(ROOT, 'dist-bin');

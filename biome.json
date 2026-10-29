@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!dist", "!dist-bin", "!packages", "!node_modules", "!pnpm-lock.yaml"]
+    "includes": ["**", "!**/dist", "!dist-bin", "!dist-npm", "!node_modules", "!pnpm-lock.yaml"]
   },
   "formatter": {
     "enabled": true,
@@ -38,11 +38,9 @@
   "overrides": [
     {
       "includes": [
-        "src/**",
-        "tests/**",
+        "packages/**",
         "scripts/**",
         "docs/**",
-        "packages/**",
         ".github/**",
         "*.json",
         "*.md",
@@ -51,6 +49,12 @@
       ],
       "formatter": {
         "enabled": false
+      }
+    },
+    {
+      "includes": ["packages/*/examples/**"],
+      "formatter": {
+        "enabled": true
       }
     }
   ]

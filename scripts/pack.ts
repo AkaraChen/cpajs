@@ -12,9 +12,9 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { TARGETS, packageName } from '../src/server/targets.ts';
+import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
 import { fetchPanel } from './fetch-panel.ts';
-import { DEFAULT_NPM_DIR, ROOT, args, fail, log, run } from './lib.ts';
+import { CPA_DIR, DEFAULT_NPM_DIR, args, fail, log, run } from './lib.ts';
 
 if (import.meta.main) {
   const values = args({ 'npm-dir': { type: 'string' }, 'require-all': { type: 'boolean' } });
@@ -29,7 +29,7 @@ if (import.meta.main) {
   if (values['require-all'] && missing.length) fail(`not assembled: ${missing.map((t) => t.id).join(', ')}`);
   if (present.length === 0) fail(`no assembled packages in ${npmDir}`);
 
-  const manifestPath = join(ROOT, 'package.json');
+  const manifestPath = join(CPA_DIR, 'package.json');
   const original = await readFile(manifestPath, 'utf8');
   const manifest = JSON.parse(original) as { version: string; optionalDependencies?: Record<string, string> };
 
@@ -44,11 +44,11 @@ if (import.meta.main) {
   await fetchPanel();
   // Build before touching package.json: with the injected optionalDependencies, pnpm's
   // pre-run dependency check would refuse to run the prepack script.
-  await run('npm', ['run', 'build'], { cwd: ROOT, shell });
+  await run('npm', ['run', 'build'], { cwd: CPA_DIR, shell });
   manifest.optionalDependencies = Object.fromEntries(present.map((t) => [packageName(t), manifest.version]));
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   try {
-    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: ROOT, shell });
+    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: CPA_DIR, shell });
   } finally {
     await writeFile(manifestPath, original);
   }

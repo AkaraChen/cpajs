@@ -1,6 +1,6 @@
 name: release
 
-# Builds CLIProxyAPI for every target in src/server/targets.ts, verifies the
+# Builds CLIProxyAPI for every target in packages/cpa/src/server/targets.ts, verifies the
 # binaries, assembles and packs the npm packages, installs them through a
 # local registry on each platform, and publishes on version tags.
 on:
@@ -8,8 +8,8 @@ on:
     tags: ['v*']
   pull_request:
     paths:
-      - src/server/targets.ts
-      - src/server/cpa-version.ts
+      - packages/cpa/src/server/targets.ts
+      - packages/cpa/src/server/cpa-version.ts
       - scripts/**
       - .github/workflows/release.yml
   workflow_dispatch:
@@ -31,13 +31,13 @@ jobs:
       - id: matrix
         run: node scripts/ci-matrix.ts
       - id: cpa
-        run: node --input-type=module -e "import { CPA_RELEASE } from './src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
+        run: node --input-type=module -e "import { CPA_RELEASE } from './packages/cpa/src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
       - name: Check tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./packages/cpa/package.json').version")"
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            echo "tag $GITHUB_REF_NAME does not match packages/cpa/package.json version $version" >&2
             exit 1
           fi
 

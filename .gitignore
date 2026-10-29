@@ -5,4 +5,4 @@ coverage/
 *.tgz
 /dist-bin/
 /dist-npm/
-/assets/
+/packages/cpa/assets/

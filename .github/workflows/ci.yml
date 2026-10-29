@@ -39,6 +39,7 @@ jobs:
       - name: Lifecycle tests must not be skipped (Windows)
         if: runner.os == 'Windows'
         shell: bash
+        working-directory: packages/cpa
         run: |
           pnpm vitest run tests/unit/lifecycle.test.ts --reporter=json --outputFile=lifecycle.json
           node -e "const r = require('./lifecycle.json'); if (r.numPendingTests || r.numTodoTests) { console.error('lifecycle tests were skipped'); process.exit(1); }"
@@ -84,7 +85,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - id: cpa
-        run: node --input-type=module -e "import { CPA_RELEASE } from './src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
+        run: node --input-type=module -e "import { CPA_RELEASE } from './packages/cpa/src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.cpa.outputs.go }}
@@ -111,7 +112,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - id: cpa
-        run: node --input-type=module -e "import { CPA_RELEASE } from './src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
+        run: node --input-type=module -e "import { CPA_RELEASE } from './packages/cpa/src/server/cpa-version.ts'; console.log('go=' + CPA_RELEASE.goVersion)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ steps.cpa.outputs.go }}
@@ -142,3 +143,4 @@ jobs:
           cache: false
       - run: pnpm install --frozen-lockfile
       - run: bun --bun vitest run
+        working-directory: packages/cpa

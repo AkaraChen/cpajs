@@ -1,22 +1,22 @@
 /**
  * Generates the static platform package table behind @cpajs/cpa/binary.
  *
- *   node scripts/generate-binary-table.ts          # write src/binary-packages.{cjs,d.cts}
+ *   node scripts/generate-binary-table.ts          # write packages/cpa/src/binary-packages.{cjs,d.cts}
  *   node scripts/generate-binary-table.ts --check  # fail if either file is out of date
  *
  * The literal require.resolve() calls are what lets bundlers such as @vercel/nft
  * trace the optional platform packages. The table is CommonJS because nft only
  * follows require.resolve() in CommonJS input; an ESM table would need its
  * mixedModules option. Target ids and package names come from
- * src/server/targets.ts so the table cannot drift.
+ * packages/cpa/src/server/targets.ts so the table cannot drift.
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
-import { TARGETS, packageName } from '../src/server/targets.ts';
-import { ROOT, args, fail, log } from './lib.ts';
+import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
+import { CPA_DIR, ROOT, args, fail, log } from './lib.ts';
 
-const SOURCE = join(ROOT, 'src', 'binary-packages.cjs');
-const TYPES = join(ROOT, 'src', 'binary-packages.d.cts');
+const SOURCE = join(CPA_DIR, 'src', 'binary-packages.cjs');
+const TYPES = join(CPA_DIR, 'src', 'binary-packages.d.cts');
 
 export interface BinaryTableSource {
   /** src/binary-packages.cjs */

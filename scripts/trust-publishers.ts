@@ -19,7 +19,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { TARGETS, packageName } from '../src/server/targets.ts';
+import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
 import { args, log, run } from './lib.ts';
 
 const REPOSITORY = 'AkaraChen/cpajs';

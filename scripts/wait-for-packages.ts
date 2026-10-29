@@ -20,8 +20,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { TARGETS, packageName } from '../src/server/targets.ts';
-import { ROOT, args, fail, log } from './lib.ts';
+import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
+import { CPA_DIR, args, fail, log } from './lib.ts';
 
 const REGISTRY = 'https://registry.npmjs.org';
 const DEFAULT_TIMEOUT_SECONDS = 10 * 60;
@@ -99,7 +99,7 @@ if (import.meta.main) {
     timeout: { type: 'string' },
     interval: { type: 'string' },
   });
-  const version = (values.version ?? (JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as { version: string }).version).trim();
+  const version = (values.version ?? (JSON.parse(await readFile(join(CPA_DIR, 'package.json'), 'utf8')) as { version: string }).version).trim();
   if (!version) fail('--version must not be empty');
   const timeoutMs = seconds(values.timeout, DEFAULT_TIMEOUT_SECONDS, 'timeout') * 1000;
   const intervalMs = seconds(values.interval, DEFAULT_INTERVAL_SECONDS, 'interval') * 1000;

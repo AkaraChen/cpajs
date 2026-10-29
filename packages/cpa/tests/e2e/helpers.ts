@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { candidateTargets, currentPlatform, resolveBinary } from '../../src/server/binary.ts';
 import { binaryName } from '../../src/server/targets.ts';
 
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const ROOT = fileURLToPath(new URL('../../../..', import.meta.url));
 
 /**
  * The binary under test: `CPA_BINARY`, else an installed platform package,

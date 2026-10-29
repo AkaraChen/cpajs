@@ -10,10 +10,10 @@
 import { existsSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../src/server/targets.ts';
+import { CPA_RELEASE } from '../packages/cpa/src/server/cpa-version.ts';
+import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../packages/cpa/src/server/targets.ts';
 import { fetchSource } from './fetch-source.ts';
-import { DEFAULT_BIN_DIR, DEFAULT_NPM_DIR, ROOT, args, fail, log, sha256File, type BuildInfo } from './lib.ts';
+import { DEFAULT_BIN_DIR, DEFAULT_NPM_DIR, CPA_DIR, args, fail, log, sha256File, type BuildInfo } from './lib.ts';
 
 interface RootManifest {
   version: string;
@@ -64,7 +64,7 @@ if (import.meta.main) {
   });
   const binDir = values['bin-dir'] ?? DEFAULT_BIN_DIR;
   const outDir = values.out ?? DEFAULT_NPM_DIR;
-  const root = JSON.parse(await readFile(join(ROOT, 'package.json'), 'utf8')) as RootManifest;
+  const root = JSON.parse(await readFile(join(CPA_DIR, 'package.json'), 'utf8')) as RootManifest;
   const license = join(await fetchSource(values.source), 'LICENSE');
 
   const present = TARGETS.filter((t) => existsSync(join(binDir, t.id, binaryName(t))));
