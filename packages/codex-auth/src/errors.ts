@@ -85,8 +85,12 @@ export class CodexIdTokenError extends CodexAuthError {
 
 /** Tokens lack something CLIProxyAPI needs (email, access_token, refresh_token, id_token). */
 export class CodexIncompleteTokensError extends CodexAuthError {
-  constructor(message: string) {
+  /** The fields that were missing, e.g. `['email']` or `['access_token', 'refresh_token']`. */
+  readonly missing: readonly string[];
+
+  constructor(message: string, missing: readonly string[]) {
     super('incomplete_tokens', message);
+    this.missing = missing;
   }
 }
 

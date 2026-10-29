@@ -114,16 +114,23 @@ describe('exchangeDeviceGrant', () => {
   });
 
   it('throws CodexIncompleteTokensError for missing tokens or email', async () => {
-    for (const body of [
-      tokenBody({ refresh_token: undefined }),
-      tokenBody({ access_token: undefined }),
-      tokenBody({ id_token: undefined }),
-      tokenBody({ id_token: idToken({ email: null }) }),
-    ]) {
+    for (const [body, missing] of [
+      [tokenBody({ refresh_token: undefined }), ['refresh_token']],
+      [tokenBody({ access_token: undefined }), ['access_token']],
+      [tokenBody({ id_token: undefined }), ['id_token']],
+      [tokenBody({ id_token: idToken({ email: null }) }), ['email']],
+    ] as const) {
       const f = fakeFetch();
       f.on(URLS.token, json(body));
-      await expect(exchangeDeviceGrant(grant, { fetch: f.fetch })).rejects.toBeInstanceOf(CodexIncompleteTokensError);
+      const error = await exchangeDeviceGrant(grant, { fetch: f.fetch }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(CodexIncompleteTokensError);
+      expect((error as CodexIncompleteTokensError).missing).toEqual(missing);
     }
+  });
+
+  it('accepts a plain function as fetch', async () => {
+    const plain = async (_input: string | URL | Request, _init?: RequestInit): Promise<Response> => json(tokenBody());
+    await expect(exchangeDeviceGrant(grant, { fetch: plain })).resolves.toMatchObject({ accessToken: expect.any(String) });
   });
 
   it('throws CodexIdTokenError for a malformed id_token and CodexProtocolError for a non-JSON body', async () => {

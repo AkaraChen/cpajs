@@ -79,16 +79,34 @@ describe('buildCpaAuthFile', () => {
   });
 
   it('throws CodexIncompleteTokensError when email, access or refresh token is missing', () => {
-    expect(() => buildCpaAuthFile({ ...tokens(), claims: { ...tokens().claims, email: '' } })).toThrow(CodexIncompleteTokensError);
-    expect(() => buildCpaAuthFile({ ...tokens(), accessToken: '' })).toThrow(CodexIncompleteTokensError);
-    expect(() => buildCpaAuthFile({ ...tokens(), refreshToken: '' })).toThrow(CodexIncompleteTokensError);
+    const missingOf = (fn: () => unknown): readonly string[] => {
+      try {
+        fn();
+      } catch (error) {
+        expect(error).toBeInstanceOf(CodexIncompleteTokensError);
+        return (error as CodexIncompleteTokensError).missing;
+      }
+      throw new Error('expected CodexIncompleteTokensError');
+    };
+    expect(missingOf(() => buildCpaAuthFile({ ...tokens(), claims: { ...tokens().claims, email: '' } }))).toEqual(['email']);
+    expect(missingOf(() => buildCpaAuthFile({ ...tokens(), accessToken: '' }))).toEqual(['access_token']);
+    expect(missingOf(() => buildCpaAuthFile({ ...tokens(), accessToken: '', refreshToken: '' }))).toEqual(['access_token', 'refresh_token']);
   });
 
   it('validates the name override', () => {
     expect(buildCpaAuthFile(tokens(), { name: 'mine.json' }).name).toBe('mine.json');
-    for (const bad of ['mine', 'a/b.json', 'a\\b.json', '..json', 'x..y.json', '.json']) {
+    for (const bad of ['mine', 'a/b.json', 'a\\b.json', '../a.json', 'C:a.json', '.json']) {
       expect(() => buildCpaAuthFile(tokens(), { name: bad })).toThrow(TypeError);
     }
+    // CPA only rejects separators and drive prefixes, so ".." inside a flat name is fine.
+    expect(buildCpaAuthFile(tokens(), { name: 'x..y.json' }).name).toBe('x..y.json');
+  });
+
+  it('accepts an email with consecutive dots', () => {
+    const t = tokens();
+    const { name, content } = buildCpaAuthFile({ ...t, claims: { ...t.claims, email: 'first..last@example.com' } });
+    expect(name).toContain('first..last@example.com');
+    expect(content.email).toBe('first..last@example.com');
   });
 });
 

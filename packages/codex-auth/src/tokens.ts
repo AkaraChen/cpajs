@@ -99,17 +99,16 @@ function tokensFromBody(body: Record<string, unknown>, opts: ResolvedOptions, fa
   const accessToken = str(body.access_token);
   const refreshToken = str(body.refresh_token) || fallbackRefreshToken || '';
   const idToken = str(body.id_token);
-  const missing = [
+  const required: [name: string, value: string][] = [
     ['access_token', accessToken],
     ['refresh_token', refreshToken],
     ['id_token', idToken],
-  ]
-    .filter(([, value]) => !value)
-    .map(([name]) => name);
-  if (missing.length) throw new CodexIncompleteTokensError(`Token response is missing ${missing.join(', ')}.`);
+  ];
+  const missing = required.filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length) throw new CodexIncompleteTokensError(`Token response is missing ${missing.join(', ')}.`, missing);
 
   const claims = parseIdToken(idToken);
-  if (!claims.email) throw new CodexIncompleteTokensError('id_token carries no email claim, which CLIProxyAPI requires.');
+  if (!claims.email) throw new CodexIncompleteTokensError('id_token carries no email claim, which CLIProxyAPI requires.', ['email']);
 
   const rawExpiresIn = typeof body.expires_in === 'number' ? body.expires_in : Number(body.expires_in);
   const expiresIn = Number.isFinite(rawExpiresIn) && rawExpiresIn > 0 ? Math.floor(rawExpiresIn) : 0;

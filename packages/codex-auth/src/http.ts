@@ -7,10 +7,17 @@ export const CODEX_DEVICE_REDIRECT_URI = 'https://auth.openai.com/deviceauth/cal
 export const CODEX_DEVICE_TIMEOUT_MS = 15 * 60_000;
 export const CODEX_DEFAULT_POLL_INTERVAL_SECONDS = 5;
 
+/**
+ * The subset of `fetch` this package calls. A plain function type rather than
+ * `typeof fetch`, whose extra members (e.g. Bun's `preconnect`) a test double
+ * would otherwise have to fake.
+ */
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
 /** Injectable pieces shared by every network function. */
 export interface CodexAuthOptions {
   /** Defaults to globalThis.fetch. */
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
   /** Defaults to https://auth.openai.com. A trailing slash is trimmed. */
   issuer?: string;
   /** Defaults to the Codex CLI client id, the one CLIProxyAPI uses. */
@@ -23,7 +30,7 @@ export interface CodexAuthOptions {
 }
 
 export interface ResolvedOptions {
-  fetch: typeof fetch;
+  fetch: FetchLike;
   issuer: string;
   clientId: string;
   now: () => number;
