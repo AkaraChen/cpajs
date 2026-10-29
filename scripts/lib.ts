@@ -10,6 +10,15 @@ import { TARGETS, type Target } from '../packages/cpa/src/server/targets.ts';
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 /** The published @cpajs/cpa package. */
 export const CPA_DIR = join(ROOT, 'packages', 'cpa');
+/**
+ * Every workspace package the release publishes, all at one shared version.
+ * `@cpajs/cpa` comes first; the platform packages are generated, not listed here.
+ * A new package must be published once by hand before it can join (see docs/releasing.md).
+ */
+export const WORKSPACE_PACKAGES = [
+  { name: '@cpajs/cpa', dir: CPA_DIR },
+  { name: '@cpajs/codex-auth', dir: join(ROOT, 'packages', 'codex-auth') },
+] as const;
 export const CACHE_DIR = join(ROOT, '.cache');
 export const DEFAULT_SOURCE_DIR = join(CACHE_DIR, 'cpa-src', CPA_RELEASE.tag);
 export const DEFAULT_BIN_DIR = join(ROOT, 'dist-bin');

@@ -57,6 +57,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # Every published workspace package shares one version.
+      - run: node scripts/versions.ts
       # The existing tree predates Biome formatting, so this checks new examples only.
       - run: pnpm format:check
       - uses: actions/setup-go@v6

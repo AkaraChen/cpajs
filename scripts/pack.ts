@@ -1,5 +1,6 @@
 /**
- * Packs the assembled platform packages and the main package into tarballs.
+ * Packs the assembled platform packages, the main package and the other
+ * published workspace packages (WORKSPACE_PACKAGES) into tarballs.
  *
  *   node scripts/pack.ts [--npm-dir dist-npm] [--require-all]
  *
@@ -14,7 +15,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
 import { fetchPanel } from './fetch-panel.ts';
-import { CPA_DIR, DEFAULT_NPM_DIR, args, fail, log, run } from './lib.ts';
+import { CPA_DIR, DEFAULT_NPM_DIR, WORKSPACE_PACKAGES, args, fail, log, run } from './lib.ts';
 
 if (import.meta.main) {
   const values = args({ 'npm-dir': { type: 'string' }, 'require-all': { type: 'boolean' } });
@@ -52,6 +53,15 @@ if (import.meta.main) {
   } finally {
     await writeFile(manifestPath, original);
   }
-  log(`packed ${present.length + 1} tarballs into ${out}`);
+
+  // The other workspace packages ship as they are, at the same version as the main package.
+  const others = WORKSPACE_PACKAGES.filter((pkg) => pkg.dir !== CPA_DIR);
+  for (const pkg of others) {
+    const { version } = JSON.parse(await readFile(join(pkg.dir, 'package.json'), 'utf8')) as { version: string };
+    if (version !== manifest.version) fail(`${pkg.name} is ${version}, main package is ${manifest.version}; run node scripts/versions.ts --set.`);
+    await run('npm', ['run', 'build'], { cwd: pkg.dir, shell });
+    await run('npm', ['pack', '--ignore-scripts', '--pack-destination', out], { cwd: pkg.dir, shell });
+  }
+  log(`packed ${present.length + 1 + others.length} tarballs into ${out}`);
   if (missing.length) log(`main package omits optional dependencies for: ${missing.map((t) => t.id).join(', ')}`);
 }
