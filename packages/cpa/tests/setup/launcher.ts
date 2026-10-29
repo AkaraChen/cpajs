@@ -5,7 +5,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const ROOT = fileURLToPath(new URL('../../../..', import.meta.url));
 export const TEST_LAUNCHER = join(ROOT, '.cache', 'test-launcher', 'cpa-launcher');
 
 export default function setup(): void {

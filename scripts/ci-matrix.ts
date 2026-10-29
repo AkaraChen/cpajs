@@ -1,10 +1,10 @@
 /**
- * Prints the GitHub Actions build matrix derived from src/server/targets.ts.
+ * Prints the GitHub Actions build matrix derived from packages/cpa/src/server/targets.ts.
  *
  *   node scripts/ci-matrix.ts   # → {"include":[{target, runner, smoke, qemu, ...}]}
  */
 import { appendFileSync } from 'node:fs';
-import { TARGETS, type Target } from '../src/server/targets.ts';
+import { TARGETS, type Target } from '../packages/cpa/src/server/targets.ts';
 
 interface MatrixEntry {
   target: string;

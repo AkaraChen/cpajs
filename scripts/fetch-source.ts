@@ -6,7 +6,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { CPA_RELEASE } from '../src/server/cpa-version.ts';
+import { CPA_RELEASE } from '../packages/cpa/src/server/cpa-version.ts';
 import { DEFAULT_SOURCE_DIR, args, fail, log, run } from './lib.ts';
 
 export async function fetchSource(dir = DEFAULT_SOURCE_DIR): Promise<string> {

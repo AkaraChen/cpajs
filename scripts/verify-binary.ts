@@ -15,10 +15,10 @@
 import { existsSync } from 'node:fs';
 import { open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createClient } from '../src/client/index.ts';
-import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { startServer } from '../src/server/index.ts';
-import { LAUNCHER_NAME, binaryName, hasLauncher, type Target } from '../src/server/targets.ts';
+import { createClient } from '../packages/cpa/src/client/index.ts';
+import { CPA_RELEASE } from '../packages/cpa/src/server/cpa-version.ts';
+import { startServer } from '../packages/cpa/src/server/index.ts';
+import { LAUNCHER_NAME, binaryName, hasLauncher, type Target } from '../packages/cpa/src/server/targets.ts';
 import { DEFAULT_BIN_DIR, args, fail, log, selectTargets, sha256File, type BuildInfo } from './lib.ts';
 
 const GLIBC_BASELINE = [2, 17];

@@ -17,8 +17,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { arch, platform } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { CPA_RELEASE } from '../src/server/cpa-version.ts';
-import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../src/server/targets.ts';
+import { CPA_RELEASE } from '../packages/cpa/src/server/cpa-version.ts';
+import { LAUNCHER_NAME, TARGETS, binaryName, hasLauncher, packageName, type Target } from '../packages/cpa/src/server/targets.ts';
 import { fetchSource } from './fetch-source.ts';
 import { CACHE_DIR, DEFAULT_BIN_DIR, ROOT, args, fail, log, run, selectTargets, sha256File, type BuildInfo } from './lib.ts';
 

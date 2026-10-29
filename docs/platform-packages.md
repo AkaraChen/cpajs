@@ -1,7 +1,7 @@
 # Platform packages
 
 The `@cpajs/<target>` packages are generated, not checked in. Their manifests come from
-[`src/server/targets.ts`](../src/server/targets.ts), which is the single list of targets
+[`packages/cpa/src/server/targets.ts`](../packages/cpa/src/server/targets.ts), which is the single list of targets
 used by the runtime lookup, the build scripts and the CI matrix.
 
 ```sh

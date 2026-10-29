@@ -8,8 +8,8 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { CPA_PANEL } from '../src/server/cpa-version.ts';
-import { PANEL_FILE } from '../src/server/panel.ts';
+import { CPA_PANEL } from '../packages/cpa/src/server/cpa-version.ts';
+import { PANEL_FILE } from '../packages/cpa/src/server/panel.ts';
 import { fail, log } from './lib.ts';
 
 const sha256 = (data: Uint8Array): string => createHash('sha256').update(data).digest('hex');

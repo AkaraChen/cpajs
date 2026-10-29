@@ -8,8 +8,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { candidateTargets, currentPlatform } from '../src/server/binary.ts';
-import { TARGETS, packageName } from '../src/server/targets.ts';
+import { candidateTargets, currentPlatform } from '../packages/cpa/src/server/binary.ts';
+import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
 import { DEFAULT_NPM_DIR, args, fail, log, run } from './lib.ts';
 import { startLocalRegistry } from './local-registry.ts';
 

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
-import { generateBinaryTable } from '../../scripts/generate-binary-table.ts';
+import { generateBinaryTable } from '../../../../scripts/generate-binary-table.ts';
 import { PLATFORM_PACKAGES, resolvePlatformPackage } from '../../src/binary.ts';
 import { candidateTargets, resolveBinary } from '../../src/server/binary.ts';
 import {
