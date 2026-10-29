@@ -12,6 +12,25 @@ importers:
         specifier: ^2.6.3
         version: 2.6.3
 
+  packages/codex-auth:
+    dependencies:
+      '@cpajs/cpa':
+        specifier: ^0.1.0-rc
+        version: 0.1.0-rc.7
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.19.2
+      '@vitest/coverage-v8':
+        specifier: ^5.0.5
+        version: 5.0.5(vitest@5.0.5)
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@24.19.2)(@vitest/coverage-v8@5.0.5)(vite@8.3.5(@types/node@24.19.2)(yaml@2.9.1))
+
   packages/cpa:
     dependencies:
       bcryptjs:
@@ -123,6 +142,129 @@ packages:
   '@biomejs/cli-win32-x64@2.6.3':
     resolution: {integrity: sha512-GhtOPphBWlnCepqpNk/w5eGN5oGRCzL20EbAkL1XCIpyboeVC9R642noyT43l8LSenGS4qz9IL8sKPfwY37V/Q==}
     engines: {node: '>=14.21.3'}
+    cpu: [x64]
+    os: [win32]
+
+  '@cpajs/cpa@0.1.0-rc.7':
+    resolution: {integrity: sha512-ZcehOzCQuku+ir8qwYGL7/DxUCA67dPfcQh/j/TUw8djnsEy6N/dYrMF2R1qR3DJf8HdkfOFdhCF1ifGpqkOHA==}
+    engines: {node: '>=22'}
+
+  '@cpajs/darwin-arm64@0.1.0-rc.7':
+    resolution: {integrity: sha512-ktrevU7wDBo8SWBGQI+Ohqy8qZ3qxNh0BwGD34Tu/rsX8zG2mElcYsV0VEys7nXV6IlKPGc8V8oYkElwQqDz4Q==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@cpajs/darwin-x64@0.1.0-rc.7':
+    resolution: {integrity: sha512-02BwuJ3Qh/LA1LMFstOp+nWHrDGGOXXF0lBVwHnK2rVW3oJYBkwEiXz+gKzDi51dBwZX1+BF+RTIha8suZKOHA==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@cpajs/freebsd-arm64@0.1.0-rc.7':
+    resolution: {integrity: sha512-ypgrLveJ6ovBayOldKMYtQ9DtuzeXjPNcYrO+PpsJoVN3wdgHYaN0Y4UPbpLVOgz3zSy9mbdShHCR3qSAd7XQw==}
+    cpu: [arm64]
+    os: [freebsd]
+
+  '@cpajs/freebsd-ia32@0.1.0-rc.7':
+    resolution: {integrity: sha512-dOjmtgPXTZT2Bqhu/U4grdcftEwmuK3CwXW+5EmUCY3aqVJueO0eHpAbz57nmO288WjNpXsPUqc7LYTetRXHAA==}
+    cpu: [ia32]
+    os: [freebsd]
+
+  '@cpajs/freebsd-x64@0.1.0-rc.7':
+    resolution: {integrity: sha512-y/HltyBWZIJ2EyMpcwWZWBWojM2poB+4mfNim022oT4VwrTvo3cYJblEeVc5BXOENiM9lkuVQReHW2Ipqcb/IA==}
+    cpu: [x64]
+    os: [freebsd]
+
+  '@cpajs/linux-arm64-gnu@0.1.0-rc.7':
+    resolution: {integrity: sha512-CBjjiPnokuFq9Fi3htv+qCcpeZeXYdQKLVfIBGvmTg6jjLlS4WXKokJS6mDWt1fpTb7tVb0alBddu5RExLI5uQ==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@cpajs/linux-arm64-musl@0.1.0-rc.7':
+    resolution: {integrity: sha512-oqwwU5iw4x3LE3y1a0jyN4yLZ16iOWOmTTbgSaXXJ7exhE5WONZL7ZxwTPLX7HskBM8KXf/AD9sJcN6wsZGM0Q==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@cpajs/linux-arm@0.1.0-rc.7':
+    resolution: {integrity: sha512-ZDndaFXVDhOYdFpIsd4JuLEe2ozJdtlYd7+v+e0vvDpjG2hndHp58V2RQ4ccBWATa29sI6O230puhhKyt8vceg==}
+    cpu: [arm]
+    os: [linux]
+
+  '@cpajs/linux-ia32@0.1.0-rc.7':
+    resolution: {integrity: sha512-/PphY6cuOHZwyI8RZoqD9uVMxHQZ9LbRorGpdeJj3nCZJFUORv+SyWmsCPJHilR+cGcHB8L7AyJQpBfz3cWLkw==}
+    cpu: [ia32]
+    os: [linux]
+
+  '@cpajs/linux-loong64@0.1.0-rc.7':
+    resolution: {integrity: sha512-6ZEKHiBeUaBmjYJXiapEXXMOAwHAvAnSeTtneZmxV8nSpdeIMRxiln68X9jHebv2oOvXO2FNODjxVnO5e3kCtw==}
+    cpu: [loong64]
+    os: [linux]
+
+  '@cpajs/linux-mips@0.1.0-rc.7':
+    resolution: {integrity: sha512-GnukDDDj1I8TPLjbeZME3izHCZYhi5lsZQB+9URUcxB+D1EMH52asS1EHJjAaBtGFkvdSGk3YxGd+MuA8XiLYQ==}
+    cpu: [mips]
+    os: [linux]
+
+  '@cpajs/linux-mipsel@0.1.0-rc.7':
+    resolution: {integrity: sha512-tZTXYJv+7IQy9hBNqbtPwnJcyBZ0HFU+emm7iohI7epSBQnjUuuooqENwLnTD1jQLstGbvcFnSirCbb47iMwJg==}
+    cpu: [mipsel]
+    os: [linux]
+
+  '@cpajs/linux-ppc64@0.1.0-rc.7':
+    resolution: {integrity: sha512-xac7BjdaldMAjSNfVsx7cJyg5MRW0BPA/f3ji0bi5Iw76IYGvjPgFd8H/oDOHgVblLPLLmYHDcPcGnUx1OMgNA==}
+    cpu: [ppc64]
+    os: [linux]
+
+  '@cpajs/linux-riscv64@0.1.0-rc.7':
+    resolution: {integrity: sha512-gi5Ob0eK/rnKWsG20KLfNFZ2ByWaUsRD9MGILkqJOom3yAekNT7syveIBSynZ1xRjcJvItaSGYR3C+zLFRYT4A==}
+    cpu: [riscv64]
+    os: [linux]
+
+  '@cpajs/linux-s390x@0.1.0-rc.7':
+    resolution: {integrity: sha512-Ca5fMIIVU1wDkLa7YGkFoV1CZBGvo6HP/Erzr3TVkUe39ccZiZbsooWdu9ROgIXmXiuYX3We8I7oLriChIAKmQ==}
+    cpu: [s390x]
+    os: [linux]
+
+  '@cpajs/linux-x64-gnu@0.1.0-rc.7':
+    resolution: {integrity: sha512-5amPC9Oq/lkYtpctOd2l4VblazHN+lEymRLlXrOdA/9vK/TXgfasvGqunp6DILAZ1xpXW3iw8rPM/pDuxJz2dA==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@cpajs/linux-x64-musl@0.1.0-rc.7':
+    resolution: {integrity: sha512-+TzE9qPyumLx2Xuh6va7FYsVJm1OkqmDlOPX0L7hmcy65qdSCFBTaifAhLt++qbSXLtPAVntR19ZgC2f6sGEGw==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@cpajs/netbsd-x64@0.1.0-rc.7':
+    resolution: {integrity: sha512-AkcLL2XORars7wFpoRqIF7DiaDhTu5BagEwKq1OszAR+o3iZV0sTERECW1HUGfd3kW9zuGS77vslkl3aTcZdXg==}
+    cpu: [x64]
+    os: [netbsd]
+
+  '@cpajs/openbsd-arm64@0.1.0-rc.7':
+    resolution: {integrity: sha512-FFu4Bhk08J1HKKut4u5tXmp/uWBw5q7ikat6WlBx0TRdCcT9KjQpRpoyHFxDIMtB+z66gGseWthC6UImey3dJQ==}
+    cpu: [arm64]
+    os: [openbsd]
+
+  '@cpajs/openbsd-x64@0.1.0-rc.7':
+    resolution: {integrity: sha512-Pucpnc1CxqaeA57+7n0wQCf0q3DXsAADE6NcWyTI6sHmaL+6s/o5kiFYz8fQgkC8rJ0/t55MIJ0UTUftspT4Cw==}
+    cpu: [x64]
+    os: [openbsd]
+
+  '@cpajs/win32-arm64@0.1.0-rc.7':
+    resolution: {integrity: sha512-jbJFbMzLD2F48rE/Am7jiw9PIJ6AeIfk63VVYnwB0xk7TvjGxSBiuPldVMQzEtrAncig6A3ilz3eRH9N/DGa9A==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@cpajs/win32-ia32@0.1.0-rc.7':
+    resolution: {integrity: sha512-LfCVuIbWsebW2X1fhhgvOMo3quuGYhqYNRNbc7kkvIY1hCa+On6ltkyOFmF+JRwKhEuoH/WDR8nMGo+Xs2/t0g==}
+    cpu: [ia32]
+    os: [win32]
+
+  '@cpajs/win32-x64@0.1.0-rc.7':
+    resolution: {integrity: sha512-iWMm01hGzEk1ntCwL+PfRRSOyb+txKGld4zmuLP7EvmXhPGaFpssOhniqm1gKy579WkcDWQvlh1S38gGeBRF3A==}
     cpu: [x64]
     os: [win32]
 
@@ -735,6 +877,104 @@ snapshots:
     optional: true
 
   '@biomejs/cli-win32-x64@2.6.3':
+    optional: true
+
+  '@cpajs/cpa@0.1.0-rc.7':
+    dependencies:
+      bcryptjs: 3.0.3
+      yaml: 2.9.1
+    optionalDependencies:
+      '@cpajs/darwin-arm64': 0.1.0-rc.7
+      '@cpajs/darwin-x64': 0.1.0-rc.7
+      '@cpajs/freebsd-arm64': 0.1.0-rc.7
+      '@cpajs/freebsd-ia32': 0.1.0-rc.7
+      '@cpajs/freebsd-x64': 0.1.0-rc.7
+      '@cpajs/linux-arm': 0.1.0-rc.7
+      '@cpajs/linux-arm64-gnu': 0.1.0-rc.7
+      '@cpajs/linux-arm64-musl': 0.1.0-rc.7
+      '@cpajs/linux-ia32': 0.1.0-rc.7
+      '@cpajs/linux-loong64': 0.1.0-rc.7
+      '@cpajs/linux-mips': 0.1.0-rc.7
+      '@cpajs/linux-mipsel': 0.1.0-rc.7
+      '@cpajs/linux-ppc64': 0.1.0-rc.7
+      '@cpajs/linux-riscv64': 0.1.0-rc.7
+      '@cpajs/linux-s390x': 0.1.0-rc.7
+      '@cpajs/linux-x64-gnu': 0.1.0-rc.7
+      '@cpajs/linux-x64-musl': 0.1.0-rc.7
+      '@cpajs/netbsd-x64': 0.1.0-rc.7
+      '@cpajs/openbsd-arm64': 0.1.0-rc.7
+      '@cpajs/openbsd-x64': 0.1.0-rc.7
+      '@cpajs/win32-arm64': 0.1.0-rc.7
+      '@cpajs/win32-ia32': 0.1.0-rc.7
+      '@cpajs/win32-x64': 0.1.0-rc.7
+
+  '@cpajs/darwin-arm64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/darwin-x64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/freebsd-arm64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/freebsd-ia32@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/freebsd-x64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-arm64-gnu@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-arm64-musl@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-arm@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-ia32@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-loong64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-mips@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-mipsel@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-ppc64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-riscv64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-s390x@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-x64-gnu@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/linux-x64-musl@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/netbsd-x64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/openbsd-arm64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/openbsd-x64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/win32-arm64@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/win32-ia32@0.1.0-rc.7':
+    optional: true
+
+  '@cpajs/win32-x64@0.1.0-rc.7':
     optional: true
 
   '@jridgewell/resolve-uri@3.1.2': {}

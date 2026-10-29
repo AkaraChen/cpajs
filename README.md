@@ -5,6 +5,7 @@ pnpm monorepo for the `@cpajs/*` packages. Package documentation lives next to e
 | Path | Package |
 | --- | --- |
 | [`packages/cpa`](packages/cpa) | [`@cpajs/cpa`](packages/cpa/README.md): run the official CLIProxyAPI from JavaScript and manage it with a typed client. |
+| [`packages/codex-auth`](packages/codex-auth) | [`@cpajs/codex-auth`](packages/codex-auth/README.md): Sign in with ChatGPT (Codex device flow) and build the auth file CPA reads. Zero dependencies; not published by `release.yml` yet, see [docs/releasing-codex-auth.md](docs/releasing-codex-auth.md). |
 | generated in `dist-npm/` | `@cpajs/<target>` platform packages that carry the CLIProxyAPI binaries, see [docs/platform-packages.md](docs/platform-packages.md). They are not workspace members. |
 
 Package docs (API coverage, compatibility, migration, scope) are in `packages/cpa/docs/`. Repository-level files: `scripts/` (build, assemble, pack and publish tooling), `launcher/` (the Go `cpa-launcher`
