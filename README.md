@@ -5,7 +5,7 @@ pnpm monorepo for the `@cpajs/*` packages. Package documentation lives next to e
 | Path | Package |
 | --- | --- |
 | [`packages/cpa`](packages/cpa) | [`@cpajs/cpa`](packages/cpa/README.md): run the official CLIProxyAPI from JavaScript and manage it with a typed client. |
-| [`packages/codex-auth`](packages/codex-auth) | [`@cpajs/codex-auth`](packages/codex-auth/README.md): Sign in with ChatGPT (Codex device flow) and build the auth file CPA reads. Zero dependencies; not published by `release.yml` yet, see [docs/releasing-codex-auth.md](docs/releasing-codex-auth.md). |
+| [`packages/codex-auth`](packages/codex-auth) | [`@cpajs/codex-auth`](packages/codex-auth/README.md): Sign in with ChatGPT (Codex device flow) and build the auth file CPA reads. Zero dependencies. |
 | generated in `dist-npm/` | `@cpajs/<target>` platform packages that carry the CLIProxyAPI binaries, see [docs/platform-packages.md](docs/platform-packages.md). They are not workspace members. |
 
 Package docs (API coverage, compatibility, migration, scope) are in `packages/cpa/docs/`. Repository-level files: `scripts/` (build, assemble, pack and publish tooling), `launcher/` (the Go `cpa-launcher`
@@ -27,7 +27,7 @@ Package-level commands also work inside `packages/cpa` (for example `pnpm test:c
 are run from the repository root and are described in [packages/cpa/README.md](packages/cpa/README.md#development).
 `pnpm panel:fetch` writes the bundled panel to `packages/cpa/assets/management.html`.
 
-The release workflow packs `@cpajs/cpa` from `packages/cpa` and the platform packages from `dist-npm/`, so adding
-another workspace package does not change what `release.yml` publishes until it is wired in explicitly.
+All published packages share one version and are released together; see [docs/releasing.md](docs/releasing.md),
+which also covers adding a new package to the release.
 
 Adding a package: create `packages/<name>/` with its own `package.json`; `pnpm-workspace.yaml` already matches `packages/*`.

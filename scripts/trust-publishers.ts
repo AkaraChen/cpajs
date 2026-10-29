@@ -1,6 +1,6 @@
 /**
- * Configures npm trusted publishing (GitHub Actions OIDC) for the main package
- * and every platform package. Run it locally once the packages exist on the
+ * Configures npm trusted publishing (GitHub Actions OIDC) for every published
+ * workspace package (WORKSPACE_PACKAGES) and every platform package. Run it locally once the packages exist on the
  * registry (npm cannot trust unpublished packages):
  *
  *   node scripts/trust-publishers.ts [--dry-run]
@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { TARGETS, packageName } from '../packages/cpa/src/server/targets.ts';
-import { args, log, run } from './lib.ts';
+import { WORKSPACE_PACKAGES, args, log, run } from './lib.ts';
 
 const REPOSITORY = 'AkaraChen/cpajs';
 const WORKFLOW = 'release.yml';
@@ -39,7 +39,7 @@ function hasTrust(json: string): boolean {
 
 if (import.meta.main) {
   const values = args({ 'dry-run': { type: 'boolean' } });
-  const packages = [...TARGETS.map(packageName), '@cpajs/cpa'];
+  const packages = [...TARGETS.map(packageName), ...WORKSPACE_PACKAGES.map((pkg) => pkg.name)];
   const shell = process.platform === 'win32';
 
   const dir = await mkdtemp(join(tmpdir(), 'cpajs-trust-'));

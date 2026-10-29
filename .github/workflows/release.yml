@@ -35,18 +35,8 @@ jobs:
       - name: Check tag matches package version
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          version="$(node -p "require('./packages/cpa/package.json').version")"
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "tag $GITHUB_REF_NAME does not match packages/cpa/package.json version $version" >&2
-            exit 1
-          fi
-          # @cpajs/codex-auth is not published by this workflow yet (docs/releasing-codex-auth.md),
-          # but its version must stay in lockstep so the later wiring does not ship a stale one.
-          codex="$(node -p "require('./packages/codex-auth/package.json').version")"
-          if [ "$codex" != "$version" ]; then
-            echo "packages/codex-auth/package.json version $codex does not match $version" >&2
-            exit 1
-          fi
+          # Every published workspace package must be at the tag's version.
+          node scripts/versions.ts --expect "$GITHUB_REF_NAME"
 
   build:
     name: build ${{ matrix.target }}
@@ -188,7 +178,7 @@ jobs:
           path: tarballs
       # Trusted publishing (OIDC) needs npm >= 11.5.1.
       - run: npm install -g npm@^11.15.0
-      - name: Publish platform packages, then the main package
+      - name: Publish platform packages, the main package, then the other workspace packages
         # Trusted publishing only: npm authenticates the job through OIDC (id-token: write)
         # and adds provenance automatically. No npm token is set anywhere in this workflow.
         run: |
@@ -201,6 +191,8 @@ jobs:
           echo "dist-tag: $tag"
           # The ./ prefix matters: npm reads "tarballs/x.tgz" as a GitHub "user/repo" shorthand.
           main="./tarballs/cpajs-cpa-$version.tgz"
+          # The other published workspace packages (scripts/lib.ts WORKSPACE_PACKAGES), e.g. @cpajs/codex-auth.
+          others="$(node --input-type=module -e "import { WORKSPACE_PACKAGES } from './scripts/lib.ts'; console.log(WORKSPACE_PACKAGES.slice(1).map((p) => './tarballs/' + p.name.slice(1).replace('/', '-') + '-$version.tgz').join(' '))")"
           publish() {
             name="$(tar -xOzf "$1" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')"
             if npm view "$name@$version" version >/dev/null 2>&1; then
@@ -210,12 +202,14 @@ jobs:
             fi
           }
           for tgz in ./tarballs/*.tgz; do
-            [ "$tgz" = "$main" ] || publish "$tgz"
+            case " $main $others " in *" $tgz "*) ;; *) publish "$tgz" ;; esac
           done
           # Registry metadata is CDN-cached: a platform package can 404 for a while after
           # its publish. Do not publish the main package until every dependency resolves.
           node scripts/wait-for-packages.ts --version "$version"
           publish "$main"
+          # Their optional peer dependency on @cpajs/cpa is published by now.
+          for tgz in $others; do publish "$tgz"; done
       - name: Attach tarballs to the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
