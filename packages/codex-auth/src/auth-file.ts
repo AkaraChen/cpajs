@@ -68,20 +68,22 @@ export function cpaCodexFileName(input: { email: string; planType?: string; acco
 
 function validateName(name: string): void {
   if (!name.endsWith('.json') || name.length <= '.json'.length) throw new TypeError('Auth file name must end with .json.');
-  if (/[\\/]/.test(name) || name.includes('..')) throw new TypeError('Auth file name must not contain path separators or "..".');
+  // Same rule as CPA's upload handler (isUnsafeAuthFileName in
+  // internal/api/handlers/management/auth_files.go): no path separators and no
+  // drive prefix. ".." inside a flat name such as first..last@example.com is fine.
+  if (/[\\/]/.test(name) || /^[A-Za-z]:/.test(name)) throw new TypeError('Auth file name must not contain path separators or a drive prefix.');
 }
 
 /** Throws CodexIncompleteTokensError if there is no email, access_token or refresh_token. */
 export function buildCpaAuthFile(tokens: CodexTokens, options: BuildCpaAuthOptions = {}): { name: string; content: CpaCodexAuthFile } {
   const email = tokens.claims.email.trim();
-  const missing = [
+  const required: [name: string, value: string][] = [
     ['email', email],
     ['access_token', tokens.accessToken],
     ['refresh_token', tokens.refreshToken],
-  ]
-    .filter(([, value]) => !value)
-    .map(([name]) => name);
-  if (missing.length) throw new CodexIncompleteTokensError(`Cannot build a CPA auth file: missing ${missing.join(', ')}.`);
+  ];
+  const missing = required.filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length) throw new CodexIncompleteTokensError(`Cannot build a CPA auth file: missing ${missing.join(', ')}.`, missing);
 
   const extra = options.extra ?? {};
   const clash = RESERVED_KEYS.filter((key) => key in extra);

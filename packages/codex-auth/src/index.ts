@@ -6,6 +6,7 @@ export {
   CODEX_DEVICE_VERIFICATION_URL,
   CODEX_ISSUER,
   type CodexAuthOptions,
+  type FetchLike,
 } from './http.ts';
 export {
   completeDeviceAuth,

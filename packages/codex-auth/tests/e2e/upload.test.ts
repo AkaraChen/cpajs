@@ -27,6 +27,12 @@ describe.skipIf(!binary)('uploading a built codex auth file to a real CPA', () =
       expect(entry).toBeDefined();
       expect(entry).toMatchObject({ provider: 'codex', email: 'e2e@example.com' });
       expect(JSON.stringify(entry)).toContain('team');
+
+      // CPA accepts ".." inside a flat file name, so an email with consecutive dots must upload too.
+      const dotted = idToken({ email: 'first..last@example.com', plan: 'plus' });
+      const uploaded = await uploadToCpa(client, { ...tokens, idToken: dotted, claims: parseIdToken(dotted) });
+      expect(uploaded.name).toContain('first..last@example.com');
+      expect(await client.credentials.get(uploaded.name)).toMatchObject({ provider: 'codex', email: 'first..last@example.com' });
     } finally {
       await server.stop();
     }
