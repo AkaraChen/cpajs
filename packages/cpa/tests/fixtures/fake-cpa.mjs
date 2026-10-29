@@ -75,7 +75,15 @@ setTimeout(() => {
     res.writeHead(404);
     res.end();
   });
-  server.once('error', (error) => {
+  // The real binary (Go) sets SO_REUSEADDR and rebinds a port its predecessor just released. Node and Bun can
+  // briefly report EADDRINUSE for it after a restart, so retry for a moment, except when a test holds the port.
+  const holdsPort = Boolean(process.env.FAKE_BIND_ERROR) && runs <= Number(process.env.FAKE_BIND_ERROR);
+  let attempts = holdsPort ? 0 : 40;
+  server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE' && attempts-- > 0) {
+      setTimeout(() => server.listen(port, host), 50);
+      return;
+    }
     console.error(`fake cpa could not listen on ${host}:${port}: ${error.code}`);
     process.exit(0);
   });
