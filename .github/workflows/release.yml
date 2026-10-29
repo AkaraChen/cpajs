@@ -40,6 +40,13 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match packages/cpa/package.json version $version" >&2
             exit 1
           fi
+          # @cpajs/codex-auth is not published by this workflow yet (docs/releasing-codex-auth.md),
+          # but its version must stay in lockstep so the later wiring does not ship a stale one.
+          codex="$(node -p "require('./packages/codex-auth/package.json').version")"
+          if [ "$codex" != "$version" ]; then
+            echo "packages/codex-auth/package.json version $codex does not match $version" >&2
+            exit 1
+          fi
 
   build:
     name: build ${{ matrix.target }}
