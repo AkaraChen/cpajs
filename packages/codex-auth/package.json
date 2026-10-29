@@ -1,6 +1,6 @@
 {
   "name": "@cpajs/codex-auth",
-  "version": "0.1.0-rc.7",
+  "version": "0.1.0-rc.8",
   "description": "Sign in with ChatGPT (Codex device flow) and build the auth file CLIProxyAPI reads, with zero runtime dependencies",
   "license": "MIT",
   "author": "akarachen",

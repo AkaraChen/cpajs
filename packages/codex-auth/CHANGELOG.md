@@ -2,7 +2,7 @@
 
 All notable changes to `@cpajs/codex-auth`.
 
-## Unreleased
+## 0.1.0-rc.8
 
 First release through the release workflow, at the version shared with `@cpajs/cpa`. `0.1.0-rc.6` was a
 manual bootstrap publish of the initial code, without the changes listed under Fixed and Changed.

@@ -4,6 +4,11 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## 0.1.0-rc.8
+
+No API changes. The repository is now a pnpm monorepo; the published package contents are the same. Released
+in lockstep with `@cpajs/codex-auth`: every `@cpajs/*` package now shares one version.
+
 ## 0.1.0-rc.7
 
 ### Breaking
