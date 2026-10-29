@@ -144,3 +144,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: bun --bun vitest run
         working-directory: packages/cpa
+      - run: bun --bun vitest run
+        working-directory: packages/codex-auth
