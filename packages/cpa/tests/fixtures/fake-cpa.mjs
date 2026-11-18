@@ -85,7 +85,8 @@ setTimeout(() => {
       return;
     }
     console.error(`fake cpa could not listen on ${host}:${port}: ${error.code}`);
-    process.exit(0);
+    // Like CPA since v8.0.68: a failed bind is a startup failure, exit status 1.
+    process.exit(1);
   });
   server.listen(port, host, () => console.log(`API server started successfully on: ${host}:${port}`));
 }, delayMs);

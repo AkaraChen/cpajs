@@ -10,7 +10,7 @@ manage any CPA instance with a hand-written, typed client for its native **v8 ma
 - Prebuilt CPA binaries for 23 platforms come through `optionalDependencies`, so `npm install` is all that is
   needed.
 
-Bundled CLIProxyAPI: **v8.0.43**.
+Bundled CLIProxyAPI: **v8.0.77**.
 
 - Upgrading: [CHANGELOG.md](CHANGELOG.md) and [docs/migration.md](docs/migration.md).
 - Platforms, versions and the versioning policy: [docs/compatibility.md](docs/compatibility.md).

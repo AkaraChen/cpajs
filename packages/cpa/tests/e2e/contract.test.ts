@@ -304,8 +304,18 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       ).resolves.toEqual({ status: 'ok' });
       const refreshed = await client.credentials.refresh({ name: 'e2e-refresh.json' });
       expect(refreshed).toMatchObject({ ok: true, auth: { id: 'e2e-refresh.json', provider: 'claude', status: 'active' } });
+      // Since v8.0.50 the v8 route returns the redacted list entry, not the raw auth record.
+      expect(refreshed.auth).toMatchObject({ requires_sign_in: false, adopted: expect.any(Boolean), recovery_stage: expect.any(String) });
+      expect(refreshed.auth).not.toHaveProperty('metadata');
 
       const missing = (await client.credentials.refresh({ name: 'nope.json' }).catch((e: unknown) => e)) as CpaHttpError;
+      expect(missing.status).toBe(404);
+      expect(missing.errorCode).toBe('auth file not found');
+    });
+
+    it('verify reports a missing credential', async () => {
+      // A successful verification needs a working upstream account; the error path proves the route and body.
+      const missing = (await client.credentials.verify({ name: 'nope.json' }).catch((e: unknown) => e)) as CpaHttpError;
       expect(missing.status).toBe(404);
       expect(missing.errorCode).toBe('auth file not found');
     });
@@ -316,7 +326,8 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
     it('starts, polls and cancels a login session without contacting the provider', async () => {
       const started = await client.oauth.start({ provider: 'claude' });
       expect(started.url).toMatch(/^https:\/\//);
-      expect(started.state).toMatch(/^[0-9a-f]{32}$/);
+      // Claude logins use a 43-character base64url state like native Claude Code since v8.0.59 (upstream ea0b4712).
+      expect(started.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
       await expect(client.oauth.status(started.state)).resolves.toEqual({ status: 'wait' });
       await expect(client.oauth.cancel(started.state)).resolves.toEqual({ status: 'ok', cancelled: true });
       await expect(client.oauth.status(started.state)).resolves.toEqual({ status: 'error', error: 'unknown or expired state' });
@@ -417,6 +428,19 @@ describe.skipIf(!binary)('client contract against real CPA', () => {
       const requestLog = await client.logs.downloadRequestLog(requestId);
       expect(requestLog.filename).toBe(file.name);
       expect(await requestLog.blob.text()).toBe(text);
+    });
+
+    it('reports in-flight request counts', async () => {
+      const result = await client.usage.inFlight();
+      expect(result.in_flight).toBeGreaterThanOrEqual(0);
+      expect(result.by_provider).toBeTypeOf('object');
+    });
+
+    it('refreshes model catalogs, skipping embedded ones', async () => {
+      // localModel: true pins every catalog to the embedded copy, so nothing is fetched.
+      const result = await client.routing.refreshModelDefinitions();
+      expect(result).toMatchObject({ ok: true, status: 'ok', changed_providers: [] });
+      for (const status of Object.values(result.catalogs)) expect(status).toMatchObject({ refreshed: false, skipped: true });
     });
 
     it('serves model definitions and cooldown errors', async () => {

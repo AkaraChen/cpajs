@@ -273,8 +273,9 @@ async function launchProcess(options: LaunchOptions): Promise<LaunchResult> {
     });
     return { kind: 'failed', error, result: exit };
   }
-  // CPA exits with code 0 when its bind fails, so the output cannot tell a
-  // port conflict apart from any other early exit. Probe the port instead.
+  // CPA exits with code 1 for every startup failure (bad config, failed bind,
+  // ...), so neither the exit code nor the output tells a port conflict apart
+  // from any other early exit. Probe the port instead.
   // This is best-effort: the port can be taken or freed between the child's
   // bind attempt and this check.
   if (!(await isPortFree(options.host, options.port))) {
