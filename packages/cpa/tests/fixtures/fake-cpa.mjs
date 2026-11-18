@@ -5,13 +5,16 @@
 //   FAKE_EXIT=<code>        exit immediately with <code> after printing a line
 //   FAKE_BIND_ERROR=<n>     for the first <n> runs (counted in FAKE_COUNTER), make the
 //                           port occupied from a separate process so the real bind fails
-//                           and the process exits 0, like the real binary
+//                           and the process exits 1, like the real binary
 //   FAKE_IGNORE_TERM=1      ignore SIGTERM
 //   FAKE_DELAY_MS=<ms>      wait before listening
 //   FAKE_DELAY_AFTER=<n>    only apply FAKE_DELAY_MS from run <n>+1 on
 //   FAKE_ECHO=<text>        print <text> on stdout and stderr at startup
 //   FAKE_CRLF=1             print a CRLF-terminated line on stdout and stderr
 //   FAKE_LONG_LINE=<n>      print one stdout line of <n> 'x' characters, then a short marker line
+//   FAKE_BIND_RETRIES=<n>   rebind attempts after EADDRINUSE (default 40); set 0 when the test itself
+//                           holds the port, so the failure is reported at once
+//   FAKE_BIND_RETRY_MS=<ms> pause between rebind attempts (default 50)
 //   FAKE_LOG_SAMPLES=1      print CPA-formatted lines at every level, with and without a request
 //                           id, plus one unformatted line
 import { spawn } from 'node:child_process';
@@ -78,10 +81,11 @@ setTimeout(() => {
   // The real binary (Go) sets SO_REUSEADDR and rebinds a port its predecessor just released. Node and Bun can
   // briefly report EADDRINUSE for it after a restart, so retry for a moment, except when a test holds the port.
   const holdsPort = Boolean(process.env.FAKE_BIND_ERROR) && runs <= Number(process.env.FAKE_BIND_ERROR);
-  let attempts = holdsPort ? 0 : 40;
+  let attempts = holdsPort ? 0 : Number(process.env.FAKE_BIND_RETRIES ?? 40);
+  const retryMs = Number(process.env.FAKE_BIND_RETRY_MS ?? 50);
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE' && attempts-- > 0) {
-      setTimeout(() => server.listen(port, host), 50);
+      setTimeout(() => server.listen(port, host), retryMs);
       return;
     }
     console.error(`fake cpa could not listen on ${host}:${port}: ${error.code}`);

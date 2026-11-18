@@ -533,7 +533,9 @@ describe('server lifecycle (fake binary)', () => {
 
     it('fails with port-in-use instead of switching ports, and cleans up', async () => {
       const counter = join(dir, 'runs');
-      const server = await startFake({ env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '1500' },
+      // FAKE_BIND_RETRIES=0: the test holds the port itself, so the bind must fail at once.
+      const server = await startFake({
+        env: { FAKE_COUNTER: counter, FAKE_DELAY_AFTER: '1', FAKE_DELAY_MS: '800', FAKE_BIND_RETRIES: '0' },
       });
       const stateDir = server.stateDir;
       const restarting = startError(server.restart());
@@ -553,7 +555,8 @@ describe('server lifecycle (fake binary)', () => {
       const exit = await server.stop();
       expect(await server.exited).toEqual(exit);
       await expect(server.restart()).rejects.toMatchObject({ code: 'stopped' });
-    });
+      // A tight limit, so a bind retry loop on this path fails the test instead of eating the 5 s default.
+    }, 3_000);
 
     it('fails an already-aborted restart and leaves the server stopped', async () => {
       const server = await startFake();
