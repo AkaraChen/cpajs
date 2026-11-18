@@ -1,5 +1,5 @@
 // Types for /v8/management/credentials.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 import type { AuthStatus, CooldownReason, OkStatus, PartialFailure, RecentRequestBucket, SIWCStatus } from './common.ts';
 
@@ -79,6 +79,44 @@ export interface AuthFileEntry {
   siwc_status?: SIWCStatus;
   siwc_bound?: boolean;
   siwc_expires_at?: string;
+  // v8 renewal / recovery view (auth_files.go:804-865)
+  /** Login entry the credential was signed in through (multi-entry OAuth plugins). */
+  oauth_provider?: string;
+  access_token_expires_at?: string; // RFC 3339
+  next_refresh_after?: string;      // RFC 3339; only while in the future
+  requires_sign_in: boolean;
+  renewal_state: RenewalState | (string & {});
+  recovery_stage: RecoveryStage | (string & {});
+  quota_blocked: boolean;
+  adopted: boolean;
+  adopted_at?: string;
+  inference_verified: boolean;
+  last_inference_verified_at?: string;
+  renewal_verified: boolean;
+  last_renewal_verified_at?: string;
+  refresh_error?: CredentialRefreshError;
+  /** Present when `requires_sign_in` is true. */
+  next_action?: 'sign_in';
+  recovery_hint?: string;
+  renewal_event?: RenewalSignInRequiredEvent;
+  // Antigravity TOS_VIOLATION deactivation (auth_files.go:704-711)
+  tos_appeal_url?: string;
+  tos_appeal_url_text?: string;
+}
+
+export type RenewalState =
+  | 'sign_in_required' | 'expired_sign_in_required' | 'retry_scheduled' | 'renewal_verified' | 'awaiting_first_renewal';
+export type RecoveryStage =
+  | 'sign_in_required' | 'credential_saved' | 'quota_blocked' | 'renewal_verified' | 'inference_verified' | 'loaded';
+export interface CredentialRefreshError { code: string; message: string; http_status: number }
+export interface RenewalSignInRequiredEvent {
+  type: 'renewal_sign_in_required';
+  auth_id: string;
+  provider: string;
+  next_action: 'sign_in';
+  occurred_at?: string;
+  account?: string;
+  access_token_expires_at?: string;
 }
 
 export interface ListCredentialsResponse {
@@ -144,51 +182,39 @@ export interface RefreshCredentialsQuery { all?: 'true'; name?: string; auth_ind
 export interface RefreshCredentialsRequest { name?: string; auth_index?: string; all?: boolean }
 export interface ForceRefreshResult { id: string; success: boolean; error?: string }
 
-export interface CoreAuthQuotaState {
-  exceeded: boolean;
-  reason?: string;
-  next_recover_at: string;
-  backoff_level?: number;
-  observed_at?: string;
-  signals?: Record<string, string>;
-}
-export interface CoreAuthError { code?: string; message: string; retryable: boolean; http_status?: number }
-export interface CoreModelState {
-  status: AuthStatus;
-  status_message?: string;
-  unavailable: boolean;
-  next_retry_after: string;
-  last_error?: CoreAuthError;
-  quota: CoreAuthQuotaState;
-  updated_at: string;
-}
-export interface CoreAuth {
-  id: string;
-  registration_epoch?: number;
-  credential_version?: number;
-  generation?: number;
-  provider: string;
-  prefix?: string;
-  label?: string;
-  status: AuthStatus;
-  status_message?: string;
-  disabled: boolean;
-  unavailable: boolean;
-  proxy_url?: string;
-  attributes?: Record<string, string>;
-  metadata?: Record<string, unknown>; // contains raw tokens
-  quota: CoreAuthQuotaState;
-  last_error?: CoreAuthError;
-  created_at: string;
-  updated_at: string;
-  last_refreshed_at: string;
-  next_refresh_after: string;
-  next_retry_after: string;
-  model_states?: Record<string, CoreModelState>;
-}
+/** Single refresh on v8 returns the redacted list entry, not the raw auth record (CPA >= v8.0.50). */
 export type RefreshCredentialsResponse =
   | { ok: true; results: ForceRefreshResult[] }
-  | { ok: true; auth: CoreAuth };
+  | { ok: true; auth: AuthFileEntry };
+
+// ---------- POST /credentials/verify ----------
+// Runs a minimal inference pinned to one credential (auth_files_v8.go:544-649). Fields may be sent
+// as query or JSON body; query wins. Errors: 400/404/503 as CpaSimpleError, 409/502/upstream status
+// as VerifyCredentialErrorBody.
+export interface VerifyCredentialRequest {
+  name?: string;           // also accepted as target_auth_id / auth_id
+  target_auth_id?: string;
+  auth_id?: string;
+  auth_index?: string;
+  model?: string;          // defaults to the credential's first registered model
+}
+export interface VerifyCredentialResponse {
+  status: 'ok';
+  verified: boolean;
+  recovery_stage?: RecoveryStage | (string & {});
+  renewal_state?: RenewalState | (string & {});
+  inference_verified?: boolean;
+  credential?: AuthFileEntry;
+}
+export interface VerifyCredentialErrorBody {
+  status: 'error';
+  verified: false;
+  error: string;
+  recovery_stage?: RecoveryStage | (string & {});
+  renewal_state?: RenewalState | (string & {});
+  quota_blocked?: boolean;
+  credential?: AuthFileEntry;
+}
 
 // ---------- GET /credentials/siwc/status, GET /oauth/siwc/status ----------
 export interface SIWCStatusQuery { name?: string; id?: string; auth_index?: string; authIndex?: string }

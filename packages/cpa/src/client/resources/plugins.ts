@@ -5,6 +5,7 @@ import type {
   PluginListResponse,
   PluginQuotaResetResponse,
   PluginStoreListResponse,
+  PluginStoreQuery,
   QuotaFetchResponse,
 } from '../types/plugins.ts';
 import type { RequestOptions, Transport } from '../transport.ts';
@@ -26,9 +27,20 @@ export class PluginsResource {
     return (await this.#t.request<DeletePluginResponse>({ ...options, method: 'DELETE', path: `/plugins/${encodeURIComponent(id)}` })).data;
   }
 
-  /** Lists plugins from every store source (network access on the server). */
-  async store(options: RequestOptions = {}): Promise<PluginStoreListResponse> {
-    return (await this.#t.request<PluginStoreListResponse>({ ...options, method: 'GET', path: '/plugins/store' })).data;
+  /**
+   * Lists plugins from every store source (network access on the server).
+   * `refresh: true` makes the server re-check plugin releases instead of using its cache.
+   */
+  async store(options: RequestOptions & PluginStoreQuery = {}): Promise<PluginStoreListResponse> {
+    const { refresh, ...rest } = options;
+    return (
+      await this.#t.request<PluginStoreListResponse>({
+        ...rest,
+        method: 'GET',
+        path: '/plugins/store',
+        ...(refresh ? { query: { refresh: 'true' } } : {}),
+      })
+    ).data;
   }
 
   /**

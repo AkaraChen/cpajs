@@ -44,7 +44,7 @@ export class ServerResource {
     return info;
   }
 
-  /** Latest CLIProxyAPI release tag on GitHub (e.g. `"v8.0.43"`), fetched by the server. */
+  /** Latest CLIProxyAPI release tag on GitHub (e.g. `"v8.0.77"`), fetched by the server. */
   async latestVersion(options: RequestOptions = {}): Promise<string> {
     const res = await this.#t.request<LatestVersionResponse>({ ...options, method: 'GET', path: '/server/latest-version' });
     return res.data['latest-version'];

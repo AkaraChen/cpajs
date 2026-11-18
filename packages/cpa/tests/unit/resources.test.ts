@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   CpaHttpError,
   type CpaApiKeyProvider,
@@ -167,6 +167,7 @@ describe('credentials', () => {
     await client.credentials.refresh({ auth_index: 'abc' });
     await client.credentials.refreshAll();
     await client.credentials.siwcStatus({ name: 'a.json' });
+    await client.credentials.verify({ auth_index: 'abc', model: 'gpt-5' });
     expect(await blob.text()).toBe('{"type":"codex"}');
     expect(calls.map((c) => `${c.method} ${c.url.pathname}${c.url.search}`)).toEqual([
       'GET /v8/management/credentials?page=2&page_size=10',
@@ -178,9 +179,31 @@ describe('credentials', () => {
       'POST /v8/management/credentials/refresh',
       'POST /v8/management/credentials/refresh',
       'GET /v8/management/credentials/siwc/status?name=a.json',
+      'POST /v8/management/credentials/verify',
     ]);
     expect(JSON.parse(calls[6]!.body)).toEqual({ auth_index: 'abc' });
     expect(JSON.parse(calls[7]!.body)).toEqual({ all: true });
+    expect(JSON.parse(calls[9]!.body)).toEqual({ auth_index: 'abc', model: 'gpt-5' });
+  });
+
+  it('refresh returns the redacted list entry', async () => {
+    const entry = { id: 'a.json', name: 'a.json', provider: 'codex', requires_sign_in: false, renewal_state: 'renewal_verified' };
+    const { client } = mockClient(() => Response.json({ ok: true, auth: entry }));
+    const result = await client.credentials.refresh({ name: 'a.json' });
+    expect(result.auth).toEqual(entry);
+    // @ts-expect-error metadata (raw tokens) is not part of the v8 refresh response
+    expect(result.auth.metadata).toBeUndefined();
+  });
+
+  it('verify resolves on success and exposes the error body on failure', async () => {
+    const ok = mockClient(() => Response.json({ status: 'ok', verified: true, recovery_stage: 'inference_verified', inference_verified: true }));
+    await expect(ok.client.credentials.verify({ name: 'a.json' })).resolves.toMatchObject({ verified: true });
+    const body = { status: 'error', verified: false, error: 'sign_in_required', recovery_stage: 'sign_in_required' };
+    const failed = mockClient(() => Response.json(body, { status: 409 }));
+    const error = await failed.client.credentials.verify({ name: 'a.json' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect((error as CpaHttpError).status).toBe(409);
+    expect((error as CpaHttpError).data).toEqual(body);
   });
 
 });
@@ -246,10 +269,13 @@ describe('ops resources', () => {
     await client.usage.popQueue(5);
     await client.routing.resetCooldown('abc');
     await client.routing.modelDefinitions('claude');
+    await client.routing.refreshModelDefinitions();
+    await client.usage.inFlight();
     await client.requests.apiCall({ method: 'GET', url: 'https://example.com', header: { Authorization: 'Bearer $TOKEN$' } });
     await client.plugins.list();
     await client.plugins.delete('my-plugin');
     await client.plugins.store();
+    await client.plugins.store({ refresh: true });
     await client.plugins.install('deepseek-search', { source: 'official' });
     await client.plugins.quota('p', 'abc');
     await client.plugins.resetQuota('p', 'abc');
@@ -265,10 +291,13 @@ describe('ops resources', () => {
       'GET /v8/management/observability/usage/queue?count=5',
       'POST /v8/management/routing/cooldown/reset',
       'GET /v8/management/routing/model-definitions/claude',
+      'POST /v8/management/routing/model-definitions/refresh',
+      'GET /v8/management/observability/requests/in-flight',
       'POST /v8/management/requests/api-call',
       'GET /v8/management/plugins',
       'DELETE /v8/management/plugins/my-plugin',
       'GET /v8/management/plugins/store',
+      'GET /v8/management/plugins/store?refresh=true',
       'POST /v8/management/plugins/store/deepseek-search/install?source=official',
       'GET /v8/management/plugins/p/quota?auth_index=abc',
       'DELETE /v8/management/plugins/p/quota?auth_index=abc',
@@ -276,12 +305,45 @@ describe('ops resources', () => {
     expect(JSON.parse(calls[7]!.body)).toEqual({ auth_index: 'abc' });
   });
 
+  it('refreshModelDefinitions returns the per-catalog result and rejects with the failure body on 502', async () => {
+    const result = {
+      ok: true,
+      status: 'ok',
+      catalog: 'https://example.com/models.json',
+      codex_catalog: 'embed',
+      devin_catalog: 'embed',
+      sources: { catalog: 'https://example.com/models.json' },
+      catalogs: {
+        catalog: { source: 'https://example.com/models.json', refreshed: true, changed_providers: ['claude'] },
+        'codex-catalog': { source: 'embed', refreshed: false, skipped: true },
+      },
+      changed_providers: ['claude'],
+    };
+    const ok = mockClient(() => Response.json(result));
+    await expect(ok.client.routing.refreshModelDefinitions()).resolves.toEqual(result);
+    expect(ok.calls[0]!.body).toBe('');
+    const failure = { ...result, ok: false, error: 'fetch failed', status: undefined };
+    const bad = mockClient(() => Response.json(failure, { status: 502 }));
+    const error = await bad.client.routing.refreshModelDefinitions().catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CpaHttpError);
+    expect((error as CpaHttpError).status).toBe(502);
+    expect((error as CpaHttpError).errorCode).toBe('fetch failed');
+  });
+
+  it('usage.inFlight returns the counts', async () => {
+    const body = { in_flight: 2, oldest_started_at: '2026-11-18T01:02:03.456Z', by_provider: { codex: 2 } };
+    const { client } = mockClient(() => Response.json(body));
+    const result = await client.usage.inFlight();
+    expect(result).toEqual(body);
+    expectTypeOf(result.by_provider).toEqualTypeOf<Record<string, number>>();
+  });
+
   it('reads server info from headers, including on 404', async () => {
-    const headers = { 'X-CPA-VERSION': '8.0.43', 'X-CPA-COMMIT': '3078035', 'X-CPA-BUILD-DATE': 'unknown', 'X-CPA-SUPPORT-PLUGIN': '1' };
+    const headers = { 'X-CPA-VERSION': '8.0.77', 'X-CPA-COMMIT': 'a5e8f69', 'X-CPA-BUILD-DATE': 'unknown', 'X-CPA-SUPPORT-PLUGIN': '1' };
     const found = mockClient(() => Response.json(8, { headers }));
-    await expect(found.client.server.info()).resolves.toEqual({ version: '8.0.43', commit: '3078035', buildDate: 'unknown', supportPlugin: true });
+    await expect(found.client.server.info()).resolves.toEqual({ version: '8.0.77', commit: 'a5e8f69', buildDate: 'unknown', supportPlugin: true });
     const missing = mockClient(() => Response.json({ error: 'not_found' }, { status: 404, headers }));
-    await expect(missing.client.server.info()).resolves.toMatchObject({ version: '8.0.43' });
+    await expect(missing.client.server.info()).resolves.toMatchObject({ version: '8.0.77' });
     const disabled = mockClient(() => new Response('', { status: 404 }));
     await expect(disabled.client.server.info()).rejects.toThrow(/X-CPA-VERSION/);
     const unauthorized = mockClient(() => Response.json({ error: 'invalid management key' }, { status: 401, headers }));
@@ -290,10 +352,10 @@ describe('ops resources', () => {
 
   it('health hits the root without a key; latestVersion unwraps the tag', async () => {
     const { client, calls } = mockClient((req) =>
-      req.url.pathname.endsWith('/healthz') ? Response.json({ status: 'ok' }) : Response.json({ 'latest-version': 'v8.0.43' }),
+      req.url.pathname.endsWith('/healthz') ? Response.json({ status: 'ok' }) : Response.json({ 'latest-version': 'v8.0.77' }),
     { baseUrl: 'http://cpa.test/prefix' });
     await expect(client.server.health()).resolves.toEqual({ status: 'ok' });
-    await expect(client.server.latestVersion()).resolves.toBe('v8.0.43');
+    await expect(client.server.latestVersion()).resolves.toBe('v8.0.77');
     expect(calls[0]!.url.pathname).toBe('/prefix/healthz');
     expect(calls[0]!.headers.get('authorization')).toBeNull();
     expect(calls[1]!.url.pathname).toBe('/prefix/v8/management/server/latest-version');
