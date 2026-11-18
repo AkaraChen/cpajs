@@ -1,5 +1,5 @@
 // Shared response types.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 export interface StatusErrorBody { status: 'error'; error: string }
 export interface OkStatus { status: 'ok' }
@@ -9,7 +9,7 @@ export type SIWCStatus = 'off' | 'valid' | 'invalid';
 export type CooldownReason =
   | 'credential_quota' | 'quota' | 'cloudflare_challenge' | 'model_not_supported'
   | 'invalid_grant' | 'unauthorized' | 'payment_required' | 'not_found'
-  | 'transient_error' | 'unknown';
+  | 'transient_error' | 'transient_rate_limit' | 'unknown';
 
 /** Any JSON value. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };

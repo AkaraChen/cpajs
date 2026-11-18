@@ -1,4 +1,4 @@
-import type { ApiKeyUsageResponse, UsageQueueResponse } from '../types/observability.ts';
+import type { ApiKeyUsageResponse, InFlightRequestsResponse, UsageQueueResponse } from '../types/observability.ts';
 import type { RequestOptions, Transport } from '../transport.ts';
 
 /** `/v8/management/observability/usage/*`. */
@@ -23,5 +23,10 @@ export class UsageResource {
     return (
       await this.#t.request<UsageQueueResponse>({ ...options, method: 'GET', path: '/observability/usage/queue', query: { count } })
     ).data;
+  }
+
+  /** Requests currently in flight on this instance, in total and per provider. Counts only. */
+  async inFlight(options: RequestOptions = {}): Promise<InFlightRequestsResponse> {
+    return (await this.#t.request<InFlightRequestsResponse>({ ...options, method: 'GET', path: '/observability/requests/in-flight' })).data;
   }
 }

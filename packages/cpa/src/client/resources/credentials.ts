@@ -1,6 +1,5 @@
 import type {
   AuthFileEntry,
-  CoreAuth,
   CredentialModelsResponse,
   DeleteCredentialsResponse,
   ForceRefreshResult,
@@ -12,6 +11,7 @@ import type {
   PatchCredentialStatusResponse,
   SIWCStatusResponse,
   UploadCredentialsResponse,
+  VerifyCredentialResponse,
 } from '../types/credentials.ts';
 import type { RequestOptions, Transport } from '../transport.ts';
 
@@ -114,9 +114,13 @@ export class CredentialsResource {
     return (await this.#t.request<PatchCredentialFieldsResponse>({ ...options, method: 'PATCH', path: '/credentials/fields', json: request })).data;
   }
 
-  /** Forces a token refresh for one credential. The returned auth record contains raw tokens. */
-  async refresh(selector: CredentialSelector, options: RequestOptions = {}): Promise<{ ok: true; auth: CoreAuth }> {
-    return (await this.#t.request<{ ok: true; auth: CoreAuth }>({ ...options, method: 'POST', path: '/credentials/refresh', json: selector })).data;
+  /**
+   * Forces a token refresh for one credential and returns its redacted list
+   * entry (the same view as {@link list}); raw tokens are not included.
+   */
+  async refresh(selector: CredentialSelector, options: RequestOptions = {}): Promise<{ ok: true; auth: AuthFileEntry }> {
+    return (await this.#t.request<{ ok: true; auth: AuthFileEntry }>({ ...options, method: 'POST', path: '/credentials/refresh', json: selector }))
+      .data;
   }
 
   /** Forces a token refresh for every enabled credential that supports it. */
@@ -124,6 +128,16 @@ export class CredentialsResource {
     return (
       await this.#t.request<{ ok: true; results: ForceRefreshResult[] }>({ ...options, method: 'POST', path: '/credentials/refresh', json: { all: true } })
     ).data;
+  }
+
+  /**
+   * Runs a minimal test inference pinned to one credential (no fallback to
+   * other credentials). `model` defaults to the credential's first registered
+   * model. A failed verification rejects with a `CpaHttpError` (409, 502 or the
+   * upstream status) whose `data` is a `VerifyCredentialErrorBody`.
+   */
+  async verify(selector: CredentialSelector & { model?: string }, options: RequestOptions = {}): Promise<VerifyCredentialResponse> {
+    return (await this.#t.request<VerifyCredentialResponse>({ ...options, method: 'POST', path: '/credentials/verify', json: selector })).data;
   }
 
   /** Sign in with ChatGPT binding state of a Codex credential. */

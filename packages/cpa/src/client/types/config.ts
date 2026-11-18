@@ -4,7 +4,7 @@
 // All fields are optional: GET returns only what is stored, without defaults.
 // `null` may appear wherever a value was explicitly set to null (PATCH keeps
 // nulls; on per-key overrides null means "inherit from the group").
-// Derived from CLIProxyAPI v8.0.43 internal/config; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77 internal/config; see docs/api-coverage.md.
 
 /** Duration string ("30s", "1h") – some fields also accept integer seconds. */
 export type CpaDuration = string | number;
@@ -38,6 +38,8 @@ export interface CpaKeyShared<M> {
   headers?: Record<string, string> | null; models?: M[] | null; "excluded-models"?: string[] | null;
   "disable-cooling"?: boolean | null; "request-retry"?: number | null;
   "request-scoped-errors"?: CpaRequestScopedErrorRule[] | null;
+  /** Per-credential upstream connection reuse; omitted = a fresh transport per request. */
+  "connection-pool"?: CpaConnectionPool | null;
 }
 export interface CpaKeyBase<M> extends CpaKeyShared<M> {
   "api-key": string;
@@ -52,7 +54,15 @@ export interface CpaVertexKey extends Omit<CpaKeyBase<CpaVertexModel>, "request-
 export interface CpaCodexKey extends CpaKeyBase<CpaCodexModel> {                                                      // CodexKey :716 (xai, meta alias it)
   websockets?: boolean | null; "alpha-search"?: boolean | null; "disable-codex-cloaking"?: boolean | null;
 }
-export interface CpaClaudeCloak {                                                                                     // :572
+export interface CpaConnectionPool { enabled?: boolean; "idle-conn-timeout"?: string; "max-idle-conns-per-host"?: number }
+/** Go RE2 pattern and its replacement. */
+export interface CpaSensitivePatternRule { pattern: string; replacement: string }
+export interface CpaSensitiveReplace {
+  /** word -> replacement */
+  "sensitive-words-replace"?: Record<string, string>;
+  "sensitive-patterns-replace"?: CpaSensitivePatternRule[];
+}
+export interface CpaClaudeCloak extends CpaSensitiveReplace {                                                         // CloakConfig
   mode?: string; "strict-mode"?: boolean; "sensitive-words"?: string[]; "cache-user-id"?: boolean;
 }
 export interface CpaClaudeKey extends CpaKeyBase<CpaClaudeModel> {                                                    // :596
@@ -63,13 +73,15 @@ export interface CpaKeyGroup<K, M> extends CpaKeyShared<M> {
   name?: string; "base-url"?: string; keys: K[];
 }
 export interface CpaOpenAICompatKey {                                                                                 // :964
-  "api-key": string; weight?: number | null; "proxy-url"?: string; readonly auth_index?: string;
+  "api-key": string; weight?: number | null; "proxy-url"?: string; "connection-pool"?: CpaConnectionPool;
+  readonly auth_index?: string;
 }
 export interface CpaOpenAICompatGroup {                                                                               // :922 (keys replaces api-key-entries)
   name: string; priority?: number; disabled?: boolean; prefix?: string; "base-url": string;
   keys?: CpaOpenAICompatKey[]; models?: CpaOpenAICompatModel[]; headers?: Record<string, string>;
   "support-prompt-cache-key"?: boolean; "disable-cooling"?: boolean | null; "request-retry"?: number | null;
   "request-scoped-errors"?: CpaRequestScopedErrorRule[];
+  "connection-pool"?: CpaConnectionPool;
   /** Injected on the group by GET JSON when it has no keys. */
   readonly auth_index?: string;
 }
@@ -80,6 +92,13 @@ export interface CpaPayloadModelRule {                                          
 }
 export interface CpaPayloadRule { models?: CpaPayloadModelRule[]; params?: Record<string, unknown> }                  // :542
 export interface CpaPayloadFilterRule { models?: CpaPayloadModelRule[]; params?: string[] }                           // :534
+/** Text replacement inside messages (payload_replace.go). Invalid rules are dropped with a warning. */
+export interface CpaPayloadReplaceRule {
+  models?: CpaPayloadModelRule[];
+  target?: { role?: "user" | "system" | "developer" | (string & {}); positions?: number[]; all?: boolean; paths?: string[] };
+  /** Each entry maps the text (or regex) to find to its replacement. */
+  replacements?: Record<string, string>[];
+}
 
 export interface CpaOAuthModelAlias {                                                                                  // :455
   name: string; alias: string; openapi?: boolean; fork?: boolean; "display-name"?: string; "force-mapping"?: boolean;
@@ -96,7 +115,7 @@ export interface CpaClaudeHeaderDefaults {                                      
   "user-agent"?: string; "package-version"?: string; "runtime-version"?: string; os?: string; arch?: string;
   timeout?: string; timezone?: string; "stabilize-device-profile"?: boolean;
   "anthropic-beta-strip"?: string[]; "anthropic-beta-append"?: string[];
-  "inject-diagnostics"?: boolean; "client-request-id"?: string;
+  "inject-diagnostics"?: boolean; "client-request-id"?: string; "native-entrypoints"?: string[];
 }
 
 export interface CpaPluginStoreAuth {                                                                                  // internal/pluginstore/auth.go:27
@@ -115,6 +134,11 @@ export interface CpaConfig {
     "trusted-proxies"?: string[];                         // IP/CIDR, validated (422)
     tls?: { enable?: boolean; cert?: string; key?: string };                              // :336
     "commercial-mode"?: boolean;
+    /** Seconds to drain in-flight requests on shutdown; 0 = off. */
+    "shutdown-timeout"?: number;
+    /** Local bbolt store; default path `<auth-dir>/kv.db`. */
+    "kv-store"?: { disabled?: boolean; path?: string };
+    "response-compression"?: { enabled?: boolean; "min-bytes"?: number };
     discovery?: {                                                                         // :360
       enabled?: boolean; "service-name"?: string; "service-type"?: string; subtypes?: string[];
       interfaces?: { include?: string[]; exclude?: string[] };
@@ -163,6 +187,7 @@ export interface CpaConfig {
     payload?: {                                                                           // :520
       default?: CpaPayloadRule[]; "default-raw"?: CpaPayloadRule[];
       override?: CpaPayloadRule[]; "override-raw"?: CpaPayloadRule[]; filter?: CpaPayloadFilterRule[];
+      replace?: CpaPayloadReplaceRule[];
     };
   };
 
@@ -171,6 +196,7 @@ export interface CpaConfig {
       "optimize-multi-agent-v2"?: boolean; "enable-apply-patch"?: boolean;
       "web-search-result-cache"?: { enabled?: boolean; ttl?: string | number; limit?: number } | null;
     };
+    claude?: { "show-codex-commentary"?: boolean };
   };
 
   upstream?: {
@@ -178,11 +204,15 @@ export interface CpaConfig {
       "disable-codex-cloaking"?: boolean; "stream-bootstrap-buffering"?: boolean;
       "stream-bootstrap-timeout"?: string; "orphan-delegation-compatibility"?: boolean;
       "model-level-cooling"?: boolean; "response-steering"?: boolean;
+      "upstream-request-compression"?: boolean; "upstream-request-compression-min-bytes"?: number;
+      "websocket-compression"?: boolean;
     };
     claude?: {                                                                            // ClaudeConfig :115 + ClaudeCodeConfig + remaps
       "model-level-cooling"?: boolean; "tool-search"?: boolean; "session-date-pin-days"?: number | null;
       "disable-claude-cloak-mode"?: boolean; "disable-cloaking-model-list"?: boolean;
       "header-defaults"?: CpaClaudeHeaderDefaults;
+      /** Server-side model fallback; opt-in (off by default) since CPA v8.0.66. */
+      "server-side-fallback"?: boolean;
     };
     xai?: { "inject-x-search"?: boolean };                                                // :194
   };
@@ -216,13 +246,15 @@ export interface CpaConfig {
         "signin-with-chatgpt-identifier"?: string;
         "header-defaults"?: { "user-agent"?: string; "beta-features"?: string };          // :188
       };
-      antigravity?: {                                                                     // :206 + remaps
+      antigravity?: CpaSensitiveReplace & {                                               // AntigravityConfig + remaps
         "sensitive-words"?: string[];
-        "connection-pool"?: { enabled?: boolean; "idle-conn-timeout"?: string; "max-idle-conns-per-host"?: number };
+        "connection-pool"?: CpaConnectionPool;
+        /** Pool-wide pause after a TOS_VIOLATION; off by default. */
+        "tos-pause-window"?: string;
         "antigravity-credits"?: boolean;
         "signature-cache-enabled"?: boolean; "signature-bypass-strict"?: boolean;
       };
-      devin?: { "sensitive-words"?: string[] };
+      devin?: CpaSensitiveReplace & { "sensitive-words"?: string[] };
     };
   };
 

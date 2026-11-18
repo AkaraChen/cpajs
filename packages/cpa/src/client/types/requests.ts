@@ -1,5 +1,5 @@
 // Types for /v8/management/requests.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 // ---------- requests/api-call ----------
 export interface ApiCallRequest {
