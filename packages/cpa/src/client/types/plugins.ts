@@ -1,5 +1,5 @@
 // Types for /v8/management/plugins.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 // ---------- plugins ----------
 export type PluginConfigFieldType = "string" | "number" | "integer" | "boolean" | "enum" | "array" | "object";
@@ -28,6 +28,11 @@ export interface PluginListEntry {
   effective_enabled: boolean;
   supports_oauth: boolean;
   oauth_provider: string;
+  /** Every OAuth login entry a multi-entry plugin declares. */
+  oauth_providers?: string[];
+  oauth_provider_entries?: PluginOAuthProviderEntry[];
+  /** Runtime priority of a registered plugin (v8 listing only). */
+  priority?: number;
   supports_quota: boolean;
   quota_provider?: string;
   logo: string;
@@ -35,6 +40,7 @@ export interface PluginListEntry {
   menus: PluginMenuInfo[];
   metadata: PluginMetadataInfo | null;
 }
+export interface PluginOAuthProviderEntry { identifier: string; name: string; logo: string }
 export interface PluginListResponse { plugins_enabled: boolean; plugins_dir: string; plugins: PluginListEntry[] }
 
 export interface DeletePluginResponse {
@@ -70,6 +76,8 @@ export interface PluginStoreListEntry {
   homepage?: string;
   license?: string;
   tags?: string[];
+  /** Localized overrides keyed by BCP 47 tag, e.g. "zh-CN". */
+  locales?: Record<string, PluginStoreLocale>;
   installed: boolean;
   installed_version: string;
   installed_source_id?: string;
@@ -81,6 +89,11 @@ export interface PluginStoreListEntry {
   effective_enabled: boolean;
   update_available: boolean;
 }
+export interface PluginStoreLocale {
+  name?: string; description?: string; author?: string; homepage?: string; license?: string; tags?: string[];
+}
+/** `refresh: true` re-checks GitHub releases instead of using the cache (10 s floor between re-checks). */
+export interface PluginStoreQuery { refresh?: boolean }
 export interface PluginStoreListResponse {
   plugins_enabled: boolean;
   plugins_dir: string;

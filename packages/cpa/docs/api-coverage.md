@@ -1,7 +1,7 @@
 # v8 management API coverage
 
-Supported CLIProxyAPI version: **v8.0.43** (commit `3078035`). Every route registered in
-[`internal/api/server_management_v8.go`](https://github.com/router-for-me/CLIProxyAPI/blob/307803510bce87f986fcf7b1a84190f105c7b4aa/internal/api/server_management_v8.go)
+Supported CLIProxyAPI version: **v8.0.77** (commit `a5e8f69`). Every route registered in
+[`internal/api/server_management_v8.go`](https://github.com/router-for-me/CLIProxyAPI/blob/a5e8f69e56309e1ef6d6872e667da81fdfbce2ce/internal/api/server_management_v8.go)
 is listed below. Handler references are relative to `internal/api/handlers/management/` at that commit.
 
 Official reference: <https://help.router-for.me/management/apiv8>. The client follows the
@@ -14,9 +14,9 @@ plugin-enabled linux-x64-gnu build; plugin store tests use a local registry thro
 
 ## Common behaviour
 
-| Topic | Behaviour (verified against v8.0.43) | Client |
+| Topic | Behaviour (verified against v8.0.77) | Client |
 | --- | --- | --- |
-| Auth | `Authorization: Bearer <key>`. CPA also accepts a bare `Authorization: <key>` or `X-Management-Key`. Wrong key → 401 `{"error":"invalid management key"}`. Five failures from one IP ban it for 30 minutes, localhost included (handler.go:358-457). | Always sends Bearer; `CpaHttpError.errorCode`. **U E** |
+| Auth | `Authorization: Bearer <key>`. CPA also accepts a bare `Authorization: <key>` or `X-Management-Key`. Wrong key → 401 `{"error":"invalid management key"}`. Five failures from one IP ban it for 30 minutes, localhost included (handler.go:351-479). Since v8.0.70 a verified key's hash is cached for one hour (auth_cache.go), so repeated requests skip bcrypt; changing `secret-key` clears the cache. | Always sends Bearer; `CpaHttpError.errorCode`. **U E** |
 | Remote access | Non-loopback clients need `management.allow-remote`. Setting `MANAGEMENT_PASSWORD` also allows them; cpajs only sets it for `management.viaEnvironment`. | The default `startServer({ management: { key } })` writes a bcrypt hash and leaves `allow-remote` false; `management.viaEnvironment` uses `MANAGEMENT_PASSWORD`, which also allows them. |
 | Disabled management | 404 with an empty body and no `X-CPA-*` headers. | `CpaHttpError` with `status: 404`, `data: undefined`. **U** |
 | Version headers | `X-CPA-VERSION`, `X-CPA-COMMIT`, `X-CPA-BUILD-DATE`, `X-CPA-SUPPORT-PLUGIN` on every authenticated response, 401/403 included. | `client.server.info()`. **U E** |
@@ -65,9 +65,9 @@ rewrite the file with its bcrypt hash a few seconds later, which changes the ETa
 
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/healthz` (root, no auth) | server_routes.go:45 | `server.health()` | U E | ✅ |
+| GET | `/healthz` (root, no auth) | server_routes.go:55 | `server.health()` | U E | ✅ |
 | GET | `/server/latest-version` | config_basic.go:48 (calls GitHub) | `server.latestVersion()` → tag string | U | ✅ |
-| – | version headers | handler.go:325 | `server.info()` | U E | ✅ |
+| – | version headers | handler.go:353 | `server.info()` | U E | ✅ |
 
 ### Requests
 
@@ -80,34 +80,38 @@ rewrite the file with its bcrypt hash a few seconds later, which changes the ETa
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
 | POST | `/routing/cooldown/reset` | quota.go:28 | `routing.resetCooldown(authIndex)` | U E | ✅ |
-| GET | `/routing/model-definitions/:channel` | model_definitions.go:15 | `routing.modelDefinitions(channel)` | U E | ✅ |
+| GET | `/routing/model-definitions/:channel` | model_definitions.go:63 | `routing.modelDefinitions(channel)` | U E | ✅ |
+| POST | `/routing/model-definitions/refresh` | model_definitions.go:14 (no body; refetches `models.*` catalogs; 400 bad source, 502 fetch failed with the same fields) | `routing.refreshModelDefinitions()` | U | ✅ |
+| POST | `/models/refresh` | model_definitions.go:14 (same handler as above) | covered by `routing.refreshModelDefinitions()` | – | ✅ (equivalent) |
 
 ### Observability
 
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/observability/logs` | logs.go:40 (needs `logging-to-file`) | `logs.get({limit, after, cursor})` | U E | ✅ |
-| DELETE | `/observability/logs` | logs.go:135 | `logs.clear()` | U E | ✅ |
-| GET | `/observability/logs/errors` | logs.go:197 | `logs.listErrorLogs()` | U E | ✅ |
-| GET | `/observability/logs/errors/:name` | logs.go:430 (attachment) | `logs.downloadErrorLog(name)` → `{filename, blob}` | U E | ✅ |
-| GET | `/observability/logs/requests/:id` | logs.go:261 (attachment; matches the last 8 chars of the ID) | `logs.downloadRequestLog(id)` | U E | ✅ |
+| GET | `/observability/logs` | logs.go:41 (needs `logging-to-file`) | `logs.get({limit, after, cursor})` | U E | ✅ |
+| DELETE | `/observability/logs` | logs.go:136 | `logs.clear()` | U E | ✅ |
+| GET | `/observability/logs/errors` | logs.go:198 | `logs.listErrorLogs()` | U E | ✅ |
+| GET | `/observability/logs/errors/:name` | logs.go:431 (attachment) | `logs.downloadErrorLog(name)` → `{filename, blob}` | U E | ✅ |
+| GET | `/observability/logs/requests/:id` | logs.go:262 (attachment; matches the last 8 chars of the ID) | `logs.downloadRequestLog(id)` | U E | ✅ |
 | GET | `/observability/usage/api-keys` | api_key_usage.go:58 (raw keys in map keys) | `usage.apiKeys()` | U E | ✅ |
 | GET | `/observability/usage/queue` | usage.go:24 (**destructive pop**) | `usage.popQueue(count)` | U E | ✅ |
+| GET | `/observability/requests/in-flight` | in_flight.go:22 (counts only; always 0 in Home mode) | `usage.inFlight()` | U E | ✅ |
 
 ### Credentials
 
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
 | GET | `/credentials` | auth_files.go:106 (`name`, `auth_index`, `page`, `page_size`) | `credentials.list(query)`, `credentials.get(name)` | U E | ✅ |
-| POST | `/credentials` (raw) | auth_files_crud.go:116, via oauth_siwc_mutations.go:17 | `credentials.upload({name, content})` | U E | ✅ |
-| POST | `/credentials` (multipart) | auth_files_crud.go:231 | `credentials.uploadMany(files)` | U E | ✅ |
-| DELETE | `/credentials` | auth_files_crud.go:142 via oauth_siwc_mutations.go:23 | `credentials.delete(name or names)`, `credentials.deleteAll()` | U E | ✅ |
+| POST | `/credentials` (raw) | auth_files_crud.go:120, via oauth_siwc_mutations.go:29 | `credentials.upload({name, content})` | U E | ✅ |
+| POST | `/credentials` (multipart) | auth_files_crud.go:245 | `credentials.uploadMany(files)` | U E | ✅ |
+| DELETE | `/credentials` | auth_files_crud.go:146 via oauth_siwc_mutations.go:36 | `credentials.delete(name or names)`, `credentials.deleteAll()` | U E | ✅ |
 | GET | `/credentials/models` | auth_files.go:336 | `credentials.models(name)` | U E | ✅ |
-| GET | `/credentials/download` | auth_files_crud.go:28 (attachment) | `credentials.download(name)` → `Blob` | U E | ✅ |
-| PATCH | `/credentials/status` | auth_files_fields.go:29 | `credentials.setStatus({name, disabled, auth_index?})` | U E | ✅ |
-| PATCH | `/credentials/fields` | auth_files_fields.go:262 | `credentials.patchFields({name, ...fields})` | U E | ✅ |
-| POST | `/credentials/refresh` | auth_files_refresh.go:15 | `credentials.refresh(selector)`, `credentials.refreshAll()` | U E | ✅ |
-| GET | `/credentials/siwc/status` | oauth_siwc.go:140 | `credentials.siwcStatus(selector)` | U | ✅ |
+| GET | `/credentials/download` | auth_files_crud.go:32 (attachment) | `credentials.download(name)` → `Blob` | U E | ✅ |
+| PATCH | `/credentials/status` | auth_files_fields.go:30 | `credentials.setStatus({name, disabled, auth_index?})` | U E | ✅ |
+| PATCH | `/credentials/fields` | auth_files_fields.go:263 | `credentials.patchFields({name, ...fields})` | U E | ✅ |
+| POST | `/credentials/refresh` | auth_files_refresh.go:15 (single refresh returns the redacted list entry since v8.0.50) | `credentials.refresh(selector)`, `credentials.refreshAll()` | U E | ✅ |
+| POST | `/credentials/verify` | auth_files_v8.go:544 (test inference pinned to one credential; 409 / 502 carry `{status:'error', verified:false, ...}`) | `credentials.verify(selector & {model})` | U E | ✅ |
+| GET | `/credentials/siwc/status` | oauth_siwc.go:167 | `credentials.siwcStatus(selector)` | U | ✅ |
 
 E2E covers the success response shape with an API-key credential (its executor has no token to rotate) and
 the missing-file 404. Rotation against a real provider needs provider tokens and stays unit-only.
@@ -116,13 +120,13 @@ the missing-file 404. Rotation against a real provider needs provider tokens and
 
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
-| GET, POST | `/oauth/auth-url` | auth_files_v8.go:119 | `oauth.start(request)` (always POST, so `proxy_url` is allowed) | U E | ✅ |
-| GET | `/oauth/status` | auth_files_provider_oauth.go:984 | `oauth.status(state)`, `oauth.waitForCompletion(state)` | U E | ✅ |
-| DELETE | `/oauth/session` | auth_files_provider_oauth.go:970 | `oauth.cancel(state)` | U E | ✅ |
-| GET, POST | `/oauth/callback` (no auth) | oauth_siwc.go:315/324 | `oauth.callback(body)` (POST) | U E | ✅ |
-| POST | `/oauth/import` | auth_files_v8.go:279 → vertex_import.go:18 | `oauth.importVertex({serviceAccount, location})` | U E | ✅ |
-| POST | `/oauth/siwc/bind` | oauth_siwc.go:195 | `oauth.siwcBind(name)` | U | ✅ |
-| GET | `/oauth/siwc/status` | oauth_siwc.go:140 | `oauth.siwcStatus(selector)` | U | ✅ |
+| GET, POST | `/oauth/auth-url` | auth_files_v8.go:135 (`target_auth_id` / `auth_index` re-login into an existing credential) | `oauth.start(request)` (always POST, so `proxy_url` is allowed) | U E | ✅ |
+| GET | `/oauth/status` | auth_files_provider_oauth.go:1319 (a finished targeted or Codex login adds `auth_id`, `saved`, `adopted`, `recovery_stage`, ...) | `oauth.status(state)`, `oauth.waitForCompletion(state)` | U E | ✅ |
+| DELETE | `/oauth/session` | auth_files_provider_oauth.go:1305 | `oauth.cancel(state)` | U E | ✅ |
+| GET, POST | `/oauth/callback` (no auth) | oauth_siwc.go:347/356 | `oauth.callback(body)` (POST) | U E | ✅ |
+| POST | `/oauth/import` | auth_files_v8.go:531 → vertex_import.go:18 | `oauth.importVertex({serviceAccount, location})` | U E | ✅ |
+| POST | `/oauth/siwc/bind` | oauth_siwc.go:222 | `oauth.siwcBind(name)` | U | ✅ |
+| GET | `/oauth/siwc/status` | oauth_siwc.go:167 | `oauth.siwcStatus(selector)` | U | ✅ |
 
 The OAuth tests in CI never talk to a real provider, but `oauth.importVertex` is exercised end to end with a
 generated RSA service-account key. They start a session, which only generates PKCE and a
@@ -140,13 +144,13 @@ run [`examples/oauth-login.ts`](../examples/oauth-login.ts) or follow these step
 
 | Method | Path | Handler | Client method | Tests | Status |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/plugins` | plugins.go:68 | `plugins.list()` | U E | ✅ |
-| DELETE | `/plugins/:id` | plugins.go:324 | `plugins.delete(id)` | U E | ✅ |
-| GET | `/plugins/store` | plugin_store.go:120 (network) | `plugins.store()` | U E | ✅ |
-| POST | `/plugins/store/:id/install` | plugin_store.go:221 (network) | `plugins.install(id, {source, version})` | U E | ✅ |
-| GET | `/plugins/:id/quota` | plugin_quota.go:238 | `plugins.quota(id, authIndex)` | U E | ✅ |
-| POST | `/plugins/:id/quota` | plugin_quota.go:252 | covered by `plugins.quota`; the handler is identical (`fetchQuotaForPlugin`) | – | ✅ (equivalent) |
-| DELETE | `/plugins/:id/quota` | plugin_quota.go:302 | `plugins.resetQuota(id, authIndex)` | U E | ✅ |
+| GET | `/plugins` | plugins.go:77 | `plugins.list()` | U E | ✅ |
+| DELETE | `/plugins/:id` | plugins.go:352 | `plugins.delete(id)` | U E | ✅ |
+| GET | `/plugins/store` | plugin_store.go:121 (network; `?refresh=true` re-checks releases) | `plugins.store({refresh})` | U E | ✅ |
+| POST | `/plugins/store/:id/install` | plugin_store.go:231 (network) | `plugins.install(id, {source, version})` | U E | ✅ |
+| GET | `/plugins/:id/quota` | plugin_quota.go:239 | `plugins.quota(id, authIndex)` | U E | ✅ |
+| POST | `/plugins/:id/quota` | plugin_quota.go:253 | covered by `plugins.quota`; the handler is identical (`fetchQuotaForPlugin`) | – | ✅ (equivalent) |
+| DELETE | `/plugins/:id/quota` | plugin_quota.go:303 | `plugins.resetQuota(id, authIndex)` | U E | ✅ |
 
 E2E installs a direct plugin from a local registry served by the test. Upstream always probes its built-in
 official registry first, so an offline run records that source error but still lists and installs the local
@@ -157,9 +161,9 @@ Any other route can be called through `client.request({ method, path, query, jso
 
 ## Documentation differences
 
-These are differences between the official docs and the v8.0.43 source. The client follows the source.
+These are differences between the official docs and the v8.0.77 source. The client follows the source.
 
-| Topic | Docs | Source (v8.0.43) |
+| Topic | Docs | Source (v8.0.77) |
 | --- | --- | --- |
 | SIWC routes | Not listed | `POST /oauth/siwc/bind`, `GET /oauth/siwc/status` and `GET /credentials/siwc/status` exist. |
 | `/oauth/auth-url` | `GET` only | `POST` is also registered and is the only way to send `proxy_url` (it is refused in the query). |

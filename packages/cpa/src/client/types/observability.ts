@@ -1,5 +1,5 @@
 // Types for /v8/management/observability.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 import type { RecentRequestBucket } from './common.ts';
 
@@ -38,6 +38,24 @@ export interface UsageTokenStats {
   cache_read_tokens_present: boolean;
   cache_creation_tokens: number;
   total_tokens: number;
+  // Present only when the upstream reported them.
+  cache_creation_5m_tokens?: number;
+  cache_creation_30m_tokens?: number;
+  cache_creation_1h_tokens?: number;
+  cache_creation_12h_tokens?: number;
+  text_input_tokens?: number;
+  image_input_tokens?: number;
+  audio_input_tokens?: number;
+  video_input_tokens?: number;
+  file_input_tokens?: number;
+  cached_text_tokens?: number;
+  cached_image_tokens?: number;
+  cached_audio_tokens?: number;
+  text_output_tokens?: number;
+  image_output_tokens?: number;
+  audio_output_tokens?: number;
+  accepted_prediction_tokens?: number;
+  rejected_prediction_tokens?: number;
 }
 export interface UsageTokenBreakdown {
   schema_version: number; // 2
@@ -62,7 +80,7 @@ export interface UsageQueueRecord {
   failed: boolean;
   generate: boolean;
   stream: boolean;
-  fail: { status_code: number; body: string }; // status_code 200 when not failed
+  fail: { status_code: number; body: string; code?: UsageFailCode | (string & {}) }; // status_code 200 when not failed
   response_headers?: Record<string, string[]>;
   accounting_version: number;
   token_breakdown: UsageTokenBreakdown;
@@ -77,6 +95,7 @@ export interface UsageQueueRecord {
   access_provider?: string;
   request_id: string;
   execution_id?: string;
+  home_selection?: UsageHomeSelection; // Home mode only
   trace_id?: string;
   session_id?: string;
   parent_session_id?: string;
@@ -87,7 +106,72 @@ export interface UsageQueueRecord {
   service_tier: string;
   effective_service_tier?: string;
   response_service_tier?: string;
+  upstream_service_tier?: string;
   response_model?: string;
+  speed?: string;
+  inference_geo?: string;
+  cache_details?: UsageCacheDetails;
+  web_search_requests?: number;
+  image_count?: number;
+  requested_image_details?: UsageImageDetails;
+  image_details?: UsageImageDetails;
+  media_counts?: UsageMediaCounts;
+  tool_usage_details?: UsageToolDetails;
+  iterations?: UsageIteration[];
+  cost_details?: UsageCostDetails;
+}
+export type UsageFailCode = "stream_truncated" | "request_scoped" | "force_cooldown";
+export interface UsageHomeSelection { reused: boolean; additional?: boolean; model: string; credential_policy?: string }
+export interface UsageCacheDetails {
+  mode?: string;
+  ttl?: string;
+  retention?: string;
+  ephemeral_5m_input_tokens?: number;
+  ephemeral_30m_input_tokens?: number;
+  ephemeral_1h_input_tokens?: number;
+  ephemeral_12h_input_tokens?: number;
+  by_ttl?: Record<string, number>;
+}
+export interface UsageImageDetails {
+  size?: string; resolution?: string; image_size?: string; aspect_ratio?: string; quality?: string;
+  background?: string; output_format?: string; response_format?: string; mime_type?: string; input_fidelity?: string;
+}
+export interface UsageMediaCounts { prompt_media?: number; completion_media?: number; prompt_audio?: number; audio_seconds?: number }
+export interface UsageToolDetails {
+  web_search_calls?: number; web_search_queries?: number; web_fetch_calls?: number; num_search_results?: number;
+  num_sources_used?: number; num_server_side_tools_used?: number; tool_calls_requested?: number; tool_calls_executed?: number;
+  x_search_calls?: number; x_posts_fetched?: number; x_users_fetched?: number; code_execution_calls?: number;
+  file_search_calls?: number; mcp_calls?: number; document_search_calls?: number; image_generation_calls?: number;
+  extra?: Record<string, number>;
+}
+export interface UsageIteration {
+  type?: string;
+  model?: string;
+  input_tokens?: number;
+  output_tokens?: number;
+  thinking_tokens?: number;
+  reasoning_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_creation_5m_tokens?: number;
+  cache_creation_1h_tokens?: number;
+  cache_creation?: UsageCacheDetails;
+}
+export interface UsageCostDetails {
+  cost?: number;
+  cost_in_usd_ticks?: number;
+  is_byok?: boolean;
+  upstream_inference_cost?: number;
+  upstream_inference_prompt_cost?: number;
+  upstream_inference_completions_cost?: number;
 }
 /** Elements are verbatim queued JSON; non-JSON payloads come back as strings. */
 export type UsageQueueResponse = Array<UsageQueueRecord | string>;
+
+// ---------- observability/requests/in-flight ----------
+// Counts only (in_flight.go:13-40). Always { in_flight: 0, by_provider: {} } in Home mode.
+export interface InFlightRequestsResponse {
+  in_flight: number;
+  oldest_started_at?: string; // RFC 3339, UTC
+  by_provider: Record<string, number>;
+}

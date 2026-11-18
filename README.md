@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/@cpajs/cpa"><img src="https://img.shields.io/npm/v/@cpajs/cpa/rc?label=%40cpajs%2Fcpa&color=0aa" alt="@cpajs/cpa on npm"></a>
   <a href="https://www.npmjs.com/package/@cpajs/codex-auth"><img src="https://img.shields.io/npm/v/@cpajs/codex-auth/rc?label=%40cpajs%2Fcodex-auth&color=0aa" alt="@cpajs/codex-auth on npm"></a>
-  <img src="https://img.shields.io/badge/CLIProxyAPI-v8.0.43-f5a623" alt="Bundled CLIProxyAPI v8.0.43">
+  <img src="https://img.shields.io/badge/CLIProxyAPI-v8.0.77-f5a623" alt="Bundled CLIProxyAPI v8.0.77">
   <img src="https://img.shields.io/badge/platforms-23-555" alt="23 platforms">
   <img src="https://img.shields.io/badge/node-%E2%89%A522-555" alt="Node >= 22">
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-555" alt="MIT"></a>

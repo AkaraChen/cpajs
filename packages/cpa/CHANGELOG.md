@@ -4,6 +4,57 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
+## Unreleased
+
+Bundled CLIProxyAPI: v8.0.77 (was v8.0.43). Control panel: v1.28.1 (was v1.26.7). Go toolchain unchanged (1.26.10).
+
+### Breaking
+
+- **Client: `credentials.refresh(selector)` now resolves `{ ok: true, auth: AuthFileEntry }`.** Since
+  CLIProxyAPI v8.0.50 the v8 route returns the redacted credential list entry instead of the raw auth record,
+  so the response no longer contains tokens: code that reads `auth.metadata.access_token` (or `attributes`,
+  `last_error`, `model_states`, `last_refreshed_at`) now gets `undefined`. Use `credentials.download(name)` when
+  you need the stored token file. The `CoreAuth`, `CoreAuthQuotaState`, `CoreAuthError` and `CoreModelState`
+  types are removed; `RefreshCredentialsResponse` now uses `AuthFileEntry`.
+- **Types: `CooldownReason` gains `'transient_rate_limit'`.** An exhaustive `switch` over it stops compiling until
+  the new case is handled.
+
+### Added
+
+- `credentials.verify(selector & { model? })`: `POST /credentials/verify`, a minimal test inference pinned to one
+  credential. Failures reject with `CpaHttpError`; its `data` is a `VerifyCredentialErrorBody`.
+- `routing.refreshModelDefinitions()`: `POST /routing/model-definitions/refresh` (also served as
+  `POST /models/refresh`), refetches the `models.*` catalogs and reports per-catalog results.
+- `usage.inFlight()`: `GET /observability/requests/in-flight`, in-flight request counts per provider.
+- `plugins.store({ refresh: true })` asks the server to re-check plugin releases instead of using its cache.
+- Types for the new upstream fields:
+  - `AuthFileEntry` renewal/recovery view: `requires_sign_in`, `renewal_state`, `recovery_stage`,
+    `quota_blocked`, `adopted`, `inference_verified`, `renewal_verified`, `refresh_error`, `renewal_event`,
+    `tos_appeal_url` and more.
+  - `oauth.start()` re-login parameters (`target_auth_id`, `auth_index`, `verify`, `verify_model`) and the
+    completed-login outcome on `oauth.status()`.
+  - Usage queue records: token modality details, cache, image, media, tool and cost details, `fail.code`, and
+    `home_selection`.
+  - Plugin listing (`priority`, `oauth_providers`, `oauth_provider_entries`) and store (`locales`).
+  - Config: `server.shutdown-timeout` / `kv-store` / `response-compression`; `upstream.codex` compression;
+    `upstream.claude.server-side-fallback`; `requests.payload.replace`; `sensitive-words-replace` /
+    `sensitive-patterns-replace`; `connection-pool` on API keys and groups; `client.claude`.
+
+### Upstream behaviour to know about
+
+- Every startup failure now exits with status 1, including a port that is already in use (it exited 0
+  before). cpajs still reports `port-in-use` by probing the port, so `CpaStartError.code` is unchanged; only
+  `exitCode` differs.
+- CPA keeps a local bbolt store at `<auth-dir>/kv.db` by default (`server.kv-store`). Two processes that share an
+  auth directory cannot both open it: the second one waits about 5 s at startup, logs
+  `local kv store open failed ... timeout`, and runs without the store. Restarting with the same state
+  directory is not affected.
+- API-key entries that set `connection-pool` get a new `auth_index` after the upgrade (the pool settings now
+  feed its ID). Entries without it, and credential files, keep theirs.
+- Claude OAuth logins use a 43-character base64url `state` (was 32 hex characters). The client treats `state`
+  as opaque.
+- Server-side model fallback for Claude is opt-in (`upstream.claude.server-side-fallback`).
+
 ## 0.1.0-rc.8
 
 No API changes. The repository is now a pnpm monorepo; the published package contents are the same. Released

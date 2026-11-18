@@ -1,5 +1,5 @@
 // Types for /v8/management/routing.
-// Derived from CLIProxyAPI v8.0.43; see docs/api-coverage.md.
+// Derived from CLIProxyAPI v8.0.77; see docs/api-coverage.md.
 
 // ---------- routing/cooldown/reset ----------
 export interface CooldownResetRequest { auth_index: string }
@@ -42,3 +42,26 @@ export interface ModelInfo {
 }
 export interface ModelDefinitionsResponse { channel: string; models: ModelInfo[] }
 export interface UnknownChannelError { error: "unknown channel"; channel: string }
+
+// ---------- POST routing/model-definitions/refresh (alias: POST models/refresh) ----------
+// One handler (model_definitions.go:14-58); no body. Errors: 400 { ok: false, error } for an invalid
+// models.* source; 502 ModelCatalogRefreshFailure when a fetch fails.
+export type ModelCatalogName = "catalog" | "codex-catalog" | "devin-catalog";
+export interface ModelCatalogSources { catalog?: string; "codex-catalog"?: string; "devin-catalog"?: string }
+export interface ModelCatalogStatus {
+  source: string;            // URL, absolute path, "embed" or "disabled"
+  refreshed: boolean;
+  skipped?: true;            // source is "embed" or "disabled"
+  changed_providers?: string[];
+  error?: string;
+}
+interface ModelCatalogRefreshFields {
+  catalog: string;
+  codex_catalog: string;
+  devin_catalog: string;
+  sources: ModelCatalogSources;
+  catalogs: Partial<Record<ModelCatalogName, ModelCatalogStatus>>;
+  changed_providers: string[];
+}
+export interface ModelCatalogRefreshResponse extends ModelCatalogRefreshFields { ok: true; status: "ok" }
+export interface ModelCatalogRefreshFailure extends ModelCatalogRefreshFields { ok: false; error: string }

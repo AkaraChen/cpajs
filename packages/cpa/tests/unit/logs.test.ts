@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseLogLine } from '../../src/server/logs.ts';
 
-// Samples captured from CLIProxyAPI v8.0.43 (`internal/logging/global_logger.go`).
+// Samples captured from CLIProxyAPI v8.0.77 (`internal/logging/global_logger.go`).
 const TIMESTAMP = '2026-10-27 03:18:01';
 
 describe('log line parsing', () => {
@@ -42,7 +42,7 @@ describe('log line parsing', () => {
 
   it('leaves lines without CPA prefixes unparsed', () => {
     for (const line of [
-      'CLIProxyAPI Version: 8.0.43, Commit: 3078035, BuiltAt: 2026-10-25T14:45:00Z',
+      'CLIProxyAPI Version: 8.0.77, Commit: a5e8f69, BuiltAt: 2026-11-17T22:17:42Z',
       'API server started successfully on: 127.0.0.1:18317',
       'time="2026-10-27T03:18:01Z" level=info msg="old format"',
       'server clients and configuration updated: 0 clients',
