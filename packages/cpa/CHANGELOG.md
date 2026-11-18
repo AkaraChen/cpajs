@@ -4,7 +4,7 @@ All notable changes to `@cpajs/cpa`. The bundled CLIProxyAPI version is listed p
 (`@cpajs/<target>`) always share the main package version. Upgrading from an alpha? See
 [docs/migration.md](docs/migration.md).
 
-## Unreleased
+## 0.1.0-rc.9
 
 Bundled CLIProxyAPI: v8.0.77 (was v8.0.43). Control panel: v1.28.1 (was v1.26.7). Go toolchain unchanged (1.26.10).
 
