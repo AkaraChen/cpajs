@@ -64,11 +64,12 @@ jobs:
       - name: Install FreeBSD cross toolchain
         if: matrix.freebsdSysroot
         run: sudo apt-get update && sudo apt-get install -y clang lld
-      # Ubuntu's qemu-user-static covers every emulated target (including 32-bit MIPS,
-      # which docker/setup-qemu-action lacks) and registers binfmt_misc handlers.
+      # Ubuntu's qemu-user covers every emulated target (including 32-bit MIPS, which
+      # docker/setup-qemu-action lacks); qemu-user-binfmt registers the binfmt_misc
+      # handlers. Since Ubuntu 26.04, qemu-user-static is only a virtual package.
       - name: Install QEMU user-mode emulation
         if: matrix.qemu
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-binfmt binfmt-support
       - run: node scripts/build-binary.ts --target ${{ matrix.target }}
       - run: node scripts/verify-binary.ts --target ${{ matrix.target }} ${{ matrix.smoke && '--smoke' || '' }}
       - uses: actions/upload-artifact@v4

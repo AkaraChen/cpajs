@@ -11,7 +11,7 @@ interface MatrixEntry {
   runner: string;
   /** Start the binary and run HTTP checks after building. */
   smoke: boolean;
-  /** Install qemu-user-static (registers binfmt_misc) for an emulated smoke test. */
+  /** Install qemu-user-binfmt (registers binfmt_misc) for an emulated smoke test. */
   qemu: boolean;
   /** Install clang + lld for the FreeBSD CGO cross build. */
   freebsdSysroot: boolean;
