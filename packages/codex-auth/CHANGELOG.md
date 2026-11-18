@@ -2,6 +2,10 @@
 
 All notable changes to `@cpajs/codex-auth`.
 
+## 0.1.0-rc.9
+
+No changes. Released in lockstep with `@cpajs/cpa` 0.1.0-rc.9.
+
 ## 0.1.0-rc.8
 
 First release through the release workflow, at the version shared with `@cpajs/cpa`. `0.1.0-rc.6` was a
